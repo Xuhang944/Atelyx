@@ -1,0 +1,272 @@
+/**
+ * `.atlx` 文件 schema 类型（磁盘格式，atelyx-canvas/v1）。
+ *
+ * 与运行时 `types/node.ts` 分开：磁盘用扁平 x/y（不绑 React Flow），
+ * 运行时↔磁盘的转换在 services/vault 层做。
+ * 所有 node/edge/message 有稳定 id，为未来协作增量合并预留。
+ */
+import type { Message } from "./message";
+import type { GlobalProvider } from "./provider";
+import type { LinkMode } from "./node";
+import type { CANVAS_SCHEMA } from "@/constants/canvas";
+
+export interface CanvasViewport {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+/** `.atlx` 文件根结构。 */
+export interface CanvasFile {
+  schema: typeof CANVAS_SCHEMA;
+  id: string;
+  title: string;
+  viewport: CanvasViewport;
+  nodes: CanvasFileNode[];
+  edges: CanvasFileEdge[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 磁盘节点：扁平 x/y，data 按类型存不同结构。 */
+export interface CanvasFileNode {
+  id: string;
+  type: "conversation" | "text" | "media" | "group" | "link";
+  x: number;
+  y: number;
+  width?: number;
+  /** 用户 NodeResizeControl 调整后的高度（缺省 = 内容自适应） */
+  height?: number;
+  data: ConversationFileData | TextFileData | MediaFileData | GroupFileData | LinkFileData;
+}
+
+/** 对话节点：messages 嵌在此处（替代独立 messages 表，整体随 .atlx 写）。 */
+export interface ConversationFileData {
+  providerId: string;
+  model: string;
+  /** 系统提示词笔记引用（缺省 = 未设置；旧文件无此字段兼容读取）。 */
+  systemPromptFile?: string;
+  /** LLM 自动生成的话题标题（首轮对话完成后命名；旧文件无此字段兼容读取）。 */
+  title?: string;
+  /** conversationId 字段冗余保留以复用 Message 类型，读取时可忽略。 */
+  messages: Message[];
+}
+
+/** 文本节点：只存路径引用，正文在 笔记/*.md（可跨画布共享，删画布不删文件）。 */
+export interface TextFileData {
+  title: string;
+  /** 相对仓库根的路径，如 `笔记/提示词-abc.md` */
+  file: string;
+}
+
+/** 媒体节点：原文件在 附件/，此处存路径引用 + 元数据。 */
+export interface MediaFileData {
+  /** 相对仓库根的路径，如 `附件/image-xxx.png` */
+  file: string;
+  mime: string;
+  kind: "image" | "file";
+  /** 文件名（画布显示用） */
+  name?: string;
+  /** 二进制类解析失败时标注，仅作画布参考、不注入模型 */
+  parseFailed?: boolean;
+  /** 文本类文件解析出的内容（@ 引用/连边时注入用） */
+  body?: string;
+  /** 按图片真实比例计算的展示宽度（px），用户 resize 后此字段不再生效 */
+  displayWidth?: number;
+  /** 用户是否手动 resize 过此节点 */
+  userResized?: boolean;
+}
+
+/** 分组节点：画布背景矩形容器（色板 1-6 只读展示，无改色 UI）。 */
+export interface GroupFileData {
+  /** 分组标题（双击 inline 编辑） */
+  label: string;
+  /** 色板下标（"1"-"6"，缺省 = 默认中性色） */
+  color?: string;
+}
+
+/** 链接节点：URL 卡片，点击外部浏览器打开。 */
+export interface LinkFileData {
+  url: string;
+}
+
+/** 关联边（directed: false）的箭头模式：无向 / 单向 / 双向。缺省 = 无向（LinkMode 定义见 node.ts）。 */
+export interface CanvasFileEdge {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string;
+  targetHandle?: string;
+  /** false = 关联边（无消费语义）；缺省 true = 数据流边 */
+  directed?: boolean;
+  /** 关联边的箭头模式（仅 directed: false 生效；缺省 = 无向） */
+  linkMode?: LinkMode;
+  createdAt: number;
+}
+
+/** 画布列表行（递归扫描全仓库 .atlx 得到，不含拓扑）。 */
+export interface CanvasFileRow {
+  id: string;
+  title: string;
+  /** 相对仓库根的 .atlx 路径（画布任意文件夹存放，打开/保存按路径） */
+  file: string;
+  updatedAt: number;
+}
+
+/** `create_canvas_vault` 返回值：id（运行时身份）+ file（磁盘定位）。 */
+export interface CanvasCreateResult {
+  id: string;
+  file: string;
+}
+
+/** 仓库文件树节点（`list_vault_tree`，文件面板全仓库树）。 */
+export interface FileTreeNode {
+  /** 文件名 / 文件夹名 */
+  name: string;
+  /** 相对仓库根路径（目录不带尾部分隔符；空串 = 仓库根自身） */
+  path: string;
+  isDir: boolean;
+  /** mtime unix 秒 */
+  updatedAt: number;
+  children: FileTreeNode[];
+}
+
+/** 文件面板排序方式（树节点含 mtime，故只提供文件名/编辑时间两类）。 */
+export type FileExplorerSortKey = "name-asc" | "name-desc" | "mtime-desc" | "mtime-asc";
+
+/** 主题模式：仓库级设置，跟随系统 = 按 prefers-color-scheme 实时解析。 */
+export type ThemeMode = "light" | "dark" | "system";
+
+/** 兼容字段：仓库三个根目录的目录名（自由文件夹结构不使用，仅兼容读取 `.atelyx/config.json` 的 `dirNames`）。 */
+export interface DirNames {
+  canvases: string;
+  notes: string;
+  attachments: string;
+}
+
+/** 仓库级配置（.atelyx/config.json，不含 API key）。 */
+export interface VaultConfig {
+  /** 仓库级主题。缺失时默认 "dark"。 */
+  theme?: ThemeMode;
+  /** 仓库级默认模型（从仓库内已配置供应商的全部模型中选择；缺省 = 未指定，跟随默认的对话请求报错提示）。 */
+  model?: string;
+  /** 仓库级界面基础字号（px，覆盖 :root font-size；缺省 = 18）。 */
+  fontSize?: number;
+  /** 仓库级界面字体（CSS font-family 值；缺省 = system-ui 默认）。 */
+  fontFamily?: string;
+  /** 文件面板排序方式（缺省 = 前端默认 mtime-desc）。 */
+  fileExplorerSort?: FileExplorerSortKey;
+  /** 兼容字段：仓库三根目录名（自由文件夹结构不使用；仅兼容读取旧配置）。 */
+  dirNames?: DirNames;
+  /** 文件面板排除的文件夹名（任何层级同名文件夹不显示/不监听；设置页逗号分隔输入转数组）。 */
+  excludeFolders?: string[];
+  /** 附件导入默认文件夹（相对仓库根，可含子路径如 `assets/img`；缺省/空 = 仓库根目录）。 */
+  attachmentFolder?: string;
+  /** 仓库级 AI 供应商列表（磁盘格式默认无 key；key 走 keychain 条目 `provider-<vaultId>-<id>`，开启 syncKeys 后随仓库落盘）。 */
+  providers?: GlobalProvider[];
+  /** 仓库级搜索源配置（Tavily key 默认走 keychain 条目 `provider-<vaultId>-search-tavily`；开启 syncKeys 后随仓库落盘）。 */
+  search?: GlobalSearchConfig;
+  /** API key 是否随仓库保存（多设备同步）：开启后 provider/Tavily key 明文写入本文件，随仓库同步；
+   * 缺省 false = key 仅存本机 keychain（按仓库隔离）。开启有泄露风险（仓库被公开/云盘共享）。 */
+  syncKeys?: boolean;
+  /** 宽松换行：开启时预览模式单个换行符渲染为换行；关闭时按 Markdown 标准视为空格。缺省 = true。 */
+  softLineBreak?: boolean;
+  /** 进入仓库时自动恢复上次打开的文件（画布/笔记窗口）。缺省 = true（开启）。 */
+  autoRestoreFiles?: boolean;
+  /** 话题自动命名开关（缺省 = true 开启）。 */
+  autoNamingEnabled?: boolean;
+  /** 话题自动命名模型（缺省 = 跟随默认模型；指定后命名用该模型，如 `{ providerId, model }`——话题命名一般用小模型）。 */
+  autoNamingModel?: { providerId: string; model: string };
+  /** 仓库稳定 ID（首次 open_vault 生成、之后固定；keychain 条目按它隔离，写盘必须保留）。 */
+  vaultId?: string;
+}
+
+/** open_vault 返回的仓库信息。 */
+export interface VaultInfo {
+  /** 仓库根绝对路径 */
+  root: string;
+  /** 仓库名（文件夹名） */
+  name: string;
+  /** 仓库稳定 ID（`.atelyx/config.json` 的 vaultId，首次打开生成、之后固定；仓库归属识别用）。 */
+  id: string;
+}
+
+/** 最近打开的仓库（存全局 global.json，启动页展示）。 */
+export interface RecentVault {
+  /** 仓库根绝对路径 */
+  root: string;
+  /** 仓库名（文件夹名） */
+  name: string;
+  /** 最近打开时间（unix 秒） */
+  lastOpenedAt: number;
+}
+
+export type SearchProvider = "tavily" | "searxng";
+
+/** 仓库级搜索源配置（.atelyx/config.json 的 VaultConfig.search）。
+ * Tavily key 默认走 keychain 条目 `provider-<vaultId>-search-tavily`，不落文件；
+ * 仅 syncKeys 开启时随仓库落盘 `tavilyApiKey`（多设备同步）。 */
+export interface GlobalSearchConfig {
+  /** 搜索源：Tavily API / SearXNG 自建实例。 */
+  provider: SearchProvider;
+  /** SearXNG 实例 URL（tavily 模式忽略）。 */
+  searxngUrl: string;
+  /** Tavily API key（仅 syncKeys 开启时随仓库落盘/读取；关闭时剥离不写）。 */
+  tavilyApiKey?: string;
+}
+
+/**
+ * 全局配置（app_data_dir/global.json）——**最近仓库列表 + 本设备 ID + 自动更新开关**（应用级使用数据）。
+ * AI 供应商 / 搜索源已仓库化（`.atelyx/config.json` 的 `VaultConfig.providers/search`）；
+ * 不含 API key（key 仅存 keychain，条目按仓库隔离，见安全红线）。
+ */
+export interface GlobalConfig {
+  /** 最近打开的仓库列表（按最近打开倒序，前端维护顺序） */
+  recentVaults: RecentVault[];
+  /** 本设备唯一 ID（随机 UUID，首次运行生成后固定；按设备隔离仓库内 UI 状态用）。 */
+  deviceId?: string;
+  /** 自动检查更新（应用级）：开启后每次启动应用静默检查新版本并自动安装。缺省 = false（关闭）。 */
+  autoUpdate?: boolean;
+}
+
+// ===== 外部白板格式（.canvas JSON，只读查看/转换为画布用）=====
+// 与 .atlx 不同：file/text/group/link 四类节点 + 无向边（fromNode→toNode + 边锚点 side）。
+// 本应用不写该格式（只读 + 转换），映射规则见 utils/whiteboard.ts。
+
+/** `.canvas` 文件根结构（文件路径为相对仓库根，如 `项目A/白板.canvas`）。 */
+export interface WhiteboardFile {
+  nodes: WhiteboardNode[];
+  edges: WhiteboardEdge[];
+  /** 视口（x/y/zoom，本应用不读写） */
+  view?: { x: number; y: number; zoom: number };
+  /** 画布背景色板（本应用不读写） */
+  canvas?: string;
+}
+
+/** `.canvas` 节点：`file`（.md/附件引用）、`text`（文本）、`group`（分组）、`link`（URL）。 */
+export interface WhiteboardNode {
+  id: string;
+  type: "file" | "text" | "group" | "link";
+  /** file 节点：相对仓库根路径；link 节点：URL */
+  file?: string;
+  text?: string;
+  label?: string;
+  url?: string;
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+  /** 色板下标（"1"-"6"，本应用仅 group 展示使用） */
+  color?: string;
+}
+
+/** `.canvas` 边：无向，`fromSide`/`toSide` = 锚点方位（top/right/bottom/left）。 */
+export interface WhiteboardEdge {
+  id: string;
+  fromNode: string;
+  fromSide?: string;
+  toNode: string;
+  toSide?: string;
+  label?: string;
+  color?: string;
+}

@@ -1,0 +1,60 @@
+[package]
+name = "atelyx"
+version = "0.1.0"
+description = "AI 创作工作台：对话/笔记/知识库统一为有向图，AI 贯穿赋能"
+authors = ["Atelyx"]
+edition = "2021"
+# tauri-plugin-updater 要求 Rust >= 1.77.2
+rust-version = "1.77.2"
+
+# 库定义，供 tauri-build 引用
+[lib]
+name = "atelyx_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.1", features = [] }
+tauri-plugin-dialog = "2.0"
+tauri-plugin-fs = "2.0"
+tauri-plugin-shell = "2.0"
+tauri-plugin-store = "2.0"
+# 自动更新完成后的应用重启（relaunch；v2 起 core API 不再含 process）
+tauri-plugin-process = "2"
+# 自动检查更新：check/downloadAndInstall/签名校验（GitHub Release 静态 latest.json，见 4.18）
+tauri-plugin-updater = "2"
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 附件图片转 dataURL 供前端 MediaNode 显示（文件面板拖附件建节点）
+base64 = "0.22"
+
+# 工具
+nanoid = "0.4"
+chrono = "0.4"
+
+# API key 安全存储（OS keychain：Windows Credential Manager / Linux Secret Service / macOS Keychain）
+# 安全红线：API key 仅存 keychain，永不落仓库文件或 global.json
+keyring = "4"
+
+# 联网搜索代理：SearXNG 自建实例无内置 CORS，前端直 fetch 必被拦截，
+# Tavily key 按官方 best practice 不应暴露给 WebView——搜索统一走 Rust 侧请求。
+# rustls-tls 避免 Linux 打包依赖系统 openssl。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# 仓库文件监听（外部编辑实时同步 + 断链降级）
+# notify-debouncer-mini 合并原子写/编辑器多次保存的噪声事件（300ms 窗口）
+notify = "6"
+notify-debouncer-mini = "0.4"
+
+# Windows 路径归一化：std::fs::canonicalize 在 Windows 返回 `\\?\` 长路径前缀，
+# dunce::canonicalize 去除前缀、保持标准 Windows 路径（E:\xxx），跨平台同语义
+dunce = "1"
+
+[features]
+# 自定义 protocol 用
+custom-protocol = ["tauri/custom-protocol"]

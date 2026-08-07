@@ -1,0 +1,112 @@
+/**
+ * 文本展示工具。
+ */
+import type { Node as FlowNode } from "@xyflow/react";
+import type { ProviderConfig, SearchResultData, TextData, MediaData } from "@/types";
+
+/** 模型显示名：昵称优先，缺省 = API 模型 ID（长 ID 可用昵称替代，值仍存 ID）。 */
+export function modelDisplayName(provider: ProviderConfig, modelId: string): string {
+  return provider.models.find((m) => m.id === modelId)?.nickname ?? modelId;
+}
+
+/** 跨供应商按模型 ID 反查显示名（下拉/占位显示用；未找到回退 ID）。 */
+export function modelNameAcrossProviders(
+  providers: ProviderConfig[],
+  modelId: string,
+): string {
+  for (const p of providers) {
+    const name = modelDisplayName(p, modelId);
+    if (name !== modelId) return name;
+  }
+  return modelId;
+}
+
+/** 截取内容前缀作为 @chip 显示名（约 12 字 + 省略号）。 */
+export function prefix(text: string, len = 12): string {
+  const t = (text ?? "").replace(/\s+/g, " ").trim();
+  return t.length > len ? t.slice(0, len) + "…" : t;
+}
+
+/**
+ * @ 提及显示名：文本节点取**笔记名称（title）**（缺失回退正文前缀），
+ * 媒体节点取文件名。输入框内插入的可见文本 = `@${mentionTextOf(node)}`，发送时按此文本就地替换为引用内容。
+ */
+export function mentionTextOf(node: FlowNode): string {
+  if (node.type === "text") {
+    const d = node.data as unknown as TextData;
+    return d.title || prefix(d.bodyMd ?? "") || "文本";
+  }
+  if (node.type === "search") {
+    const d = node.data as unknown as SearchResultData;
+    return prefix(d.query) || "搜索";
+  }
+  if (node.type === "group") {
+    const d = node.data as unknown as { label?: string };
+    return prefix(d.label ?? "") || "分组";
+  }
+  if (node.type === "link") {
+    const d = node.data as unknown as { url?: string };
+    return prefix(d.url ?? "") || "链接";
+  }
+  const md = node.data as unknown as MediaData;
+  return prefix(md.name ?? md.mime) || "文件";
+}
+
+/** 输入框内 @提及 的命中片段（含精确位置）。 */
+export interface MentionHit {
+  start: number;
+  end: number;
+  mention: { nodeId: string; text: string };
+}
+
+/**
+ * 扫描输入文本中所有 @提及 命中（含重复文本的多个实例）。
+ * 同一位置只命中一次（重叠检查），命中按 start 升序。
+ * 供组件渲染 @标签（splitMentions）与 store 发送时精确替换共用——
+ * 保证「删除 / 替换按实例位置」而非 indexOf 首个出现（重复 @提及 时不错位）。
+ */
+export function scanMentionHits(
+  input: string,
+  mentions: { nodeId: string; text: string }[]
+): MentionHit[] {
+  const hits: MentionHit[] = [];
+  for (const m of mentions) {
+    if (!m.text) continue; // 空显示名不参与扫描（避免 {0,0} 命中在开头插入内容）
+    let from = 0;
+    while (from < input.length) {
+      const idx = input.indexOf(m.text, from);
+      if (idx < 0) break;
+      const end = idx + m.text.length;
+      if (!hits.some((h) => idx < h.end && end > h.start)) {
+        hits.push({ start: idx, end, mention: m });
+        break;
+      }
+      from = idx + 1;
+    }
+  }
+  hits.sort((a, b) => a.start - b.start);
+  return hits;
+}
+
+/** 输入文本按 @提及 切分后的段：普通文本段或标签段（文本匹配，不重叠，顺序排序）。 */
+export interface MentionSeg {
+  text: string;
+  start: number;
+  mention: { nodeId: string; text: string } | null;
+}
+
+/** 按 @提及 命中把输入文本切成「普通文本 / 标签」交替段（对话节点与 AI 对话面板输入框共用）。 */
+export function splitMentions(
+  input: string,
+  mentions: { nodeId: string; text: string }[]
+): MentionSeg[] {
+  const segs: MentionSeg[] = [];
+  let cursor = 0;
+  for (const h of scanMentionHits(input, mentions)) {
+    if (h.start > cursor) segs.push({ text: input.slice(cursor, h.start), start: cursor, mention: null });
+    segs.push({ text: h.mention.text, start: h.start, mention: h.mention });
+    cursor = h.end;
+  }
+  if (cursor < input.length) segs.push({ text: input.slice(cursor), start: cursor, mention: null });
+  return segs;
+}

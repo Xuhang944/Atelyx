@@ -1,0 +1,564 @@
+@import "katex/dist/katex.min.css";
+@import "highlight.js/styles/github-dark.css";
+@import "@xyflow/react/dist/style.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===== Theme Variables ===== */
+:root {
+  --bg-primary: #f8fafc;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f1f5f9;
+  --bg-card: #ffffff;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+  --border: #e2e8f0;
+  --hover: #f1f5f9;
+  --surface: #ffffff;
+  --input-bg: #ffffff;
+  --input-border: #cbd5e1;
+  --input-placeholder: #94a3b8;
+  --scrollbar-thumb: #cbd5e1;
+  --scrollbar-thumb-hover: #94a3b8;
+
+  /* 品牌主色（全局一致，深/浅主题共用）：对齐应用图标金色 #D4AF37 */
+  --accent: #d4af37;
+  --accent-hover: #b8962e;
+  /* accent 底上的前景色（金色底用深色文字，对比度优于白字，呼应图标深底金饰） */
+  --accent-fg: #1c1c1e;
+
+  /* 标题栏窗口控制按钮（无边框窗口） */
+  --titlebar-icon: #475569;
+  --titlebar-hover: rgba(0, 0, 0, 0.08);
+  --titlebar-close-hover: rgba(232, 17, 35, 0.9);
+
+  --highlight-bg: #f1f5f9;
+  --highlight-text: #1e293b;
+  --highlight-code: #b8962e;
+  --table-border: #e2e8f0;
+  --table-header-bg: #f1f5f9;
+
+  /* Markdown 扩展语法：==高亮== / [[wiki 链接]] / callout */
+  --mark-bg: #fff3a3;
+  --mark-color: #1f2937;
+  --link-internal: #b8962e;
+  --callout-bg: rgba(15, 23, 42, 0.04);
+  /* 代码块底色（独立于行内 code 的 --highlight-bg；深色主题下需与卡片 #252526 区分） */
+  --code-bg: #f1f5f9;
+
+  color-scheme: light;
+}
+
+/* 夜间主题标准色（对齐深色 HEX 体系，中性灰而非蓝色调） */
+:root.dark {
+  --bg-primary: #1e1e1e;
+  --bg-secondary: #252526;
+  --bg-tertiary: #2a2d2e;
+  --bg-card: #252526;
+  --text-primary: #dcdcdc;
+  --text-secondary: #8b8b8b;
+  --text-muted: #8b8b8b;
+  --border: #333333;
+  --hover: #2a2d2e;
+  --surface: #252526;
+  --input-bg: #252526;
+  --input-border: #333333;
+  --input-placeholder: #8b8b8b;
+  --scrollbar-thumb: #333333;
+  --scrollbar-thumb-hover: #8b8b8b;
+
+  /* 标题栏：图标浅灰 #cccccc，hover 背景 #333333，关闭 hover Windows 红 #e81123 */
+  --titlebar-icon: #cccccc;
+  --titlebar-hover: #333333;
+  --titlebar-close-hover: #e81123;
+
+  --highlight-bg: #252526;
+  --highlight-text: #dcdcdc;
+  --highlight-code: #569cd6;
+  --table-border: #333333;
+  --table-header-bg: #2a2d2e;
+
+  /* 深色主题 callout 背景（mark 高亮与 wiki 链接色两主题统一） */
+  --callout-bg: rgba(255, 255, 255, 0.05);
+  /* 深色代码块底色：比卡片 #252526 更深一档 */
+  --code-bg: #161616;
+
+  color-scheme: dark;
+}
+
+:root.dark .react-flow__background {
+  background-color: #1e1e1e !important;
+}
+
+/* ===== ReactFlow theme ===== */
+:root {
+  --xy-edge-stroke-default: #94a3b8;
+  --xy-edge-stroke-width-default: 1;
+  --xy-edge-stroke-selected-default: #d4af37;
+  --xy-connectionline-stroke-default: #94a3b8;
+  --xy-connectionline-stroke-width-default: 1;
+  --xy-attribution-background-color-default: rgba(200, 200, 200, 0.5);
+  --xy-minimap-background-color-default: #f1f5f9;
+  --xy-minimap-mask-background-color-default: rgba(241, 245, 249, 0.6);
+  --xy-minimap-node-background-color-default: #cbd5e1;
+  --xy-minimap-node-stroke-color-default: transparent;
+  --xy-background-color-default: #f8fafc;
+  --xy-background-pattern-dots-color-default: #cbd5e1;
+  --xy-node-color-default: #0f172a;
+  --xy-node-border-default: 1px solid #e2e8f0;
+  --xy-node-background-color-default: #ffffff;
+  --xy-node-boxshadow-hover-default: 0 1px 4px 1px rgba(0, 0, 0, 0.08);
+  --xy-node-boxshadow-selected-default: 0 0 0 0.5px #d4af37;
+  --xy-handle-background-color-default: #d4af37;
+  --xy-handle-border-color-default: #ffffff;
+  --xy-selection-background-color-default: rgba(124, 58, 237, 0.08);
+  --xy-selection-border-default: 1px dotted rgba(124, 58, 237, 0.6);
+  --xy-controls-button-background-color-default: #ffffff;
+  --xy-controls-button-background-color-hover-default: #f1f5f9;
+  --xy-controls-button-color-default: #64748b;
+  --xy-controls-button-color-hover-default: #0f172a;
+  --xy-controls-button-border-color-default: #e2e8f0;
+  --xy-controls-box-shadow-default: 0 0 2px 1px rgba(0, 0, 0, 0.08);
+  --xy-edge-label-background-color-default: #ffffff;
+  --xy-edge-label-color-default: #0f172a;
+}
+
+:root.dark {
+  --xy-edge-stroke-default: #555;
+  --xy-edge-stroke-selected-default: #d4af37;
+  --xy-connectionline-stroke-default: #666;
+  --xy-attribution-background-color-default: rgba(50, 50, 50, 0.5);
+  --xy-minimap-background-color-default: #2a2d2e;
+  --xy-minimap-mask-background-color-default: rgba(37, 37, 38, 0.6);
+  --xy-minimap-node-background-color-default: #333333;
+  --xy-background-color-default: #1e1e1e;
+  --xy-background-pattern-dots-color-default: #333333;
+  --xy-node-color-default: #dcdcdc;
+  --xy-node-border-default: 1px solid #333333;
+  --xy-node-background-color-default: #252526;
+  --xy-node-boxshadow-hover-default: 0 1px 4px 1px rgba(0, 0, 0, 0.3);
+  --xy-node-boxshadow-selected-default: 0 0 0 0.5px #d4af37;
+  --xy-handle-background-color-default: #d4af37;
+  --xy-handle-border-color-default: #1e1e1e;
+  --xy-selection-background-color-default: rgba(124, 58, 237, 0.12);
+  --xy-selection-border-default: 1px dotted rgba(124, 58, 237, 0.6);
+  --xy-controls-button-background-color-default: #252526;
+  --xy-controls-button-background-color-hover-default: #2a2d2e;
+  --xy-controls-button-color-default: #8b8b8b;
+  --xy-controls-button-color-hover-default: #dcdcdc;
+  --xy-controls-button-border-color-default: #333333;
+  --xy-controls-box-shadow-default: 0 0 2px 1px rgba(0, 0, 0, 0.3);
+  --xy-edge-label-background-color-default: #252526;
+  --xy-edge-label-color-default: #dcdcdc;
+}
+
+/* ===== 节点连接边框（ConnectionFrame）：四边透明长条 handle，hover 高亮可拉区域 ===== */
+.conn-strip {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+}
+.conn-strip:hover {
+  background: rgba(124, 58, 237, 0.14) !important;
+}
+
+/* ===== Base ===== */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+:root {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 18px;
+  line-height: 1.5;
+}
+
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+/* ===== ReactFlow overrides ===== */
+.react-flow__attribution {
+  display: none !important;
+}
+
+/* 覆盖 React Flow 对 type="group" 节点 wrapper 的默认样式（150px 宽 + padding 10px +
+   半透明白底）：分组节点由 GroupNode 组件自绘（半透明色填充 + 实线边框），
+   wrapper 需保持透明无偏移，否则组外会多出一圈偏移的白底矩形 */
+.react-flow__node-group {
+  padding: 0;
+  width: auto;
+  background-color: transparent;
+  border: none;
+}
+
+
+
+/* ===== Controls ===== */
+.react-flow__controls {
+  background: var(--bg-secondary) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  overflow: hidden !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12) !important;
+}
+.react-flow__controls-button {
+  background: var(--bg-secondary) !important;
+  border-bottom: 1px solid var(--border) !important;
+  color: var(--text-secondary);
+}
+.react-flow__controls-button:hover {
+  background: var(--hover) !important;
+}
+/* 覆盖 React Flow 默认 svg 规则（max 12px 压缩 + fill: currentColor 实心化）：
+   lucide 图标按原始尺寸渲染、保持线条镂空（stroke 风格） */
+.react-flow__controls-button svg {
+  width: auto !important;
+  max-width: none !important;
+  max-height: none !important;
+  fill: none !important;
+}
+
+/* ===== MiniMap ===== */
+/* svg 背景用 --bg-tertiary（与画布 --bg-primary 拉开对比），
+   否则背景同色 + mask 覆盖后小地图在视觉上"消失"。 */
+.react-flow__minimap {
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+}
+.react-flow__minimap-svg {
+  background: var(--bg-tertiary) !important;
+}
+.react-flow__minimap-node {
+  fill: var(--text-muted) !important;
+  stroke: var(--border) !important;
+}
+.react-flow__minimap-mask {
+  fill: var(--bg-primary) !important;
+  opacity: 0.55 !important;
+}
+
+/* ===== Scrollbar ===== */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* ===== Markdown ===== */
+/* 段落间距统一对齐源码空行高度：`\n\n` 的空行 = 一整行行高（line-height 1.625），
+   宽松换行下单换行 `<br>` 天然同高；首/末段 margin 归零防内容顶部/底部多出空白 */
+.markdown-body p {
+  margin: 1.625em 0;
+}
+.markdown-body p:first-child {
+  margin-top: 0;
+}
+.markdown-body p:last-child {
+  margin-bottom: 0;
+}
+.markdown-body pre {
+  @apply rounded p-2 my-1 overflow-x-auto text-xs;
+  background: var(--code-bg);
+  color: var(--highlight-text);
+  /* 边框隔离：深色主题下 --code-bg 与节点卡片同色，无边框则代码块与正文无区分 */
+  border: 1px solid var(--border);
+}
+.markdown-body code {
+  @apply text-xs;
+  color: var(--highlight-code);
+}
+.markdown-body pre code {
+  @apply bg-transparent p-0;
+  color: var(--highlight-text);
+}
+.markdown-body ul, .markdown-body ol {
+  padding-left: 1.25em;
+  margin: 0.25em 0;
+}
+/* Tailwind preflight 重置了 list-style，需恢复 */
+.markdown-body ul {
+  list-style: disc;
+}
+.markdown-body ol {
+  list-style: decimal;
+}
+/* 任务列表行不显示圆点（GitHub 同款） */
+.markdown-body li:has(input[type="checkbox"]) {
+  list-style: none;
+}
+
+/* ===== 实时预览编辑器（NoteEditor 编辑模式，CodeMirror 6）=====
+   文本即真相：编辑器只显示原文 + 渲染装饰层，样式全部走主题变量（浅/深自动跟随）。
+   EditorView.theme 在组件内定义，这里只补 widget 与补充样式。 */
+[data-markdown-editor] {
+  min-height: 100%;
+}
+/* 实时预览 widget：链接 / wiki 链接 / 图片 / 任务复选框 */
+.md-editor-link {
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.md-editor-wikilink {
+  color: var(--link-internal);
+  cursor: default;
+}
+/* 列表标记（无序小圆点 / 有序序号）：随标记隐藏后补位显示，不可选中 */
+.md-editor-list-marker {
+  color: var(--text-muted);
+  user-select: none;
+}
+/* `---` 横隔条：block widget 整行替换，widget 高度 = 行高（1.625em），线垂直居中 */
+.md-editor-divider {
+  width: 100%;
+  height: 1.625em;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+}
+.md-editor-divider::before {
+  content: "";
+  display: block;
+  width: 100%;
+  border-top: 1px solid var(--border);
+}
+.md-editor-image {
+  display: inline-block;
+  vertical-align: middle;
+  cursor: pointer;
+}
+.md-editor-image img {
+  max-width: 100%;
+  max-height: 240px;
+  border-radius: 4px;
+}
+.md-editor-image-missing {
+  color: var(--text-muted);
+  font-style: italic;
+}
+.md-editor-checkbox {
+  margin: 0 4px 0 0;
+  vertical-align: middle;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.markdown-body table {
+  @apply border-collapse w-full my-1 text-xs;
+}
+.markdown-body th, .markdown-body td {
+  @apply px-2 py-1;
+  border: 1px solid var(--table-border);
+}
+.markdown-body th {
+  background: var(--table-header-bg);
+}
+
+/* 基础排版（对齐阅读视图）：标题层级 / 引用 / 分割线 / 链接 / 图片 / 任务列表 */
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 0.6em 0 0.3em;
+}
+.markdown-body h1 {
+  font-size: 1.5em;
+}
+.markdown-body h2 {
+  font-size: 1.35em;
+}
+.markdown-body h3 {
+  font-size: 1.2em;
+}
+.markdown-body h4 {
+  font-size: 1.1em;
+}
+.markdown-body h5 {
+  font-size: 1em;
+}
+.markdown-body h6 {
+  font-size: 0.95em;
+  color: var(--text-secondary);
+}
+.markdown-body blockquote {
+  margin: 0.4em 0;
+  padding-left: 0.8em;
+  border-left: 3px solid var(--border);
+  color: var(--text-secondary);
+}
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0.8em 0;
+}
+.markdown-body a {
+  color: var(--link-internal);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown-body img {
+  max-width: 100%;
+  height: auto;
+}
+.markdown-body li {
+  margin: 0.15em 0;
+}
+.markdown-body input[type="checkbox"] {
+  margin-right: 0.4em;
+  accent-color: var(--accent);
+}
+.markdown-body code {
+  background: var(--highlight-bg);
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+}
+
+/* ===== Markdown 扩展语法：==高亮== / [[wiki 链接]] / callout ===== */
+.markdown-body mark {
+  background: var(--mark-bg);
+  color: var(--mark-color);
+  border-radius: 2px;
+  padding: 0 2px;
+}
+.markdown-body a.internal-link {
+  color: var(--link-internal);
+  text-decoration: none;
+  border-bottom: 1px solid currentColor;
+}
+.markdown-body a.internal-link:hover {
+  text-decoration: underline;
+}
+.markdown-body a.internal-link-missing {
+  color: var(--text-muted);
+  border-bottom: 1px dashed currentColor;
+}
+.markdown-body blockquote.callout {
+  margin: 0.5em 0;
+  padding: 0.5em 1em;
+  border-left: 3px solid var(--callout-color, var(--accent));
+  background: var(--callout-bg);
+  border-radius: 0 6px 6px 0;
+}
+.markdown-body blockquote.callout > p:first-child {
+  margin-top: 0;
+}
+.markdown-body blockquote.callout > p:last-child {
+  margin-bottom: 0;
+}
+/* callout 类型色板：note/abstract/info/todo 蓝青系，tip/success 绿，warning 橙，danger 系红，example 紫，quote 灰 */
+.callout-note {
+  --callout-color: #448aff;
+}
+.callout-abstract,
+.callout-summary,
+.callout-tldr,
+.callout-info,
+.callout-todo {
+  --callout-color: #00b0ff;
+}
+.callout-tip,
+.callout-success,
+.callout-check,
+.callout-done {
+  --callout-color: #00b0a6;
+}
+.callout-question,
+.callout-help,
+.callout-faq {
+  --callout-color: #eb984e;
+}
+.callout-warning,
+.callout-caution {
+  --callout-color: #ff9500;
+}
+.callout-failure,
+.callout-fail,
+.callout-missing,
+.callout-danger,
+.callout-error,
+.callout-bug {
+  --callout-color: #ff4d4d;
+}
+.callout-important {
+  --callout-color: #ff6680;
+}
+.callout-example {
+  --callout-color: #a855f7;
+}
+.callout-quote,
+.callout-cite {
+  --callout-color: #808080;
+}
+
+/* ===== Form inputs ===== */
+input[type="text"],
+input[type="password"],
+input[type="url"],
+input[type="number"],
+textarea {
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  @apply rounded px-2 py-1.5 text-sm;
+  color: var(--text-primary);
+}
+input::placeholder, textarea::placeholder {
+  color: var(--input-placeholder);
+}
+input[type="text"]:focus,
+input[type="password"]:focus,
+input[type="url"]:focus,
+input[type="number"]:focus,
+textarea:focus {
+  @apply outline-none ring-1 ring-[var(--accent)];
+  border-color: var(--accent);
+}
+
+/* Number input: remove spinner */
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* ===== 思考过程折叠块等待动画 ===== */
+/* 折叠标题强调色扫光：accent 光带在整行高度内从左到右扫过（流式中思考进行时启用） */
+@keyframes thinking-sweep {
+  from { background-position: 220% 0; }
+  to { background-position: -120% 0; }
+}
+.thinking-sweep-bar {
+  position: absolute;
+  inset: 0;
+  border-radius: 3px;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 20%,
+    rgba(212, 175, 55, 0.3) 50%,
+    transparent 80%
+  );
+  background-size: 220% 100%;
+  animation: thinking-sweep 1.6s linear infinite;
+}
+

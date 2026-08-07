@@ -1,0 +1,837 @@
+/**
+ * 仓库文件管理面板（全仓库树）。
+ *
+ * 工作区左栏，树状展示仓库内全部文件夹与文件（跳过隐藏 `.` 开头目录与排除文件夹，
+ * 见 `.atelyx/config.json` 的 `excludeFolders`），支持展开折叠、排序下拉、
+ * 文件夹行右键新建（画布 / 笔记 / 文件夹，inline 输入框 Enter 创建，落该文件夹；
+ * 文件树空白处右键 = 落仓库根目录）、文件行右键重命名 / 删除（菜单内确认）。
+ *
+ * 交互：
+ * - 单击 `.atlx` → 打开画布；单击 `.md` → 打开笔记编辑器；`.md`/附件拖到画布 → 建节点
+ * - `.atlx` / `.md` 均可位于任意文件夹（无固定 画布/笔记/附件 目录）
+ *
+ * 分层：用 `vaultStore`（文件树/笔记 CRUD）+ `appStore`（画布 CRUD/切换）+ `canvasStore`（建节点），
+ * 不直调 service。canvas 相关的定位动作走 props 回调。
+ */
+import {
+  ArrowUpDown,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  FileText,
+  Folder,
+  FolderPlus,
+  LayoutDashboard,
+  Paperclip,
+  StickyNote,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useClampedMenuPosition } from "@/hooks/useClampedMenuPosition";
+import { useReactFlow } from "@xyflow/react";
+import { useAppStore } from "@/stores/appStore";
+import { useCanvasStore } from "@/stores/canvasStore";
+import { useChatPanelStore } from "@/stores/chatPanelStore";
+import { useSettingsStore } from "@/stores/settingsStore";
+import { useUiStateStore } from "@/stores/uiStateStore";
+import { useVaultStore } from "@/stores/vaultStore";
+import { VaultSwitcher } from "@/components/canvas/panels/VaultSwitcher";
+import { FileContextMenu } from "@/components/canvas/panels/FileContextMenu";
+import type { CanvasFileRow, FileExplorerSortKey, FileTreeNode } from "@/types";
+
+/** 拖拽负载 MIME，工作区 onDrop 据此识别面板拖来的文件。 */
+export const ATELYX_FILE_MIME = "application/x-atelyx-vault-file";
+
+/** 拖拽负载：标识来源文件类型 + 路径 + 显示名。 */
+export interface AtelyxFilePayload {
+  kind: "note" | "attachment";
+  /** 相对仓库根路径，如 `项目A/foo.md`（任意文件夹） */
+  file: string;
+  /** 文件名（含扩展名） */
+  name: string;
+  /** note 的显示标题（文件名去 .md）；attachment 不填。 */
+  title?: string;
+}
+
+interface PanelProps {
+  /** 单击画布行：打开画布并激活画布窗口（页面层包装 openCanvas + setActiveWindow）。 */
+  onOpenCanvasFile: (row: CanvasFileRow) => void;
+  /** 单击 `.md`：在工作区主编辑区打开笔记编辑器。 */
+  onOpenNoteForEdit: (file: string, title: string) => void;
+  /** 当前笔记窗口打开的文件（相对仓库根路径）；笔记区用它高亮当前打开的行（与画布区对称）。 */
+  openedNoteFile: string | null;
+  /** 右键 `.canvas` 行「转换为画布」：页面层执行转换并打开新画布。 */
+  onConvertWhiteboard: (file: string) => void;
+}
+
+/** 排序方式（目录/文件均含 mtime，故只提供文件名/编辑时间两类；作用于树每层）。 */
+const SORT_OPTIONS: { key: FileExplorerSortKey; label: string }[] = [
+  { key: "name-asc", label: "文件名 (A-Z)" },
+  { key: "name-desc", label: "文件名 (Z-A)" },
+  { key: "mtime-desc", label: "编辑时间 (从新到旧)" },
+  { key: "mtime-asc", label: "编辑时间 (从旧到新)" },
+];
+
+/** 默认排序（与仓库级配置缺省一致）。 */
+const DEFAULT_SORT_KEY: FileExplorerSortKey = "mtime-desc";
+
+/** 仓库级配置可能被外部手改，非法值回退默认。 */
+function isSortKey(v: FileExplorerSortKey | undefined): v is FileExplorerSortKey {
+  return SORT_OPTIONS.some((o) => o.key === v);
+}
+
+/** 从 `.md` 文件名还原显示标题：仅去 `.md` 后缀。 */
+function noteTitleFromName(name: string): string {
+  return name.replace(/\.md$/i, "");
+}
+
+/** 大写文件扩展名（不含英文句号），无扩展名返回空串。 */
+function upperExt(name: string): string {
+  const i = name.lastIndexOf(".");
+  return i > 0 ? name.slice(i + 1).toUpperCase() : "";
+}
+
+/** 名称切成「数字段 / 非数字段」交替序列（中文字符属非数字段）。 */
+const NATURAL_BLOCKS = /\d+|\D+/g;
+
+/** 数字段按数值比较（1000 进制：file2 < file10）；前导零多者排后（1 < 01）。 */
+function compareNumeric(a: string, b: string): number {
+  const ta = a.replace(/^0+/, "");
+  const tb = b.replace(/^0+/, "");
+  if (ta.length !== tb.length) return ta.length < tb.length ? -1 : 1;
+  if (ta === tb) return a.length - b.length;
+  return ta < tb ? -1 : 1;
+}
+
+/** 自然排序：数字段按数值（1000 进制）、非数字段按中文本地化比较。 */
+function compareNatural(a: string, b: string): number {
+  const pa = a.match(NATURAL_BLOCKS) ?? [];
+  const pb = b.match(NATURAL_BLOCKS) ?? [];
+  for (let i = 0; i < Math.min(pa.length, pb.length); i++) {
+    const sa = pa[i];
+    const sb = pb[i];
+    const na = /^\d+$/.test(sa);
+    const nb = /^\d+$/.test(sb);
+    if (na && nb) {
+      const c = compareNumeric(sa, sb);
+      if (c !== 0) return c;
+    } else if (na !== nb) {
+      return na ? -1 : 1; // 数字段排前（"章2" < "章A"）
+    } else {
+      const c = sa.localeCompare(sb, "zh");
+      if (c !== 0) return c;
+    }
+  }
+  return pa.length - pb.length;
+}
+
+/** 递归收集树中全部文件夹路径（「展开/收起全部」用）。 */
+function collectDirPaths(nodes: FileTreeNode[]): string[] {
+  const out: string[] = [];
+  for (const n of nodes) {
+    if (n.isDir) {
+      out.push(n.path);
+      out.push(...collectDirPaths(n.children));
+    }
+  }
+  return out;
+}
+
+/** 右键菜单目标。 */
+type MenuTarget =
+  | { kind: "folder"; dir: string }
+  | { kind: "canvas"; row: CanvasFileRow }
+  | { kind: "note"; file: string; name: string }
+  | { kind: "attachment"; file: string; name: string };
+
+/** inline 输入行（行内重命名 / 文件夹下新建）。 */
+type Editing =
+  | { kind: "canvas"; file: string; value: string }
+  | { kind: "note"; file: string; value: string }
+  | { kind: "attachment"; file: string; value: string }
+  | { kind: "creating"; dir: string; type: "canvas" | "note" | "folder"; value: string };
+
+export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedNoteFile, onConvertWhiteboard }: PanelProps) {
+  const tree = useVaultStore((s) => s.tree);
+  const loadFiles = useVaultStore((s) => s.loadFiles);
+  const createNote = useVaultStore((s) => s.createNote);
+  const renameNote = useVaultStore((s) => s.renameNote);
+  const deleteNote = useVaultStore((s) => s.deleteNote);
+  const renameAttachment = useVaultStore((s) => s.renameAttachment);
+  const deleteAttachment = useVaultStore((s) => s.deleteAttachment);
+  const createFolder = useVaultStore((s) => s.createFolder);
+  const moveNote = useVaultStore((s) => s.moveNote);
+  const moveAttachment = useVaultStore((s) => s.moveAttachment);
+  // 系统提示词标记（独立落盘 .atelyx/prompt-notes.json）：右键菜单显示注册/注销状态
+  const promptFiles = useSettingsStore((s) => s.promptNotes);
+  const togglePromptNote = useSettingsStore((s) => s.togglePromptNote);
+
+  const canvases = useAppStore((s) => s.canvases);
+  const currentCanvasFile = useAppStore((s) => s.currentCanvasFile);
+  const createCanvas = useAppStore((s) => s.createCanvas);
+  const renameCanvas = useAppStore((s) => s.renameCanvas);
+  const deleteCanvas = useAppStore((s) => s.deleteCanvas);
+  const moveCanvas = useAppStore((s) => s.moveCanvas);
+
+  // 展开集合（初始空 = 默认全部折叠：进入仓库只显示顶层文件夹；点文件夹展开）。
+  // 展开状态仓库级持久化（uiStateStore → .atelyx/ui-state.json），进入仓库自动恢复上次展开情况
+  const expanded = useUiStateStore((s) => s.fileExplorerExpanded);
+  const toggleExpanded = useUiStateStore((s) => s.toggleExpanded);
+  const toggleExpandAll = useUiStateStore((s) => s.toggleExpandAll);
+  // 「展开/收起全部」：收集当前树全部文件夹路径；全部展开时按钮切换为收起
+  const dirPaths = useMemo(() => collectDirPaths(tree), [tree]);
+  const allExpanded = dirPaths.length > 0 && dirPaths.every((p) => expanded.has(p));
+  // 排序方式下拉气泡（图标按钮触发）
+  const [sortMenu, setSortMenu] = useState<{ x: number; y: number } | null>(null);
+
+  // ===== pointer 模拟拖拽（HTML5 DnD 在 WebView2 不可靠，弃用）=====
+  const { screenToFlowPosition } = useReactFlow();
+  const addTextNoteFromVault = useCanvasStore((s) => s.addTextNoteFromVault);
+  const addMediaFromVault = useCanvasStore((s) => s.addMediaFromVault);
+  interface DragSession {
+    kind: "note" | "attachment" | "canvas";
+    file: string;
+    name: string;
+    title?: string;
+    startX: number;
+    startY: number;
+    active: boolean;
+    x: number;
+    y: number;
+  }
+  const dragRef = useRef<DragSession | null>(null);
+  const [dragGhost, setDragGhost] = useState<{ kind: "note" | "attachment" | "canvas"; label: string; x: number; y: number } | null>(null);
+  /** 拖拽悬停的目标文件夹（data-dir 命中），高亮提示可放入；null = 无目标。 */
+  const [dropDir, setDropDir] = useState<string | null>(null);
+  const dropDirRef = useRef<string | null>(null);
+  const expandDirs = useUiStateStore((s) => s.expandDirs);
+
+  /** 拖拽松手在文件夹行上：移动文件到该文件夹（画布/笔记/附件按 kind 分派）。 */
+  const handleMoveFile = useCallback(
+    async (d: DragSession, dir: string) => {
+      try {
+        if (d.kind === "canvas") {
+          const row = canvases.find((c) => c.file === d.file);
+          if (row) {
+            const newFile = await moveCanvas(row, dir);
+            const newName = newFile.split("/").pop() ?? "";
+            if (newName !== d.name) setNotice(`「${d.name}」已存在，已重命名为「${newName}」`);
+          } else {
+            // 外部白板（.canvas）不在画布列表：走通用文件移动（对任意文件生效）
+            const newFile = await moveAttachment(d.file, dir);
+            const newName = newFile.split("/").pop() ?? "";
+            if (newName !== d.name) setNotice(`「${d.name}」已存在，已重命名为「${newName}」`);
+          }
+        } else if (d.kind === "note") {
+          const newFile = await moveNote(d.file, dir);
+          const newName = newFile.split("/").pop() ?? "";
+          if (newName !== d.name) setNotice(`「${d.name}」已存在，已重命名为「${newName}」`);
+        } else {
+          const newFile = await moveAttachment(d.file, dir);
+          const newName = newFile.split("/").pop() ?? "";
+          if (newName !== d.name) setNotice(`「${d.name}」已存在，已重命名为「${newName}」`);
+        }
+        // 移动成功：展开目标文件夹及其祖先让文件可见
+        const parts = dir.split("/").filter(Boolean);
+        let acc = "";
+        const dirs: string[] = [];
+        for (const p of parts) {
+          acc = acc ? `${acc}/${p}` : p;
+          dirs.push(acc);
+        }
+        expandDirs(dirs);
+      } catch (err) {
+        console.error("移动文件失败", err);
+        setNotice("移动文件失败，请重试");
+      }
+    },
+    [canvases, moveCanvas, moveNote, moveAttachment, expandDirs],
+  );
+
+  // 全局 pointermove/up：位移超 5px 进入拖拽（显示幽灵）；松手在文件夹行 = 移动文件，落点在 .react-flow 内 = 建节点
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const dist = Math.hypot(e.clientX - d.startX, e.clientY - d.startY);
+      if (d.active || dist > 5) {
+        // 位置变化超 2px 才 setState（pointermove 高频触发，节流避免每帧重渲染整个面板）
+        const moved = !d.active || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 2;
+        dragRef.current = { ...d, active: true, x: e.clientX, y: e.clientY };
+        if (moved) setDragGhost({ kind: d.kind, label: d.title ?? d.name, x: e.clientX, y: e.clientY });
+        // 拖拽悬停目标文件夹：高亮可放入（变化才 setState）；文件行（data-file）内部不视为目标（防误判根目录）
+        const hit = document.elementFromPoint(e.clientX, e.clientY);
+        const dirEl = hit?.closest<HTMLElement>("[data-dir]");
+        const dir = dirEl && !hit?.closest<HTMLElement>("[data-file]") ? (dirEl.dataset.dir ?? "") : null;
+        if (dir !== dropDirRef.current) {
+          dropDirRef.current = dir;
+          setDropDir(dir);
+        }
+        // 平时行上不显示 grab 光标（避免误以为可点），拖拽激活时才显示「抓住」
+        document.body.style.cursor = "grabbing";
+      }
+    };
+    const onUp = (e: PointerEvent) => {
+      const d = dragRef.current;
+      dragRef.current = null;
+      setDragGhost(null);
+      dropDirRef.current = null;
+      setDropDir(null);
+      document.body.style.cursor = "";
+      if (!d?.active) return;
+      const target = document.elementFromPoint(e.clientX, e.clientY);
+      // 拖入右侧 AI 对话面板输入框（data-chat-input）：笔记 → @引用 入队（AiChatPanel 消费后显示 @标签）
+      if (target?.closest<HTMLElement>("[data-chat-input]")) {
+        if (d.kind === "note") {
+          useChatPanelStore
+            .getState()
+            .queueMention({ file: d.file, label: d.title ?? d.name.replace(/\.md$/i, "") });
+        }
+        return;
+      }
+      // 优先：落到文件夹行/树空白（data-dir，含根目录 data-dir=""）→ 移动文件；文件行内部不是目标
+      const dirEl = target?.closest<HTMLElement>("[data-dir]");
+      const inFileRow = !!target?.closest<HTMLElement>("[data-file]");
+      if (dirEl && !inFileRow) {
+        void handleMoveFile(d, dirEl.dataset.dir ?? "");
+        return;
+      }
+      if (target?.closest(".react-flow")) {
+        // 画布行（kind="canvas"）只支持拖到文件夹移动，不支持拖到画布建节点（media 节点会按附件误读 JSON）
+        if (d.kind === "canvas") return;
+        const pos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+        if (d.kind === "note") void addTextNoteFromVault(d.file, d.title ?? d.name, pos, true);
+        else void addMediaFromVault(d.file, d.name, pos, true);
+      }
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    return () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.body.style.cursor = "";
+    };
+  }, [screenToFlowPosition, addTextNoteFromVault, addMediaFromVault, handleMoveFile]);
+
+  /** 行按下（左键）记录潜在拖拽会话（画布/笔记/附件均可拖：移动 or 拖到画布建节点）；位移超阈值才真正拖拽。 */
+  const startPotentialDrag = (e: React.PointerEvent, node: FileTreeNode) => {
+    if (e.button !== 0 || node.isDir) return;
+    e.preventDefault(); // 阻止文本选择干扰
+    // 外部白板（.canvas）与 .atlx 同归 canvas 类：拖到画布不建节点（只支持移动到文件夹）
+    const isCanvasFile =
+      node.name.toLowerCase().endsWith(".atlx") || node.name.toLowerCase().endsWith(".canvas");
+    const kind = isCanvasFile
+      ? "canvas"
+      : node.name.toLowerCase().endsWith(".md")
+        ? "note"
+        : "attachment";
+    dragRef.current = {
+      kind,
+      file: node.path,
+      name: node.name,
+      title: kind === "note" ? noteTitleFromName(node.name) : undefined,
+      startX: e.clientX,
+      startY: e.clientY,
+      active: false,
+      x: e.clientX,
+      y: e.clientY,
+    };
+  };
+
+  // 重名自动加序号的提醒（3s 后自动消失）
+  const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 3000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  // 排序方式存仓库级配置（.atelyx/config.json），跨会话/跨仓库各自独立
+  const vaultSort = useSettingsStore((s) => s.vaultConfig?.fileExplorerSort);
+  const setFileExplorerSort = useSettingsStore((s) => s.setFileExplorerSort);
+  const sortKey = isSortKey(vaultSort) ? vaultSort : DEFAULT_SORT_KEY;
+
+  useEffect(() => {
+    void loadFiles();
+  }, [loadFiles]);
+
+  // 右键菜单
+  const [menu, setMenu] = useState<{ x: number; y: number; target: MenuTarget } | null>(null);
+  // inline 输入（行内重命名 / 新建草稿）
+  const [editing, setEditing] = useState<Editing | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
+
+  /** 提交 inline 输入（新建/重命名），返回是否继续保留编辑态。 */
+  const commitEditing = async (e: Editing) => {
+    const v = e.value.trim();
+    setEditing(null);
+    if (!v) return;
+    try {
+      if (e.kind === "canvas") {
+        const actual = await renameCanvas(
+          canvases.find((c) => c.file === e.file)!,
+          v,
+        );
+        if (actual !== v) setNotice(`「${v}」已存在，已重命名为「${actual}」`);
+      } else if (e.kind === "note") {
+        const newFile = await renameNote(e.file, v);
+        const actualTitle = noteTitleFromName(newFile.split("/").pop() ?? newFile);
+        if (actualTitle !== v) setNotice(`「${v}」已存在，已重命名为「${actualTitle}」`);
+      } else if (e.kind === "attachment") {
+        await renameAttachment(e.file, v);
+      } else if (e.kind === "creating") {
+        if (e.type === "canvas") {
+          const { id, file, title } = await createCanvas(v, e.dir);
+          if (file && id) {
+            onOpenCanvasFile({ id, file, title, updatedAt: 0 });
+          }
+          if (title !== v) setNotice(`「${v}」已存在，已创建为「${title}」`);
+        } else if (e.type === "note") {
+          const file = await createNote(v, e.dir);
+          const actualTitle = noteTitleFromName(file.split("/").pop() ?? file);
+          if (actualTitle !== v) setNotice(`「${v}」已存在，已创建为「${actualTitle}」`);
+        } else {
+          const dirPath = e.dir ? `${e.dir}/${v}` : v;
+          await createFolder(dirPath);
+        }
+      }
+    } catch (err) {
+      console.error("操作失败", err);
+      setNotice("操作失败，请重试");
+    }
+  };
+
+  /** 画布行：从 canvases 列表按 file 找（扫描失败/损坏 .atlx 不在列表，无 row 不提供画布操作）。 */
+  const canvasRowOf = (path: string): CanvasFileRow | undefined =>
+    canvases.find((c) => c.file === path);
+
+  /** 每层排序：文件夹固定按名称 A-Z（自然排序），文件按 sortKey（名称排序也用自然排序）。 */
+  const sortChildren = (children: FileTreeNode[]): FileTreeNode[] => {
+    const dirs = children.filter((c) => c.isDir);
+    const files = children.filter((c) => !c.isDir);
+    const byName = (asc: boolean) => (a: FileTreeNode, b: FileTreeNode) =>
+      asc ? compareNatural(a.name, b.name) : compareNatural(b.name, a.name);
+    const byMtime = (asc: boolean) => (a: FileTreeNode, b: FileTreeNode) =>
+      asc ? a.updatedAt - b.updatedAt : b.updatedAt - a.updatedAt;
+    const dirCmp = (a: FileTreeNode, b: FileTreeNode) => compareNatural(a.name, b.name);
+    const fileCmp = sortKey.startsWith("name") ? byName(sortKey.endsWith("asc")) : byMtime(sortKey.endsWith("asc"));
+    return [...dirs.sort(dirCmp), ...files.sort(fileCmp)];
+  };
+
+  const renderTree = (nodes: FileTreeNode[], depth: number, parentDir: string): ReactNode => {
+    // 新建草稿输入行：渲染在目标文件夹 children 顶部（根目录 = 树顶部）
+    const creatingHere =
+      editing?.kind === "creating" && editing.dir === parentDir ? (
+        <li key="__creating__" className="px-2 pl-6 py-1 flex items-center gap-1">
+          <input
+            ref={inputRef}
+            value={editing.value}
+            onChange={(e) => setEditing({ ...editing, value: e.target.value })}
+            onBlur={() => void commitEditing(editing)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void commitEditing(editing);
+              if (e.key === "Escape") setEditing(null);
+            }}
+            placeholder={editing.type === "canvas" ? "画布名称" : editing.type === "note" ? "笔记名称" : "文件夹名称"}
+            className="flex-1 bg-transparent border-b border-[var(--accent)] outline-none text-xs"
+            style={{ color: "var(--text-primary)" }}
+          />
+        </li>
+      ) : null;
+
+    return (
+      <>
+        {creatingHere}
+        {nodes.map((node) => {
+          const indent = { paddingLeft: 6 + depth * 12 };
+          if (node.isDir) {
+            const isExpanded = expanded.has(node.path);
+            return (
+              <li key={node.path}>
+                <div
+                  className="flex items-center gap-1 px-2 py-1 min-h-8 select-none cursor-pointer hover:bg-[var(--hover)]"
+                  style={{
+                    ...indent,
+                    // 拖拽悬停目标高亮（金色底），提示可放入移动
+                    background: dropDir === node.path ? "rgba(212,175,55,0.25)" : undefined,
+                  }}
+                  data-dir={node.path}
+                  onClick={() => toggleExpanded(node.path)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setMenu({ x: e.clientX, y: e.clientY, target: { kind: "folder", dir: node.path } });
+                  }}
+                >
+                  <span className="flex items-center">{isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
+                  <Folder size={14} style={{ color: "var(--text-muted)" }} />
+                  <span className="flex-1 truncate text-xs" style={{ color: "var(--text-primary)" }}>{node.name}</span>
+                </div>
+                {isExpanded && (
+                  <ul>{renderTree(sortChildren(node.children), depth + 1, node.path)}</ul>
+                )}
+              </li>
+            );
+          }
+          // 文件行
+          const isCanvas = node.name.toLowerCase().endsWith(".atlx");
+          const isWhiteboard = node.name.toLowerCase().endsWith(".canvas");
+          const isNote = node.name.toLowerCase().endsWith(".md");
+          const row = isCanvas ? canvasRowOf(node.path) : undefined;
+          const active =
+            (isCanvas && row && currentCanvasFile === row.file) ||
+            (isWhiteboard && currentCanvasFile === node.path) ||
+            (isNote && openedNoteFile === node.path);
+          const editingThis: Editing | null =
+            editing?.kind === "canvas" && editing.file === node.path
+              ? editing
+              : editing?.kind === "note" && editing.file === node.path
+                ? editing
+                : editing?.kind === "attachment" && editing.file === node.path
+                  ? editing
+                  : null;
+          return (
+            <li key={node.path}>
+              {editingThis ? (
+                <div className="flex items-center px-2 py-1 min-h-8" style={indent}>
+                  <input
+                    ref={inputRef}
+                    value={editingThis.value}
+                    onChange={(e) => setEditing({ ...editingThis, value: e.target.value })}
+                    onBlur={() => void commitEditing(editingThis)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void commitEditing(editingThis);
+                      if (e.key === "Escape") setEditing(null);
+                    }}
+                    className="flex-1 bg-transparent border-b border-[var(--accent)] outline-none text-xs"
+                    style={{ color: "var(--text-primary)" }}
+                  />
+                </div>
+              ) : (
+                <div
+                  className="flex items-center gap-1 px-2 py-1 min-h-8 cursor-default hover:bg-[var(--hover)]"
+                  style={{
+                    ...indent,
+                    background: active ? "rgba(212,175,55,0.2)" : undefined,
+                  }}
+                  data-file={node.path}
+                  onPointerDown={(e) => startPotentialDrag(e, node)}
+                  onClick={() => {
+                    if (isCanvas && row) onOpenCanvasFile(row);
+                    else if (isWhiteboard) {
+                      // 外部白板：合成行打开（id = 路径 = 运行时身份，只读查看）
+                      onOpenCanvasFile({
+                        id: node.path,
+                        title: node.name.replace(/\.canvas$/i, ""),
+                        file: node.path,
+                        updatedAt: node.updatedAt,
+                      });
+                    } else if (isNote) onOpenNoteForEdit(node.path, noteTitleFromName(node.name));
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (isCanvas && row) {
+                      setMenu({ x: e.clientX, y: e.clientY, target: { kind: "canvas", row } });
+                    } else if (isNote) {
+                      setMenu({ x: e.clientX, y: e.clientY, target: { kind: "note", file: node.path, name: node.name } });
+                    } else {
+                      setMenu({ x: e.clientX, y: e.clientY, target: { kind: "attachment", file: node.path, name: node.name } });
+                    }
+                  }}
+                >
+                  {isCanvas ? (
+                    <FileText size={14} style={{ color: "var(--text-muted)" }} />
+                  ) : isWhiteboard ? (
+                    <LayoutDashboard size={14} style={{ color: "var(--text-muted)" }} />
+                  ) : isNote ? (
+                    <StickyNote size={14} style={{ color: "var(--text-muted)" }} />
+                  ) : (
+                    <Paperclip size={14} style={{ color: "var(--text-muted)" }} />
+                  )}
+                  <span className="flex-1 truncate text-xs" style={{ color: "var(--text-primary)" }}>{node.name}</span>
+                  <span
+                    className="ml-auto pl-2 text-[10px] font-bold flex-shrink-0"
+                    style={{ color: "var(--text-muted)", opacity: 0.6 }}
+                  >
+                    {isCanvas ? "ATLX" : isWhiteboard ? "CANVAS" : isNote ? "MD" : upperExt(node.name)}
+                  </span>
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </>
+    );
+  };
+
+  return (
+    <div
+      className="h-full flex flex-col text-sm overflow-hidden"
+      style={{ background: "var(--bg-secondary)", color: "var(--text-primary)" }}
+    >
+      {/* 工具条：排序方式下拉气泡 + 展开/收起全部（图标按钮，切换） */}
+      <div className="px-2 py-1.5 border-b flex items-center gap-1" style={{ borderColor: "var(--border)" }}>
+        <button
+          onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            setSortMenu({ x: rect.right, y: rect.bottom });
+          }}
+          className="flex items-center justify-center w-7 h-7 rounded hover:bg-[var(--hover)]"
+          style={{ color: "var(--text-muted)" }}
+          title="排序方式"
+        >
+          <ArrowUpDown size={14} />
+        </button>
+        <button
+          onClick={() => {
+            if (dirPaths.length === 0) return;
+            toggleExpandAll(dirPaths);
+          }}
+          className="flex items-center justify-center w-7 h-7 rounded hover:bg-[var(--hover)]"
+          style={{ color: "var(--text-muted)" }}
+          title={allExpanded ? "收起全部文件夹" : "展开全部文件夹"}
+        >
+          {allExpanded ? <ChevronsDownUp size={14} /> : <ChevronsUpDown size={14} />}
+        </button>
+        {sortMenu && (
+          <SortMenu
+            x={sortMenu.x}
+            y={sortMenu.y}
+            value={sortKey}
+            onChange={(k) => {
+              void setFileExplorerSort(k);
+              setSortMenu(null);
+            }}
+            onClose={() => setSortMenu(null)}
+          />
+        )}
+      </div>
+
+      {/* 重名自动加序号提醒 */}
+      {notice && (
+        <div
+          className="px-3 py-1 text-xs border-b"
+          style={{ color: "#f59e0b", borderColor: "var(--border)" }}
+        >
+          {notice}
+        </div>
+      )}
+
+      {/* 文件树空白处右键 = 在仓库根目录新建（画布/笔记/文件夹，inline 输入，Enter 创建） */}
+      <div
+        className="flex-1 overflow-auto py-1"
+        data-dir=""
+        style={{ background: dropDir === "" ? "rgba(212,175,55,0.25)" : undefined }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setMenu({ x: e.clientX, y: e.clientY, target: { kind: "folder", dir: "" } });
+        }}
+      >
+        <ul>{renderTree(sortChildren(tree), 0, "")}</ul>
+      </div>
+
+      {/* 面板底部：仓库切换条（点击上拉已添加仓库菜单 + 管理仓库入口） */}
+      <div className="flex-shrink-0 border-t" style={{ borderColor: "var(--border)" }}>
+        <VaultSwitcher />
+      </div>
+
+      {/* 拖拽幽灵（pointer 模拟拖拽时跟随鼠标） */}
+      {dragGhost && (
+        <div
+          className="fixed z-[9999] pointer-events-none text-xs px-2 py-1 rounded shadow-lg"
+          style={{
+            left: dragGhost.x + 10,
+            top: dragGhost.y + 10,
+            background: "var(--bg-tertiary)",
+            color: "var(--text-primary)",
+            border: "1px solid var(--border)",
+          }}
+        >
+          {dragGhost.label}
+        </div>
+      )}
+
+      {/* 文件夹右键菜单：新建画布 / 新建笔记 / 新建文件夹（inline 输入，Enter 创建） */}
+      {(() => {
+        const folderTarget = menu?.target.kind === "folder" ? menu.target : null;
+        if (!folderTarget) return null;
+        return (
+          <FolderCreateMenu
+            x={menu!.x}
+            y={menu!.y}
+            onCreate={(type) => {
+              setEditing({ kind: "creating", dir: folderTarget.dir, type, value: "" });
+              setMenu(null);
+            }}
+            onClose={() => setMenu(null)}
+          />
+        );
+      })()}
+
+      {/* 文件行右键菜单：重命名 / 删除（菜单内确认） */}
+      {menu && menu.target.kind !== "folder" && (() => {
+        const t = menu.target;
+        return (
+          <FileContextMenu
+            x={menu.x}
+            y={menu.y}
+            onRename={() => {
+              if (t.kind === "canvas") setEditing({ kind: "canvas", file: t.row.file, value: t.row.title });
+              else if (t.kind === "note") setEditing({ kind: "note", file: t.file, value: noteTitleFromName(t.name) });
+              else if (t.kind === "attachment") setEditing({ kind: "attachment", file: t.file, value: t.name });
+              setMenu(null);
+            }}
+            onDelete={() => {
+              if (t.kind === "canvas") void deleteCanvas(t.row).catch(() => setNotice("删除画布失败，请重试"));
+              else if (t.kind === "note") void deleteNote(t.file).catch(() => setNotice("删除笔记失败，请重试"));
+              else if (t.kind === "attachment") void deleteAttachment(t.file).catch(() => setNotice("删除附件失败，请重试"));
+              setMenu(null);
+            }}
+            onTogglePrompt={t.kind === "note" ? () => void togglePromptNote(t.file) : undefined}
+            promptMarked={t.kind === "note" ? promptFiles.includes(t.file) : undefined}
+            onConvert={
+              t.kind === "attachment" && t.name.toLowerCase().endsWith(".canvas")
+                ? () => onConvertWhiteboard(t.file)
+                : undefined
+            }
+            onClose={() => setMenu(null)}
+          />
+        );
+      })()}
+    </div>
+  );
+}
+
+/** 文件夹右键菜单：新建画布 / 新建笔记 / 新建文件夹。 */
+function FolderCreateMenu({
+  x,
+  y,
+  onCreate,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  onCreate: (type: "canvas" | "note" | "folder") => void;
+  onClose: () => void;
+}) {
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  // 挂载后按菜单实测尺寸钳制到视口内（防靠近窗口右/下边缘被截断）
+  const { ref: menuRef, pos } = useClampedMenuPosition(x, y);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCloseRef.current();
+    };
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) onCloseRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onDown);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onDown);
+    };
+    // menuRef 为稳定引用（hook 内 useRef），加入依赖仅为消除 exhaustive-deps，不会重挂监听
+  }, [menuRef]);
+
+  const itemClass =
+    "w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)] inline-flex items-center gap-1.5";
+
+  return (
+    <div
+      ref={menuRef}
+      className="fixed border rounded shadow-lg py-1 z-50 w-44"
+      style={{
+        left: pos.x,
+        top: pos.y,
+        background: "var(--bg-secondary)",
+        borderColor: "var(--border)",
+        color: "var(--text-primary)",
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <button className={itemClass} onClick={() => onCreate("canvas")}>
+        <FileText size={14} /> 新建画布
+      </button>
+      <button className={itemClass} onClick={() => onCreate("note")}>
+        <StickyNote size={14} /> 新建笔记
+      </button>
+      <button className={itemClass} onClick={() => onCreate("folder")}>
+        <FolderPlus size={14} /> 新建文件夹
+      </button>
+    </div>
+  );
+}
+
+/** 排序方式下拉气泡（图标按钮触发；点击外部/Esc 关闭，当前项打勾）。 */
+function SortMenu({
+  x,
+  y,
+  value,
+  onChange,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  value: FileExplorerSortKey;
+  onChange: (key: FileExplorerSortKey) => void;
+  onClose: () => void;
+}) {
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  // 挂载后按菜单实测尺寸钳制到视口内（防靠近窗口右/下边缘被截断）
+  const { ref: menuRef, pos } = useClampedMenuPosition(x, y);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCloseRef.current();
+    };
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) onCloseRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onDown);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onDown);
+    };
+    // menuRef 为稳定引用（hook 内 useRef），加入依赖仅为消除 exhaustive-deps，不会重挂监听
+  }, [menuRef]);
+
+  return (
+    <div
+      ref={menuRef}
+      className="fixed border rounded shadow-lg py-1 z-50 w-44"
+      style={{
+        left: pos.x,
+        top: pos.y,
+        background: "var(--bg-secondary)",
+        borderColor: "var(--border)",
+        color: "var(--text-primary)",
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      {SORT_OPTIONS.map((o) => (
+        <button
+          key={o.key}
+          onClick={() => onChange(o.key)}
+          className="w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)] inline-flex items-center gap-1.5"
+          style={{ color: "var(--text-primary)" }}
+        >
+          <span className="flex-1">{o.label}</span>
+          {value === o.key && <Check size={12} style={{ color: "var(--accent)" }} />}
+        </button>
+      ))}
+    </div>
+  );
+}
