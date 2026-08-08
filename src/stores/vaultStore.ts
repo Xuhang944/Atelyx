@@ -136,6 +136,56 @@ async function applyAttachmentFileChange(oldFile: string, newFile: string): Prom
   }
 }
 
+/** renameFolder/moveFolder 共用核心：pendingFolderRename 记录 + 服务调用 + 自写抑制 + 画布路径/节点引用同步 + 树刷新。 */
+async function applyFolderFileChange(oldDir: string, newDir: string): Promise<void> {
+  pendingFolderRename = { oldDir, newDir };
+  try {
+    await renameFolderSvc(oldDir, newDir);
+    // 立即记录本次重命名/移动（跨渲染保留）：目录已移动，后续任何渲染间隙的窗口联动
+    // 据此把打开的笔记切到新文件，而非误判删除关闭（放 loadFiles/loadList 之后
+    // 会留出 IPC await 间隙，联动 effect 先跑导致笔记窗口被误关）
+    lastFolderRename = { oldDir, newDir };
+    // rename_folder 会扫描更新所有 .atlx 的目录前缀引用（写 .atlx），标记自写抑制 watcher 误报
+    markSelfSave();
+    // 当前画布文件若位于该目录下：先同步路径（旧路径已不存在），再同步乐观锁基准
+    // （磁盘 .atlx 已被 rename_folder 更新 updatedAt，防下次自动保存被「已被外部修改」拒绝）
+    const canvasFile = useCanvasStore.getState().canvasFile;
+    if (canvasFile?.startsWith(`${oldDir}/`)) {
+      useCanvasStore.setState({ canvasFile: remapDirPrefix(canvasFile, oldDir, newDir) });
+      useAppStore.getState().renameCurrentCanvasFile(oldDir, newDir);
+    }
+    await useCanvasStore.getState().syncBaseUpdatedAt();
+    // 同步当前画布内位于该目录下的节点引用（磁盘已被 rename_folder 更新，此处同步内存
+    // 防下次保存把旧路径回写覆盖；同步后 watcher 旧路径事件按前缀匹配不到节点，天然不再误标缺失）
+    const canvasState = useCanvasStore.getState();
+    for (const n of canvasState.nodes) {
+      const d = n.data as { file?: string; systemPromptFile?: string };
+      if (
+        (n.type === "text" || n.type === "media") &&
+        d.file &&
+        d.file.startsWith(`${oldDir}/`)
+      ) {
+        canvasState.updateNodeData(n.id, { file: remapDirPrefix(d.file, oldDir, newDir) });
+      } else if (
+        n.type === "conversation" &&
+        d.systemPromptFile &&
+        d.systemPromptFile.startsWith(`${oldDir}/`)
+      ) {
+        canvasState.updateNodeData(n.id, {
+          systemPromptFile: remapDirPrefix(d.systemPromptFile, oldDir, newDir),
+        });
+      }
+    }
+    // 系统提示词标记 / 展开集合 / 上次打开文件：前缀同步（防标记与恢复指向失效路径）
+    await useSettingsStore.getState().remapPromptNotesByDir(oldDir, newDir);
+    useUiStateStore.getState().renameByDir(oldDir, newDir);
+    await useVaultStore.getState().loadFiles();
+    await useAppStore.getState().loadList();
+  } finally {
+    pendingFolderRename = null;
+  }
+}
+
 /** 递归提取树中全部 `.md` 笔记（系统提示词下拉 / 笔记存在性检查共用）。 */
 function collectMdNotes(nodes: FileTreeNode[]): { name: string; file: string }[] {
   const out: { name: string; file: string }[] = [];
@@ -227,6 +277,12 @@ interface VaultFileState {
    * 提示词标记/UI 状态，并记录 `lastFolderRename` 供窗口联动切到新路径。
    */
   renameFolder: (oldDir: string, newTitle: string) => Promise<string>;
+  /**
+   * 移动文件夹到目标目录（保持目录名，目标同名自动加序号，排除自身）。返回实际落盘的目录路径。
+   * 非法嵌套（移到自身/自身后代）静默 no-op 返回原路径；移到自身祖先 = 原地 no-op。
+   * 引用/状态联动同 `renameFolder`（共用 `rename_folder` 服务）。
+   */
+  moveFolder: (oldDir: string, targetDir: string) => Promise<string>;
   /**
    * 画布内文本节点（无 file）右键「保存为笔记」：落根目录生成 `.md`（净化 + 同名去重）并写入正文，
    * 节点 data.file 置为生成路径转为笔记节点（后续编辑写回 `.md`）。已是笔记节点则 no-op。
@@ -367,53 +423,23 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     );
     const newDir = oldParent ? `${oldParent}/${newName}` : newName;
     if (newDir === oldDir) return newDir;
-    pendingFolderRename = { oldDir, newDir };
-    try {
-      await renameFolderSvc(oldDir, newDir);
-      // 立即记录本次重命名（跨渲染保留）：目录已移动，后续任何渲染间隙的窗口联动
-      // 据此把打开的笔记切到新文件，而非误判删除关闭（放 loadFiles/loadList 之后
-      // 会留出 IPC await 间隙，联动 effect 先跑导致笔记窗口被误关）
-      lastFolderRename = { oldDir, newDir };
-      // rename_folder 会扫描更新所有 .atlx 的目录前缀引用（写 .atlx），标记自写抑制 watcher 误报
-      markSelfSave();
-      // 当前画布文件若位于该目录下：先同步路径（旧路径已不存在），再同步乐观锁基准
-      // （磁盘 .atlx 已被 rename_folder 更新 updatedAt，防下次自动保存被「已被外部修改」拒绝）
-      const canvasFile = useCanvasStore.getState().canvasFile;
-      if (canvasFile?.startsWith(`${oldDir}/`)) {
-        useCanvasStore.setState({ canvasFile: remapDirPrefix(canvasFile, oldDir, newDir) });
-        useAppStore.getState().renameCurrentCanvasFile(oldDir, newDir);
-      }
-      await useCanvasStore.getState().syncBaseUpdatedAt();
-      // 同步当前画布内位于该目录下的节点引用（磁盘已被 rename_folder 更新，此处同步内存
-      // 防下次保存把旧路径回写覆盖；同步后 watcher 旧路径事件按前缀匹配不到节点，天然不再误标缺失）
-      const canvasState = useCanvasStore.getState();
-      for (const n of canvasState.nodes) {
-        const d = n.data as { file?: string; systemPromptFile?: string };
-        if (
-          (n.type === "text" || n.type === "media") &&
-          d.file &&
-          d.file.startsWith(`${oldDir}/`)
-        ) {
-          canvasState.updateNodeData(n.id, { file: remapDirPrefix(d.file, oldDir, newDir) });
-        } else if (
-          n.type === "conversation" &&
-          d.systemPromptFile &&
-          d.systemPromptFile.startsWith(`${oldDir}/`)
-        ) {
-          canvasState.updateNodeData(n.id, {
-            systemPromptFile: remapDirPrefix(d.systemPromptFile, oldDir, newDir),
-          });
-        }
-      }
-      // 系统提示词标记 / 展开集合 / 上次打开文件：前缀同步（防标记与恢复指向失效路径）
-      await useSettingsStore.getState().remapPromptNotesByDir(oldDir, newDir);
-      useUiStateStore.getState().renameByDir(oldDir, newDir);
-      await get().loadFiles();
-      await useAppStore.getState().loadList();
-      return newDir;
-    } finally {
-      pendingFolderRename = null;
-    }
+    await applyFolderFileChange(oldDir, newDir);
+    return newDir;
+  },
+
+  moveFolder: async (oldDir, targetDir) => {
+    // 保持目录名，目标文件夹同名自动加序号（排除自身 = 同目录移动 no-op）
+    const name = oldDir.split("/").pop() ?? oldDir;
+    const existing = siblingDirNames(targetDir).filter(
+      (n) => (targetDir ? `${targetDir}/${n}` : n) !== oldDir,
+    );
+    const safe = dedupeFilename(name, existing);
+    const newDir = targetDir ? `${targetDir}/${safe}` : safe;
+    if (newDir === oldDir) return oldDir;
+    // 非法嵌套（移到自身/自身后代）静默 no-op：目录移进自己内部会让自己消失（各平台行为不一致）
+    if (targetDir === oldDir || targetDir.startsWith(`${oldDir}/`)) return oldDir;
+    await applyFolderFileChange(oldDir, newDir);
+    return newDir;
   },
 
   saveTextNodeAsNote: async (nodeId) => {

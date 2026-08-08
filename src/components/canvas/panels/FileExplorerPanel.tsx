@@ -170,6 +170,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
   const renameFolder = useVaultStore((s) => s.renameFolder);
   const moveNote = useVaultStore((s) => s.moveNote);
   const moveAttachment = useVaultStore((s) => s.moveAttachment);
+  const moveFolder = useVaultStore((s) => s.moveFolder);
   // 系统提示词标记（独立落盘 .atelyx/prompt-notes.json）：右键菜单显示注册/注销状态
   const promptFiles = useSettingsStore((s) => s.promptNotes);
   const togglePromptNote = useSettingsStore((s) => s.togglePromptNote);
@@ -197,7 +198,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
   const addTextNoteFromVault = useCanvasStore((s) => s.addTextNoteFromVault);
   const addMediaFromVault = useCanvasStore((s) => s.addMediaFromVault);
   interface DragSession {
-    kind: "note" | "attachment" | "canvas";
+    kind: "note" | "attachment" | "canvas" | "folder";
     file: string;
     name: string;
     title?: string;
@@ -208,17 +209,24 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
     y: number;
   }
   const dragRef = useRef<DragSession | null>(null);
-  const [dragGhost, setDragGhost] = useState<{ kind: "note" | "attachment" | "canvas"; label: string; x: number; y: number } | null>(null);
+  const [dragGhost, setDragGhost] = useState<{ kind: "note" | "attachment" | "canvas" | "folder"; label: string; x: number; y: number } | null>(null);
   /** 拖拽悬停的目标文件夹（data-dir 命中），高亮提示可放入；null = 无目标。 */
   const [dropDir, setDropDir] = useState<string | null>(null);
   const dropDirRef = useRef<string | null>(null);
+  /** 拖拽悬停可交互目标的提示文本（幽灵下方显示）；null = 无目标。 */
+  const [dragHint, setDragHint] = useState<string | null>(null);
+  const dragHintRef = useRef<string | null>(null);
   const expandDirs = useUiStateStore((s) => s.expandDirs);
 
-  /** 拖拽松手在文件夹行上：移动文件到该文件夹（画布/笔记/附件按 kind 分派）。 */
+  /** 拖拽松手在文件夹行上：移动文件/文件夹到该目录（画布/笔记/附件/文件夹按 kind 分派）。 */
   const handleMoveFile = useCallback(
     async (d: DragSession, dir: string) => {
       try {
-        if (d.kind === "canvas") {
+        if (d.kind === "folder") {
+          const newDir = await moveFolder(d.file, dir);
+          const newName = newDir.split("/").pop() ?? "";
+          if (newName !== d.name) setNotice(`「${d.name}」已存在，已重命名为「${newName}」`);
+        } else if (d.kind === "canvas") {
           const row = canvases.find((c) => c.file === d.file);
           if (row) {
             const newFile = await moveCanvas(row, dir);
@@ -253,7 +261,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
         setNotice("移动文件失败，请重试");
       }
     },
-    [canvases, moveCanvas, moveNote, moveAttachment, expandDirs],
+    [canvases, moveFolder, moveCanvas, moveNote, moveAttachment, expandDirs],
   );
 
   // 全局 pointermove/up：位移超 5px 进入拖拽（显示幽灵）；松手在文件夹行 = 移动文件，落点在 .react-flow 内 = 建节点
@@ -270,10 +278,32 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
         // 拖拽悬停目标文件夹：高亮可放入（变化才 setState）；文件行（data-file）内部不视为目标（防误判根目录）
         const hit = document.elementFromPoint(e.clientX, e.clientY);
         const dirEl = hit?.closest<HTMLElement>("[data-dir]");
-        const dir = dirEl && !hit?.closest<HTMLElement>("[data-file]") ? (dirEl.dataset.dir ?? "") : null;
+        let dir = dirEl && !hit?.closest<HTMLElement>("[data-file]") ? (dirEl.dataset.dir ?? "") : null;
+        // 拖文件夹：自身、自身后代、自身祖先均不可放入（非法嵌套/原地 no-op），不高亮
+        if (
+          d.kind === "folder" &&
+          dir !== null &&
+          (dir === d.file || dir.startsWith(`${d.file}/`) || d.file.startsWith(`${dir}/`))
+        ) {
+          dir = null;
+        }
         if (dir !== dropDirRef.current) {
           dropDirRef.current = dir;
           setDropDir(dir);
+        }
+        // 悬停可交互目标的提示文本（幽灵下方显示；变化才 setState）：分支顺序与 onUp 落点判定严格一致
+        let hint: string | null = null;
+        if (hit?.closest<HTMLElement>("[data-chat-input]")) {
+          if (d.kind === "note") hint = "作为引用";
+        } else if (dir !== null) {
+          hint = dir === "" ? "移到根目录" : `移动到「${dir.split("/").pop()}」`;
+        } else if (hit?.closest(".react-flow")) {
+          if (d.kind === "note") hint = "创建文本节点";
+          else if (d.kind === "attachment") hint = "创建媒体节点";
+        }
+        if (hint !== dragHintRef.current) {
+          dragHintRef.current = hint;
+          setDragHint(hint);
         }
         // 平时行上不显示 grab 光标（避免误以为可点），拖拽激活时才显示「抓住」
         document.body.style.cursor = "grabbing";
@@ -285,6 +315,8 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
       setDragGhost(null);
       dropDirRef.current = null;
       setDropDir(null);
+      dragHintRef.current = null;
+      setDragHint(null);
       document.body.style.cursor = "";
       if (!d?.active) return;
       const target = document.elementFromPoint(e.clientX, e.clientY);
@@ -305,8 +337,8 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
         return;
       }
       if (target?.closest(".react-flow")) {
-        // 画布行（kind="canvas"）只支持拖到文件夹移动，不支持拖到画布建节点（media 节点会按附件误读 JSON）
-        if (d.kind === "canvas") return;
+        // 画布行（kind="canvas"）与文件夹行只支持拖到文件夹移动，不支持拖到画布建节点（media 节点会按附件误读 JSON）
+        if (d.kind === "canvas" || d.kind === "folder") return;
         const pos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
         if (d.kind === "note") void addTextNoteFromVault(d.file, d.title ?? d.name, pos, true);
         else void addMediaFromVault(d.file, d.name, pos, true);
@@ -321,10 +353,23 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
     };
   }, [screenToFlowPosition, addTextNoteFromVault, addMediaFromVault, handleMoveFile]);
 
-  /** 行按下（左键）记录潜在拖拽会话（画布/笔记/附件均可拖：移动 or 拖到画布建节点）；位移超阈值才真正拖拽。 */
+  /** 行按下（左键）记录潜在拖拽会话（文件夹/画布/笔记/附件均可拖：移动到文件夹；文件还可拖到画布建节点）；位移超阈值才真正拖拽。 */
   const startPotentialDrag = (e: React.PointerEvent, node: FileTreeNode) => {
-    if (e.button !== 0 || node.isDir) return;
+    if (e.button !== 0) return;
     e.preventDefault(); // 阻止文本选择干扰
+    if (node.isDir) {
+      dragRef.current = {
+        kind: "folder",
+        file: node.path,
+        name: node.name,
+        startX: e.clientX,
+        startY: e.clientY,
+        active: false,
+        x: e.clientX,
+        y: e.clientY,
+      };
+      return;
+    }
     // 外部白板（.canvas）与 .atlx 同归 canvas 类：拖到画布不建节点（只支持移动到文件夹）
     const isCanvasFile =
       node.name.toLowerCase().endsWith(".atlx") || node.name.toLowerCase().endsWith(".canvas");
@@ -499,13 +544,14 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
                   </div>
                 ) : (
                   <div
-                    className="flex items-center gap-1 px-2 py-1 min-h-8 select-none cursor-pointer hover:bg-[var(--hover)]"
+                    className="flex items-center gap-1 px-2 py-1 min-h-8 select-none cursor-default rounded-md hover:bg-[var(--hover)]"
                     style={{
                       ...indent,
                       // 拖拽悬停目标高亮（金色底），提示可放入移动
                       background: dropDir === node.path ? "rgba(212,175,55,0.25)" : undefined,
                     }}
                     data-dir={node.path}
+                    onPointerDown={(e) => startPotentialDrag(e, node)}
                     onClick={() => toggleExpanded(node.path)}
                     onContextMenu={(e) => {
                       e.preventDefault();
@@ -519,7 +565,19 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
                   </div>
                 )}
                 {isExpanded && (
-                  <ul>{renderTree(sortChildren(node.children), depth + 1, node.path)}</ul>
+                  <ul className="relative">
+                    {/* 展开指示线：从父行图标中心垂下，贯穿全部子项（pointer-events-none 防拦截拖拽落点判定） */}
+                    <div
+                      className="absolute top-0 bottom-0 w-px pointer-events-none z-10"
+                      style={{
+                        // 行 padding-left（inline 覆盖 px-2）= 6 + depth*12，加 chevron 半宽 7
+                        left: 13 + depth * 12,
+                        background: "var(--text-muted)",
+                        opacity: 0.6,
+                      }}
+                    />
+                    {renderTree(sortChildren(node.children), depth + 1, node.path)}
+                  </ul>
                 )}
               </li>
             );
@@ -560,7 +618,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
                 </div>
               ) : (
                 <div
-                  className="flex items-center gap-1 px-2 py-1 min-h-8 cursor-default hover:bg-[var(--hover)]"
+                  className="flex items-center gap-1 px-2 py-1 min-h-8 cursor-default rounded-md hover:bg-[var(--hover)]"
                   style={{
                     ...indent,
                     background: active ? "rgba(212,175,55,0.2)" : undefined,
@@ -670,8 +728,9 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
       )}
 
       {/* 文件树空白处右键 = 在仓库根目录新建（画布/笔记/文件夹，inline 输入，Enter 创建） */}
+      {/* 树容器（左右留白 px-2：条目不顶格，两侧空白 = 拖拽移根落点） */}
       <div
-        className="flex-1 overflow-auto py-1"
+        className="flex-1 overflow-auto py-1 px-2"
         data-dir=""
         style={{ background: dropDir === "" ? "rgba(212,175,55,0.25)" : undefined }}
         onContextMenu={(e) => {
@@ -688,10 +747,10 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
         <VaultSwitcher />
       </div>
 
-      {/* 拖拽幽灵（pointer 模拟拖拽时跟随鼠标） */}
+      {/* 拖拽幽灵（pointer 模拟拖拽时跟随鼠标；下方追加悬停目标的动作提示） */}
       {dragGhost && (
         <div
-          className="fixed z-[9999] pointer-events-none text-xs px-2 py-1 rounded shadow-lg"
+          className="fixed z-[9999] pointer-events-none px-2 py-1 rounded shadow-lg"
           style={{
             left: dragGhost.x + 10,
             top: dragGhost.y + 10,
@@ -700,7 +759,12 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
             border: "1px solid var(--border)",
           }}
         >
-          {dragGhost.label}
+          <div className="text-xs">{dragGhost.label}</div>
+          {dragHint && (
+            <div className="mt-0.5 text-[10px] whitespace-nowrap" style={{ color: "var(--accent)" }}>
+              {dragHint}
+            </div>
+          )}
         </div>
       )}
 
