@@ -4,7 +4,8 @@
  * 工作区左栏，树状展示仓库内全部文件夹与文件（跳过隐藏 `.` 开头目录与排除文件夹，
  * 见 `.atelyx/config.json` 的 `excludeFolders`），支持展开折叠、排序下拉、
  * 文件夹行右键新建（画布 / 笔记 / 文件夹，inline 输入框 Enter 创建，落该文件夹；
- * 文件树空白处右键 = 落仓库根目录）、文件行右键重命名 / 删除（菜单内确认）。
+ * 文件树空白处右键 = 落仓库根目录）+ 重命名 / 删除（空目录直接删，非空弹窗确认递归删）、
+ * 文件行右键重命名 / 删除（菜单内确认）。
  *
  * 交互：
  * - 单击 `.atlx` → 打开画布；单击 `.md` → 打开笔记编辑器；`.md`/附件拖到画布 → 建节点
@@ -25,7 +26,9 @@ import {
   FolderPlus,
   LayoutDashboard,
   Paperclip,
+  Pencil,
   StickyNote,
+  Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useClampedMenuPosition } from "@/hooks/useClampedMenuPosition";
@@ -38,6 +41,7 @@ import { useUiStateStore } from "@/stores/uiStateStore";
 import { useVaultStore } from "@/stores/vaultStore";
 import { VaultSwitcher } from "@/components/canvas/panels/VaultSwitcher";
 import { FileContextMenu } from "@/components/canvas/panels/FileContextMenu";
+import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import type { CanvasFileRow, FileExplorerSortKey, FileTreeNode } from "@/types";
 
 /** 拖拽负载 MIME，工作区 onDrop 据此识别面板拖来的文件。 */
@@ -150,6 +154,7 @@ type Editing =
   | { kind: "canvas"; file: string; value: string }
   | { kind: "note"; file: string; value: string }
   | { kind: "attachment"; file: string; value: string }
+  | { kind: "folder"; dir: string; value: string }
   | { kind: "creating"; dir: string; type: "canvas" | "note" | "folder"; value: string };
 
 export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedNoteFile, onConvertWhiteboard }: PanelProps) {
@@ -161,6 +166,8 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
   const renameAttachment = useVaultStore((s) => s.renameAttachment);
   const deleteAttachment = useVaultStore((s) => s.deleteAttachment);
   const createFolder = useVaultStore((s) => s.createFolder);
+  const deleteFolder = useVaultStore((s) => s.deleteFolder);
+  const renameFolder = useVaultStore((s) => s.renameFolder);
   const moveNote = useVaultStore((s) => s.moveNote);
   const moveAttachment = useVaultStore((s) => s.moveAttachment);
   // 系统提示词标记（独立落盘 .atelyx/prompt-notes.json）：右键菜单显示注册/注销状态
@@ -347,6 +354,21 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
     return () => clearTimeout(t);
   }, [notice]);
 
+  // 非空文件夹删除确认弹窗（空文件夹直接删，无确认）
+  const [confirmDelete, setConfirmDelete] = useState<{ dir: string; name: string; count: number } | null>(null);
+  /** 删除文件夹：先试非递归（空目录直接删）；非空返回 needsConfirm → 弹窗确认后递归删。 */
+  const handleDeleteFolder = useCallback(async (dir: string) => {
+    try {
+      const res = await deleteFolder(dir);
+      if (res.needsConfirm) {
+        setConfirmDelete({ dir, name: dir.split("/").pop() ?? dir, count: res.itemCount });
+      }
+    } catch (err) {
+      console.error("删除文件夹失败", err);
+      setNotice("删除文件夹失败，请重试");
+    }
+  }, [deleteFolder]);
+
   // 排序方式存仓库级配置（.atelyx/config.json），跨会话/跨仓库各自独立
   const vaultSort = useSettingsStore((s) => s.vaultConfig?.fileExplorerSort);
   const setFileExplorerSort = useSettingsStore((s) => s.setFileExplorerSort);
@@ -384,6 +406,10 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
         if (actualTitle !== v) setNotice(`「${v}」已存在，已重命名为「${actualTitle}」`);
       } else if (e.kind === "attachment") {
         await renameAttachment(e.file, v);
+      } else if (e.kind === "folder") {
+        const actualDir = await renameFolder(e.dir, v);
+        const actualName = actualDir.split("/").pop() ?? actualDir;
+        if (actualName !== v) setNotice(`「${v}」已存在，已重命名为「${actualName}」`);
       } else if (e.kind === "creating") {
         if (e.type === "canvas") {
           const { id, file, title } = await createCanvas(v, e.dir);
@@ -451,27 +477,47 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
           const indent = { paddingLeft: 6 + depth * 12 };
           if (node.isDir) {
             const isExpanded = expanded.has(node.path);
+            const editingThis: Editing | null =
+              editing?.kind === "folder" && editing.dir === node.path ? editing : null;
             return (
               <li key={node.path}>
-                <div
-                  className="flex items-center gap-1 px-2 py-1 min-h-8 select-none cursor-pointer hover:bg-[var(--hover)]"
-                  style={{
-                    ...indent,
-                    // 拖拽悬停目标高亮（金色底），提示可放入移动
-                    background: dropDir === node.path ? "rgba(212,175,55,0.25)" : undefined,
-                  }}
-                  data-dir={node.path}
-                  onClick={() => toggleExpanded(node.path)}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setMenu({ x: e.clientX, y: e.clientY, target: { kind: "folder", dir: node.path } });
-                  }}
-                >
-                  <span className="flex items-center">{isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
-                  <Folder size={14} style={{ color: "var(--text-muted)" }} />
-                  <span className="flex-1 truncate text-xs" style={{ color: "var(--text-primary)" }}>{node.name}</span>
-                </div>
+                {editingThis ? (
+                  <div className="flex items-center px-2 py-1 min-h-8" style={indent}>
+                    <input
+                      ref={inputRef}
+                      value={editingThis.value}
+                      onChange={(e) => setEditing({ ...editingThis, value: e.target.value })}
+                      onBlur={() => void commitEditing(editingThis)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void commitEditing(editingThis);
+                        if (e.key === "Escape") setEditing(null);
+                      }}
+                      placeholder="文件夹名称"
+                      className="flex-1 bg-transparent border-b border-[var(--accent)] outline-none text-xs"
+                      style={{ color: "var(--text-primary)" }}
+                    />
+                  </div>
+                ) : (
+                  <div
+                    className="flex items-center gap-1 px-2 py-1 min-h-8 select-none cursor-pointer hover:bg-[var(--hover)]"
+                    style={{
+                      ...indent,
+                      // 拖拽悬停目标高亮（金色底），提示可放入移动
+                      background: dropDir === node.path ? "rgba(212,175,55,0.25)" : undefined,
+                    }}
+                    data-dir={node.path}
+                    onClick={() => toggleExpanded(node.path)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setMenu({ x: e.clientX, y: e.clientY, target: { kind: "folder", dir: node.path } });
+                    }}
+                  >
+                    <span className="flex items-center">{isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
+                    <Folder size={14} style={{ color: "var(--text-muted)" }} />
+                    <span className="flex-1 truncate text-xs" style={{ color: "var(--text-primary)" }}>{node.name}</span>
+                  </div>
+                )}
                 {isExpanded && (
                   <ul>{renderTree(sortChildren(node.children), depth + 1, node.path)}</ul>
                 )}
@@ -658,7 +704,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
         </div>
       )}
 
-      {/* 文件夹右键菜单：新建画布 / 新建笔记 / 新建文件夹（inline 输入，Enter 创建） */}
+      {/* 文件夹右键菜单：新建画布 / 新建笔记 / 新建文件夹 + 重命名 / 删除（根目录仅新建） */}
       {(() => {
         const folderTarget = menu?.target.kind === "folder" ? menu.target : null;
         if (!folderTarget) return null;
@@ -666,9 +712,22 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
           <FolderCreateMenu
             x={menu!.x}
             y={menu!.y}
+            canManage={folderTarget.dir !== ""}
             onCreate={(type) => {
               setEditing({ kind: "creating", dir: folderTarget.dir, type, value: "" });
               setMenu(null);
+            }}
+            onRename={() => {
+              setEditing({
+                kind: "folder",
+                dir: folderTarget.dir,
+                value: folderTarget.dir.split("/").pop() ?? "",
+              });
+              setMenu(null);
+            }}
+            onDelete={() => {
+              setMenu(null);
+              void handleDeleteFolder(folderTarget.dir);
             }}
             onClose={() => setMenu(null)}
           />
@@ -705,20 +764,42 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
           />
         );
       })()}
+
+      {/* 非空文件夹删除确认弹窗（确认后递归删除） */}
+      {confirmDelete && (
+        <ConfirmDialog
+          title={`删除文件夹「${confirmDelete.name}」？`}
+          description={`文件夹包含 ${confirmDelete.count} 个文件/文件夹，删除后不可恢复。`}
+          confirmText="删除"
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={() => {
+            const { dir } = confirmDelete;
+            setConfirmDelete(null);
+            void deleteFolder(dir, true).catch(() => setNotice("删除文件夹失败，请重试"));
+          }}
+        />
+      )}
     </div>
   );
 }
 
-/** 文件夹右键菜单：新建画布 / 新建笔记 / 新建文件夹。 */
+/** 文件夹右键菜单：新建画布 / 新建笔记 / 新建文件夹 + 重命名 / 删除（根目录仅新建）。 */
 function FolderCreateMenu({
   x,
   y,
+  canManage,
   onCreate,
+  onRename,
+  onDelete,
   onClose,
 }: {
   x: number;
   y: number;
+  /** 非根目录才有管理操作（重命名/删除）；树空白处右键 = 根目录，仅新建。 */
+  canManage: boolean;
   onCreate: (type: "canvas" | "note" | "folder") => void;
+  onRename: () => void;
+  onDelete: () => void;
   onClose: () => void;
 }) {
   const onCloseRef = useRef(onClose);
@@ -768,6 +849,20 @@ function FolderCreateMenu({
       <button className={itemClass} onClick={() => onCreate("folder")}>
         <FolderPlus size={14} /> 新建文件夹
       </button>
+      {canManage && (
+        <>
+          <hr className="my-1" style={{ borderColor: "var(--border)" }} />
+          <button className={itemClass} onClick={onRename}>
+            <Pencil size={14} /> 重命名
+          </button>
+          <button
+            onClick={onDelete}
+            className="w-full text-left px-3 py-1.5 text-sm text-[#f87171] hover:bg-red-600 hover:text-white inline-flex items-center gap-1.5"
+          >
+            <Trash2 size={14} /> 删除
+          </button>
+        </>
+      )}
     </div>
   );
 }

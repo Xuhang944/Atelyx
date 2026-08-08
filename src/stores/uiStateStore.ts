@@ -19,6 +19,7 @@ import { create } from "zustand";
 import { readVaultUiState, writeVaultUiState } from "@/services/vault";
 import { getDeviceId } from "@/services/global";
 import { useAppStore } from "@/stores/appStore";
+import { remapDirPrefix } from "@/utils/filename";
 import {
   UI_STATE_SCHEMA,
   type DeviceUiState,
@@ -56,6 +57,10 @@ interface UiStateStore {
   renameLastCanvas: (oldFile: string, newFile: string) => void;
   /** 笔记重命名/移动后同步 lastNoteFile（旧路径命中才更新）。 */
   renameLastNote: (oldFile: string, newFile: string) => void;
+  /** 文件夹重命名后同步展开集合/上次打开文件（`oldDir/` 前缀 → `newDir/`）。 */
+  renameByDir: (oldDir: string, newDir: string) => void;
+  /** 文件夹删除后清理展开集合中该目录及子目录条目。 */
+  removeExpandedByDir: (dir: string) => void;
   /** 记录窗口切换（激活窗口随标签点击/联动变化）。 */
   recordActiveWindow: (win: LastActiveWindow) => void;
   /** 关闭画布窗口：清空 lastCanvasFile（窗口槽保留占位）。 */
@@ -197,6 +202,36 @@ export const useUiStateStore = create<UiStateStore>((set, get) => ({
   renameLastNote: (oldFile, newFile) => {
     if (get().lastNoteFile !== oldFile) return;
     set({ lastNoteFile: newFile });
+    persistDebounced(get);
+  },
+
+  renameByDir: (oldDir, newDir) => {
+    const s = get();
+    let expandedChanged = false;
+    const expanded = new Set<string>();
+    for (const p of s.fileExplorerExpanded) {
+      const next = remapDirPrefix(p, oldDir, newDir);
+      if (next !== p) expandedChanged = true;
+      expanded.add(next);
+    }
+    const lastCanvasFile = s.lastCanvasFile
+      ? remapDirPrefix(s.lastCanvasFile, oldDir, newDir)
+      : null;
+    const lastNoteFile = s.lastNoteFile ? remapDirPrefix(s.lastNoteFile, oldDir, newDir) : null;
+    const changed =
+      expandedChanged || lastCanvasFile !== s.lastCanvasFile || lastNoteFile !== s.lastNoteFile;
+    if (!changed) return;
+    set({ fileExplorerExpanded: expanded, lastCanvasFile, lastNoteFile });
+    persistDebounced(get);
+  },
+
+  removeExpandedByDir: (dir) => {
+    const prefix = `${dir}/`;
+    const next = new Set(
+      [...get().fileExplorerExpanded].filter((p) => p !== dir && !p.startsWith(prefix)),
+    );
+    if (next.size === get().fileExplorerExpanded.size) return;
+    set({ fileExplorerExpanded: next });
     persistDebounced(get);
   },
 

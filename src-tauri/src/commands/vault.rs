@@ -19,16 +19,17 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
 use crate::vault::{
-    create_folder as create_folder_impl, delete_vault_file,
-    import_attachment as import_attachment_vault_impl, init_vault_dirs, list_canvas_files,
-    list_vault_tree as list_vault_tree_impl, read_canvas_file, read_file_bytes,
-    read_note as read_note_file, read_vault_config as read_vault_config_file, rename_note_file,
-    safe_join, sanitize_filename, write_canvas_file, write_note as write_note_file,
-    write_vault_config as write_vault_config_file, read_editor_chats_file,
-    read_prompt_notes_file, write_prompt_notes_file, write_editor_chats_file,
-    read_chat_messages_file, write_chat_messages_file, delete_chat_messages_file, CanvasFile,
-    CanvasFileRow, EditorChatsFile, FileTreeNode, VaultConfig, VaultState, CANVAS_SCHEMA,
-    read_ui_state_file, write_ui_state_file, VaultUiState,
+    create_folder as create_folder_impl, delete_folder as delete_folder_impl,
+    delete_vault_file, import_attachment as import_attachment_vault_impl, init_vault_dirs,
+    list_canvas_files, list_vault_tree as list_vault_tree_impl, read_canvas_file,
+    read_file_bytes, read_note as read_note_file, read_vault_config as read_vault_config_file,
+    rename_folder as rename_folder_impl, rename_note_file, safe_join, sanitize_filename,
+    write_canvas_file, write_note as write_note_file, write_vault_config as write_vault_config_file,
+    read_editor_chats_file, read_prompt_notes_file, write_prompt_notes_file,
+    write_editor_chats_file, read_chat_messages_file, write_chat_messages_file,
+    delete_chat_messages_file, CanvasFile, CanvasFileRow, DeleteFolderResult, EditorChatsFile,
+    FileTreeNode, VaultConfig, VaultState, CANVAS_SCHEMA, read_ui_state_file, write_ui_state_file,
+    VaultUiState,
 };
 use crate::watcher;
 
@@ -271,6 +272,48 @@ pub fn delete_note(file: String, state: State<'_, VaultState>) -> Result<(), Str
 pub fn delete_attachment(file: String, state: State<'_, VaultState>) -> Result<(), String> {
     let root = state.root()?;
     delete_vault_file(&root, &file)
+}
+
+/// 删除文件夹（相对仓库根路径）。force=false 空目录直接删，非空返回 needsConfirm 供前端弹窗；
+/// 确认后以 force=true 递归删除全部内容。仓库根（空路径）拒绝。
+#[tauri::command]
+pub fn delete_folder(
+    dir: String,
+    force: bool,
+    state: State<'_, VaultState>,
+) -> Result<DeleteFolderResult, String> {
+    let root = state.root()?;
+    delete_folder_impl(&root, &dir, force)
+}
+
+/// 重命名文件夹：移动整个目录 + 扫描所有 .atlx 更新位于该目录下文件的引用
+/// （text `file` / media `file` / conversation `systemPromptFile` 按 `old_dir/` 前缀替换）。
+/// 事务模式与 rename_note 对称：先移动目录（旧路径已不存在），再扫描新树收集引用更新并统一写回；
+/// 扫描或写回失败时回滚目录移动（部分画布引用可能已写回，错误信息如实说明）。
+#[tauri::command]
+pub fn rename_folder(
+    old_dir: String,
+    new_dir: String,
+    state: State<'_, VaultState>,
+) -> Result<(), String> {
+    let root = state.root()?;
+    rename_folder_impl(&root, &old_dir, &new_dir)?;
+    let pending = match collect_canvas_updates(&root, &mut |canvas| {
+        remap_dir_refs_in_canvas(canvas, &old_dir, &new_dir)
+    }) {
+        Ok(p) => p,
+        Err(e) => {
+            // 目录已移动：扫描失败也回滚，防「目录已改名但画布引用仍指向旧路径」的半完成态
+            let _ = rename_folder_impl(&root, &new_dir, &old_dir);
+            return Err(format!("扫描画布引用失败，重命名已回滚（请重试）：{e}"));
+        }
+    };
+    if let Err(e) = flush_canvas_updates(&pending) {
+        // 尽力回滚：目录移回旧名（部分画布引用可能已写回，错误信息如实说明）
+        let _ = rename_folder_impl(&root, &new_dir, &old_dir);
+        return Err(format!("更新画布引用失败，重命名已回滚（请重试）：{e}"));
+    }
+    Ok(())
 }
 
 /// 重命名附件 + 扫描所有 .atlx 更新 media 节点 file 引用（链接维护，与 rename_note 对称）。
@@ -666,6 +709,43 @@ fn update_attachment_refs_in_canvas(
                     serde_json::Value::String(new_file.to_string()),
                 );
                 changed = true;
+            }
+        }
+    }
+    changed
+}
+
+/// 更新单个 .atlx 内的目录前缀引用（内存中）：位于 `old_dir/` 下的 text `file`、
+/// media `file`、conversation `systemPromptFile` 替换为 `new_dir/` + 剩余部分。
+/// 返回是否有变更。前缀含尾斜杠，防误匹配 `a` 命中 `ab/x.md`。
+fn remap_dir_refs_in_canvas(canvas: &mut CanvasFile, old_dir: &str, new_dir: &str) -> bool {
+    let old_prefix = format!("{}/", old_dir);
+    let mut changed = false;
+    for node in &mut canvas.nodes {
+        let Some(obj) = node.data.as_object_mut() else {
+            continue;
+        };
+        let ref_field = match node.node_type.as_str() {
+            // text 节点正文引用（笔记/*.md）
+            "text" => Some("file"),
+            // conversation 节点系统提示词引用（笔记/*.md，与 text 对称）
+            "conversation" => Some("systemPromptFile"),
+            // media 节点附件引用（任意文件）
+            "media" => Some("file"),
+            _ => None,
+        };
+        if let Some(field) = ref_field {
+            if let Some(path) = obj.get(field).and_then(|v| v.as_str()) {
+                if path.starts_with(&old_prefix) {
+                    obj.insert(
+                        field.to_string(),
+                        serde_json::Value::String(format!(
+                            "{new_dir}/{}",
+                            &path[old_prefix.len()..]
+                        )),
+                    );
+                    changed = true;
+                }
             }
         }
     }

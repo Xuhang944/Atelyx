@@ -19,6 +19,7 @@ import {
   type CanvasFileRow,
   type CanvasEdge,
   type ConversationFileData,
+  type DeleteFolderResult,
   type EditorChatsFile,
   type EditorChatsFileOnDisk,
   type FileTreeNode,
@@ -193,6 +194,16 @@ export async function listVaultTree(): Promise<FileTreeNode[]> {
 /** 新建文件夹（相对仓库根路径，如 `项目A/素材`），自动建父目录；返回相对路径。 */
 export async function createFolder(dir: string): Promise<string> {
   return invoke<string>("create_folder", { dir });
+}
+
+/** 删除文件夹（相对仓库根路径）。force=false 空目录直接删，非空返回 needsConfirm 供弹窗；确认后 force=true 递归删。 */
+export async function deleteFolder(dir: string, force: boolean): Promise<DeleteFolderResult> {
+  return invoke<DeleteFolderResult>("delete_folder", { dir, force });
+}
+
+/** 重命名文件夹：移动整个目录 + 扫描所有 .atlx 更新位于该目录下文件的引用（`old_dir/` 前缀 → `new_dir/`）。 */
+export async function renameFolder(oldDir: string, newDir: string): Promise<void> {
+  await invoke("rename_folder", { oldDir, newDir });
 }
 
 // ===== 运行时 ↔ 磁盘格式转换 =====

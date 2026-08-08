@@ -857,6 +857,80 @@ pub fn create_folder(root: &Path, dir: &str) -> Result<String, String> {
     Ok(dir.to_string())
 }
 
+/// 删除文件夹的结果（结构化返回：空目录直接删；非空且未带 force 时返回需确认信息供前端弹窗）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteFolderResult {
+    /// 本次是否已删除
+    pub deleted: bool,
+    /// 目录非空且未带 force：需用户确认后以 force=true 再次调用
+    pub needs_confirm: bool,
+    /// 目录内条目数（递归计数，含子目录与隐藏文件）
+    pub item_count: usize,
+}
+
+/// 删除文件夹（相对仓库根路径）。force=false 只删空目录——非空返回
+/// `needs_confirm`（含递归条目数）供前端弹窗确认后以 force=true 重试；
+/// force=true 递归删除全部内容。dir 为空（仓库根）拒绝，防误删整个仓库。
+pub fn delete_folder(root: &Path, dir: &str, force: bool) -> Result<DeleteFolderResult, String> {
+    if dir.is_empty() {
+        return Err("非法路径：不能删除仓库根目录".to_string());
+    }
+    let path = safe_join(root, dir, false)?;
+    if !path.is_dir() {
+        return Err(format!("目录不存在：{}", dir));
+    }
+    let item_count = count_dir_items(&path)?;
+    if !force && item_count > 0 {
+        return Ok(DeleteFolderResult {
+            deleted: false,
+            needs_confirm: true,
+            item_count,
+        });
+    }
+    if force {
+        std::fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
+    } else {
+        std::fs::remove_dir(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(DeleteFolderResult {
+        deleted: true,
+        needs_confirm: false,
+        item_count,
+    })
+}
+
+/// 递归统计目录内条目数（含隐藏文件与子目录；删除确认弹窗文案用）。
+fn count_dir_items(dir: &Path) -> Result<usize, String> {
+    let mut count = 0;
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        count += 1;
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            count += count_dir_items(&entry.path())?;
+        }
+    }
+    Ok(count)
+}
+
+/// 移动整个目录到新相对路径（校验 + 防覆盖；`fs::rename` 对目录同样生效）。
+/// 不更新 .atlx 引用——引用前缀维护由 commands 层组合（与 rename_note 同模式）。
+pub fn rename_folder(root: &Path, old_dir: &str, new_dir: &str) -> Result<(), String> {
+    if old_dir.is_empty() || new_dir.is_empty() {
+        return Err("非法路径：目录为空".to_string());
+    }
+    let old_path = safe_join(root, old_dir, false)?;
+    let new_path = safe_join(root, new_dir, true)?;
+    if !old_path.is_dir() {
+        return Err(format!("目录不存在：{}", old_dir));
+    }
+    // 目标已存在拒绝（防覆盖丢数据；前端 dedupe 已防重名，此处兜底并发/外部创建）
+    if new_path.exists() {
+        return Err(format!("目标目录已存在：{}", new_dir));
+    }
+    std::fs::rename(&old_path, &new_path).map_err(|e| e.to_string())
+}
+
 /// 仓库显示名：优先取路径最后一段（文件夹名）；网络共享根（`\\server\share`，无更深子目录）
 /// 与尾部带分隔符的路径 `file_name()` 为 None——回退为去尾部分隔符后取最后一段（UNC 根取 share 名）。
 /// 本地盘根（`E:\`）回退为盘符（`E:`），少见但避免空白名。

@@ -15,6 +15,7 @@ import type {
 } from "@/types";
 import { DEFAULT_AI_CONFIG } from "@/services/ai/types";
 import { PROVIDER_PRESETS } from "@/constants/providers";
+import { remapDirPrefix } from "@/utils/filename";
 
 /**
  * 设置 store（配置全部仓库化）。
@@ -110,6 +111,8 @@ interface SettingsState {
   togglePromptNote: (file: string) => Promise<void>;
   /** 笔记重命名/移动后同步标记路径（oldFile → newFile，写 .atelyx/prompt-notes.json）。 */
   remapPromptNote: (oldFile: string, newFile: string) => Promise<void>;
+  /** 文件夹重命名后同步标记路径（`oldDir/` 前缀 → `newDir/`，写 .atelyx/prompt-notes.json）。 */
+  remapPromptNotesByDir: (oldDir: string, newDir: string) => Promise<void>;
 }
 
 /** 运行时 ProviderConfig → 磁盘 GlobalProvider（syncKeys 开时带 apiKey 落盘，关时剥离；旧 model 字段一并剥离）。 */
@@ -536,6 +539,19 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const marked = get().promptNotes;
     if (!marked.includes(oldFile)) return;
     const next = marked.map((f) => (f === oldFile ? newFile : f));
+    set({ promptNotes: next });
+    try {
+      await writePromptNotes(next);
+    } catch (e) {
+      console.error("保存系统提示词标记失败", e);
+    }
+  },
+
+  /** 文件夹重命名后同步标记路径（`oldDir/` 前缀命中才更新）。 */
+  remapPromptNotesByDir: async (oldDir, newDir) => {
+    const marked = get().promptNotes;
+    const next = marked.map((f) => remapDirPrefix(f, oldDir, newDir));
+    if (next.every((f, i) => f === marked[i])) return;
     set({ promptNotes: next });
     try {
       await writePromptNotes(next);

@@ -17,7 +17,7 @@ import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { useVaultStore, lastNoteRenameTarget } from "@/stores/vaultStore";
+import { useVaultStore, lastFolderRenameTarget, lastNoteRenameTarget } from "@/stores/vaultStore";
 import { dedupeFilename } from "@/utils/filename";
 import { useClampedMenuPosition } from "@/hooks/useClampedMenuPosition";
 import { DEFAULT_CONVERSATION_WIDTH, DEFAULT_CONVERSATION_HEIGHT, DEFAULT_TEXT_NODE_WIDTH, DEFAULT_TEXT_NODE_HEIGHT, DEFAULT_GROUP_WIDTH, DEFAULT_GROUP_HEIGHT, DEFAULT_LINK_WIDTH, DEFAULT_LINK_HEIGHT } from "@/constants/canvas";
@@ -134,12 +134,13 @@ export function ProjectWorkspacePage({
   const closeUiNote = useUiStateStore((s) => s.closeNote);
   const autoRestoreFiles = useSettingsStore((s) => s.vaultConfig?.autoRestoreFiles ?? true);
 
-  // 当前打开的笔记从列表消失 → 区分处理：软件内重命名（切到新文件）；真删除/外部删除（关闭笔记窗口）
+  // 当前打开的笔记从列表消失 → 区分处理：软件内重命名/文件夹重命名（切到新文件）；真删除/外部删除（关闭笔记窗口）
   useEffect(() => {
     if (!editingNote) return;
     const stillExists = vaultNoteList.some((n) => n.file === editingNote.file);
     if (!stillExists) {
-      const newFile = lastNoteRenameTarget(editingNote.file);
+      const newFile =
+        lastNoteRenameTarget(editingNote.file) ?? lastFolderRenameTarget(editingNote.file);
       if (newFile) {
         setEditingNote({
           file: newFile,

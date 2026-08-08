@@ -43,3 +43,12 @@ export function siblingPath(file: string, name: string): string {
   const dir = parentDir(file);
   return dir ? `${dir}/${name}` : name;
 }
+
+/**
+ * 目录重命名后 remap 相对路径：路径位于 `oldDir/` 下 → `newDir/` + 剩余部分；否则原样返回。
+ * 前缀含尾斜杠，防误匹配 `a` 命中 `ab/x.md`。
+ */
+export function remapDirPrefix(path: string, oldDir: string, newDir: string): string {
+  const prefix = `${oldDir}/`;
+  return path.startsWith(prefix) ? `${newDir}/${path.slice(prefix.length)}` : path;
+}

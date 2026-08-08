@@ -20,7 +20,7 @@ import { useVaultStore } from "@/stores/vaultStore";
 import { useChatPanelStore } from "@/stores/chatPanelStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import { markSelfSave, useCanvasStore } from "@/stores/canvasStore";
-import { dedupeFilename, parentDir, sanitizeFilename, siblingPath } from "@/utils/filename";
+import { dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename, siblingPath } from "@/utils/filename";
 import { getAppVersion as getVersionSvc } from "@/services/app";
 import { openInExplorer as openInExplorerSvc, openUrl as openUrlSvc } from "@/services/shell";
 import { pickDirectory as pickDirectorySvc } from "@/services/dialog";
@@ -120,6 +120,14 @@ interface AppState {
   moveCanvas: (row: CanvasFileRow, targetDir: string) => Promise<string>;
   /** 删除画布（按 file）。 */
   deleteCanvas: (row: CanvasFileRow) => Promise<void>;
+  /**
+   * 删除文件夹联动：目录内画布全部消失——当前打开的画布在目录内则复位画布运行时状态
+   * （防残留 saveTimer 重写已删文件，同 deleteCanvas）并清空画布槽/标签。供 vaultStore.deleteFolder 调用。
+   * 返回目录内是否有画布（调用方据此决定是否重扫画布列表）。
+   */
+  closeCanvasIfInDir: (dir: string) => boolean;
+  /** 文件夹重命名联动：当前打开画布位于 `oldDir/` 下时同步 currentCanvasFile。供 vaultStore.renameFolder 调用。 */
+  renameCurrentCanvasFile: (oldDir: string, newDir: string) => void;
   /**
    * 把外部白板文件（.canvas）转换为同目录 .atlx 画布（原文件保留，单向转换）。
    * 成功后刷新画布列表与文件树，返回画布行（页面层打开）；失败返回 null。
@@ -432,6 +440,27 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (e) {
       console.error("删除失败", e);
     }
+  },
+  closeCanvasIfInDir: (dir) => {
+    const { canvases, currentCanvasId, openTabs } = get();
+    const affectedIds = canvases
+      .filter((c) => c.file.startsWith(`${dir}/`))
+      .map((c) => c.id);
+    if (affectedIds.length > 0 && currentCanvasId && affectedIds.includes(currentCanvasId)) {
+      useCanvasStore.getState().resetCanvasState();
+      useUiStateStore.getState().closeCanvas();
+      set({
+        openTabs: openTabs.filter((t) => !affectedIds.includes(t)),
+        currentCanvasId: null,
+        currentCanvasFile: null,
+      });
+    }
+    return affectedIds.length > 0;
+  },
+  renameCurrentCanvasFile: (oldDir, newDir) => {
+    const file = get().currentCanvasFile;
+    if (!file || !file.startsWith(`${oldDir}/`)) return;
+    set({ currentCanvasFile: remapDirPrefix(file, oldDir, newDir) });
   },
   convertWhiteboard: async (file) => {
     const title = file.split("/").pop()?.replace(/\.canvas$/i, "") ?? "白板";

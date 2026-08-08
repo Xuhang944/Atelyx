@@ -14,7 +14,11 @@ import { useEffect } from "react";
 import { subscribeVaultFileChanges } from "@/services/watcher";
 import { useCanvasStore, isSelfSaveEcho } from "@/stores/canvasStore";
 import { useAppStore } from "@/stores/appStore";
-import { useVaultStore, isPendingRenameOldPath } from "@/stores/vaultStore";
+import {
+  useVaultStore,
+  isPendingFolderRenameOldPath,
+  isPendingRenameOldPath,
+} from "@/stores/vaultStore";
 import type { VaultFileChange } from "@/types";
 
 export function useVaultFileWatcher(enabled: boolean) {
@@ -27,8 +31,14 @@ export function useVaultFileWatcher(enabled: boolean) {
       unlisten = await subscribeVaultFileChanges((c: VaultFileChange) => {
         if (c.kind === "canvas") {
           const store = useCanvasStore.getState();
-          // 按文件路径匹配当前画布（画布任意文件夹存放，路径即磁盘身份）
-          if (c.path === store.canvasFile && !isSelfSaveEcho()) {
+          // 按文件路径匹配当前画布（画布任意文件夹存放，路径即磁盘身份）；
+          // 文件夹重命名期间旧路径删除事件：canvasFile 尚未 remap（Rust 移动目录可能慢于 300ms debounce），
+          // 跳过重读防误触 reloadFromDisk 读已不存在的旧路径
+          if (
+            c.path === store.canvasFile &&
+            !isSelfSaveEcho() &&
+            !isPendingFolderRenameOldPath(c.path)
+          ) {
             if (store.dirty) {
               // 本地有未保存改动：自动重载会丢改动，改为冲突提示让用户决策
               useCanvasStore.setState({ conflictPending: true });
@@ -50,7 +60,7 @@ export function useVaultFileWatcher(enabled: boolean) {
         if (c.kind === "note") {
           // 软件内重命名期间旧路径的删除事件：file 引用已由 vaultStore.renameNote 同步，
           // 跳过重读防误标文件缺失；新路径创建事件正常刷新（同步后节点 file 已指向新路径，命中即刷新）
-          if (!isPendingRenameOldPath(c.path)) {
+          if (!isPendingRenameOldPath(c.path) && !isPendingFolderRenameOldPath(c.path)) {
             void useCanvasStore.getState().refreshTextContent(c.path);
             // NoteEditor 感知外部修改：无本地改动实时刷新、有改动提示冲突
             useVaultStore.getState().markNoteExternallyEdited(c.path);
@@ -60,7 +70,7 @@ export function useVaultFileWatcher(enabled: boolean) {
         }
 
         // attachment
-        if (!isPendingRenameOldPath(c.path)) {
+        if (!isPendingRenameOldPath(c.path) && !isPendingFolderRenameOldPath(c.path)) {
           void useCanvasStore.getState().refreshMediaContent(c.path);
         }
         void useVaultStore.getState().loadFiles();

@@ -119,6 +119,14 @@ export interface CanvasCreateResult {
   file: string;
 }
 
+/** `delete_folder` 返回值：空目录直接删；非空且未带 force 时 needsConfirm 供前端弹窗后重试。 */
+export interface DeleteFolderResult {
+  deleted: boolean;
+  needsConfirm: boolean;
+  /** 目录内条目数（递归计数，含子目录与隐藏文件）。 */
+  itemCount: number;
+}
+
 /** 仓库文件树节点（`list_vault_tree`，文件面板全仓库树）。 */
 export interface FileTreeNode {
   /** 文件名 / 文件夹名 */

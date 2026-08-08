@@ -10,7 +10,7 @@
 import { Check, MoreHorizontal, Pencil } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { useVaultStore, lastNoteRenameTarget } from "@/stores/vaultStore";
+import { useVaultStore, lastFolderRenameTarget, lastNoteRenameTarget } from "@/stores/vaultStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import {
   MARKDOWN_PLUGINS,
@@ -119,7 +119,8 @@ export function NoteEditor({ file }: { file: string }) {
         const stillExists = useVaultStore
           .getState()
           .noteList.some((n) => n.file === file);
-        const target = stillExists ? file : lastNoteRenameTarget(file);
+        const target =
+          stillExists ? file : lastNoteRenameTarget(file) ?? lastFolderRenameTarget(file);
         if (target) {
           void saveNoteContent(target, contentRef.current).catch((e) =>
             console.error("笔记保存失败", e)

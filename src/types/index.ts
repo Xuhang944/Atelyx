@@ -48,6 +48,7 @@ export {
   type CanvasFileEdge,
   type CanvasFileRow,
   type CanvasCreateResult,
+  type DeleteFolderResult,
   type FileTreeNode,
   type FileExplorerSortKey,
   type DirNames,
