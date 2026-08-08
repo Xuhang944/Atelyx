@@ -875,14 +875,15 @@ function FolderCreateMenu({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCloseRef.current();
     };
-    const onDown = (e: MouseEvent) => {
+    // pointerdown（非 mousedown）：树行 pointerdown 的 preventDefault 会抑制 mousedown 派发，点行将无法关闭菜单
+    const onDown = (e: PointerEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) onCloseRef.current();
     };
     window.addEventListener("keydown", onKey);
-    document.addEventListener("mousedown", onDown);
+    document.addEventListener("pointerdown", onDown);
     return () => {
       window.removeEventListener("keydown", onKey);
-      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("pointerdown", onDown);
     };
     // menuRef 为稳定引用（hook 内 useRef），加入依赖仅为消除 exhaustive-deps，不会重挂监听
   }, [menuRef]);
@@ -902,7 +903,7 @@ function FolderCreateMenu({
         color: "var(--text-primary)",
       }}
       onClick={(e) => e.stopPropagation()}
-      onMouseDown={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
     >
       <button className={itemClass} onClick={() => onCreate("canvas")}>
         <FileText size={14} /> 新建画布
@@ -954,14 +955,15 @@ function SortMenu({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCloseRef.current();
     };
-    const onDown = (e: MouseEvent) => {
+    // pointerdown（非 mousedown）：树行 pointerdown 的 preventDefault 会抑制 mousedown 派发，点行将无法关闭菜单
+    const onDown = (e: PointerEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) onCloseRef.current();
     };
     window.addEventListener("keydown", onKey);
-    document.addEventListener("mousedown", onDown);
+    document.addEventListener("pointerdown", onDown);
     return () => {
       window.removeEventListener("keydown", onKey);
-      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("pointerdown", onDown);
     };
     // menuRef 为稳定引用（hook 内 useRef），加入依赖仅为消除 exhaustive-deps，不会重挂监听
   }, [menuRef]);
@@ -978,7 +980,7 @@ function SortMenu({
         color: "var(--text-primary)",
       }}
       onClick={(e) => e.stopPropagation()}
-      onMouseDown={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
     >
       {SORT_OPTIONS.map((o) => (
         <button

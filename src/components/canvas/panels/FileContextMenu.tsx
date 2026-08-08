@@ -5,7 +5,8 @@
  * 「删除」文字恒为红色；点击后**菜单内就地**切确认态（红色「确认删除」+「取消」），
  * 确认才执行删除——不用系统 confirm。
  *
- * 关闭：Esc / 点击菜单外（mousedown）；菜单容器 stopPropagation，防按钮点击被 document 监听抢先关闭。
+ * 关闭：Esc / 点击菜单外（pointerdown，mousedown 会被树行 pointerdown 的 preventDefault 抑制派发）；
+ * 菜单容器 stopPropagation，防按钮点击被 document 监听抢先关闭。
  */
 import { BookmarkMinus, BookmarkPlus, FileOutput, Pencil, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -37,19 +38,19 @@ export function FileContextMenu({ x, y, onRename, onDelete, onTogglePrompt, prom
   // 依赖 confirming：删除确认态改变菜单高度，贴视口底部时需重新钳制防溢出
   const { ref: menuRef, pos } = useClampedMenuPosition(x, y, [confirming]);
 
-  // Esc 关闭；点击菜单外关闭（mousedown 监听，容器内已 stopPropagation）
+  // Esc 关闭；点击菜单外关闭（pointerdown 监听，容器内已 stopPropagation）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCloseRef.current();
     };
-    const onDown = (e: MouseEvent) => {
+    const onDown = (e: PointerEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) onCloseRef.current();
     };
     window.addEventListener("keydown", onKey);
-    document.addEventListener("mousedown", onDown);
+    document.addEventListener("pointerdown", onDown);
     return () => {
       window.removeEventListener("keydown", onKey);
-      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("pointerdown", onDown);
     };
     // menuRef 为稳定引用（hook 内 useRef），加入依赖仅为消除 exhaustive-deps，不会重挂监听
   }, [menuRef]);
@@ -65,7 +66,7 @@ export function FileContextMenu({ x, y, onRename, onDelete, onTogglePrompt, prom
         borderColor: "var(--border)",
       }}
       onClick={(e) => e.stopPropagation()}
-      onMouseDown={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
     >
       {confirming ? (
         // 就地确认态：红色「确认删除」+「取消」
