@@ -1,6 +1,6 @@
 [package]
 name = "atelyx"
-version = "0.1.1"
+version = "0.1.2"
 description = "AI 创作工作台：对话/笔记/知识库统一为有向图，AI 贯穿赋能"
 authors = ["Atelyx"]
 edition = "2021"
