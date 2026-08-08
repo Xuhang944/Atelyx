@@ -25,7 +25,16 @@ import { getAppVersion as getVersionSvc } from "@/services/app";
 import { openInExplorer as openInExplorerSvc, openUrl as openUrlSvc } from "@/services/shell";
 import { pickDirectory as pickDirectorySvc } from "@/services/dialog";
 import { applyStartupWindow as applyStartupWindowSvc, applyWorkspaceWindow as applyWorkspaceWindowSvc, closeWindow as closeWindowSvc, minimizeWindow as minimizeWindowSvc, toggleFullscreen as toggleFullscreenSvc, toggleMaximizeWindow as toggleMaximizeWindowSvc } from "@/services/window";
+import { checkForUpdate as checkForUpdateSvc, installUpdate as installUpdateSvc } from "@/services/updater";
 import type { CanvasFileRow, RecentVault } from "@/types";
+
+/** 手动检查更新状态（设置页「关于」tab 用）。 */
+export type UpdateStatus =
+  | "idle"
+  | "checking"
+  | "upToDate"
+  | "available"
+  | "error";
 
 /**
  * 应用级状态：路由 + 当前仓库 + 画布列表 CRUD。
@@ -57,11 +66,23 @@ interface AppState {
   canvases: CanvasFileRow[];
   /** 自动检查更新（应用级，存 global.json；缺省 false = 关闭，关闭时完全不联网检查）。 */
   autoUpdate: boolean;
+  /** 手动检查更新状态（设置页「关于」tab；运行期状态不持久化）。 */
+  updateStatus: UpdateStatus;
+  /** 检查到的新版本号（status = available 时有效）。 */
+  updateLatestVersion: string;
+  /** 检查/安装失败信息（status = error 时有效）。 */
+  updateError: string;
+  /** 新版本下载安装中（available 后点「下载并安装」）。 */
+  installing: boolean;
 
   /** 应用挂载时调用一次：加载最近仓库，首启建默认仓库。返回本次应自动进入的仓库 root（null = 不自动进入）。 */
   init: () => Promise<string | null>;
   /** 设自动检查更新（应用级，写 global.json；不随仓库同步）。 */
   setAutoUpdate: (enabled: boolean) => Promise<void>;
+  /** 手动检查新版本（设置页「关于」）；结果写入 updateStatus/updateLatestVersion/updateError。 */
+  checkForUpdates: () => Promise<void>;
+  /** 下载并安装已发现的新版本；成功后 relaunch 重启。 */
+  installUpdate: () => Promise<void>;
   /** 打开仓库：openVault + 登记最近 + 进画布工作区（占位态）。成功返回 true。 */
   selectVault: (root: string) => Promise<boolean>;
   /** 从最近列表移除某仓库（不删文件）。 */
@@ -117,6 +138,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   openTabs: [],
   canvases: [],
   autoUpdate: false,
+  updateStatus: "idle",
+  updateLatestVersion: "",
+  updateError: "",
+  installing: false,
 
   init: async (): Promise<string | null> => {
     let recents: RecentVault[] = [];
@@ -160,6 +185,41 @@ export const useAppStore = create<AppState>((set, get) => ({
       await updateGlobalConfig({ autoUpdate: enabled });
     } catch (e) {
       console.error("保存自动更新配置失败", e);
+    }
+  },
+
+  checkForUpdates: async () => {
+    set({ updateStatus: "checking", updateError: "" });
+    try {
+      const result = await checkForUpdateSvc();
+      set(
+        result
+          ? {
+              updateStatus: "available",
+              updateLatestVersion: result.latestVersion,
+            }
+          : { updateStatus: "upToDate", updateLatestVersion: "" },
+      );
+    } catch (e) {
+      console.error("检查更新失败", e);
+      set({
+        updateStatus: "error",
+        updateError: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+
+  installUpdate: async () => {
+    set({ installing: true, updateError: "" });
+    try {
+      await installUpdateSvc();
+    } catch (e) {
+      console.error("安装更新失败", e);
+      set({
+        installing: false,
+        updateStatus: "error",
+        updateError: e instanceof Error ? e.message : String(e),
+      });
     }
   },
 

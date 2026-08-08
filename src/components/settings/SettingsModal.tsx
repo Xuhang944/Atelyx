@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FolderTree,
+  Info,
   PenLine,
   Search,
   Server,
@@ -14,10 +15,17 @@ import { useEffect, useState } from "react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
 import { ProviderSettingsSection } from "@/components/settings/ProviderSettingsSection";
+import { AboutSection } from "@/components/settings/AboutSection";
 import { modelNameAcrossProviders } from "@/utils/text";
 
 type Tab =
-  "general" | "providers" | "modelServices" | "search" | "files" | "editor";
+  | "general"
+  | "providers"
+  | "modelServices"
+  | "search"
+  | "files"
+  | "editor"
+  | "about";
 
 /** 左侧 tab 栏配置（图标 + 标签；折叠后仅显示图标）。 */
 const TAB_ITEMS: { key: Tab; label: string; icon: LucideIcon }[] = [
@@ -27,6 +35,7 @@ const TAB_ITEMS: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: "search", label: "联网搜索", icon: Search },
   { key: "files", label: "文件与路径", icon: FolderTree },
   { key: "editor", label: "编辑器", icon: PenLine },
+  { key: "about", label: "关于", icon: Info },
 ];
 
 /** 界面字体选项（value = CSS font-family；空串 = 跟随系统默认）。 */
@@ -42,7 +51,7 @@ const FONT_OPTIONS: { label: string; value: string }[] = [
 
 export function SettingsModal({ onClose }: { onClose: () => void }) {
   const vaultConfig = useSettingsStore((s) => s.vaultConfig);
-  // 仓库内设置（仓库级，六 tab）：通用 / 模型供应商 / 模型服务 / 联网搜索 / 文件与路径 / 编辑器
+  // 仓库内设置（仓库级，七 tab）：通用 / 模型供应商 / 模型服务 / 联网搜索 / 文件与路径 / 编辑器 / 关于
   const [tab, setTab] = useState<Tab>("general");
   /** 左侧 tab 栏折叠状态（折叠后仅显示图标）。 */
   const [tabsCollapsed, setTabsCollapsed] = useState(false);
@@ -643,6 +652,9 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                   </p>
                 </Field>
               </section>
+            ) : tab === "about" ? (
+              /* ===== 关于面板：Logo + 版本号 + 检查更新 ===== */
+              <AboutSection />
             ) : (
               /* ===== 编辑器面板（仓库级） ===== */
               <section className="flex-1 p-5 overflow-auto space-y-4">

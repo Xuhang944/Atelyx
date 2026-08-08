@@ -9,6 +9,26 @@
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
+/** 手动检查结果：null = 已是最新版本。 */
+export interface UpdateCheckResult {
+  latestVersion: string;
+}
+
+/** 手动检查新版本（设置页「关于」用）；检查失败抛错交由 UI 展示。 */
+export async function checkForUpdate(): Promise<UpdateCheckResult | null> {
+  const update = await check();
+  if (!update) return null;
+  return { latestVersion: update.version };
+}
+
+/** 下载并安装新版本；成功后重启应用（失败抛错交由 UI 展示）。 */
+export async function installUpdate(): Promise<void> {
+  const update = await check();
+  if (!update) return;
+  await update.downloadAndInstall();
+  await relaunch();
+}
+
 export async function checkAndAutoUpdate(): Promise<void> {
   if (import.meta.env.DEV) return;
   try {
