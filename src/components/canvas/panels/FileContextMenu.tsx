@@ -96,22 +96,8 @@ export function FileContextMenu({ x, y, onRename, onDelete, onTogglePrompt, prom
         </div>
       ) : (
         <>
-          <button
-            onClick={() => {
-              onRename();
-              onClose();
-            }}
-            className="w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
-            style={{ color: "var(--text-primary)" }}
-          >
-            <span className="inline-flex items-center gap-1.5">
-              <Pencil size={14} />
-              重命名
-            </span>
-          </button>
           {onConvert && (
             <>
-              <hr className="my-1" style={{ borderColor: "var(--border)" }} />
               <button
                 onClick={() => {
                   onConvert();
@@ -126,11 +112,11 @@ export function FileContextMenu({ x, y, onRename, onDelete, onTogglePrompt, prom
                   转换为画布
                 </span>
               </button>
+              <hr className="my-1" style={{ borderColor: "var(--border)" }} />
             </>
           )}
           {onTogglePrompt && (
             <>
-              <hr className="my-1" style={{ borderColor: "var(--border)" }} />
               <button
                 onClick={() => {
                   onTogglePrompt();
@@ -145,9 +131,22 @@ export function FileContextMenu({ x, y, onRename, onDelete, onTogglePrompt, prom
                   {promptMarked ? "注销提示词" : "注册为提示词"}
                 </span>
               </button>
+              <hr className="my-1" style={{ borderColor: "var(--border)" }} />
             </>
           )}
-          <hr className="my-1" style={{ borderColor: "var(--border)" }} />
+          <button
+            onClick={() => {
+              onRename();
+              onClose();
+            }}
+            className="w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
+            style={{ color: "var(--text-primary)" }}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <Pencil size={14} />
+              重命名
+            </span>
+          </button>
           <button
             onClick={() => setConfirming(true)}
             className="w-full text-left px-3 py-1.5 text-sm text-[#f87171] hover:bg-red-600 hover:text-white"
