@@ -24,7 +24,7 @@ import { dedupeFilename, parentDir, sanitizeFilename, siblingPath } from "@/util
 import { getAppVersion as getVersionSvc } from "@/services/app";
 import { openInExplorer as openInExplorerSvc, openUrl as openUrlSvc } from "@/services/shell";
 import { pickDirectory as pickDirectorySvc } from "@/services/dialog";
-import { applyStartupWindow as applyStartupWindowSvc, applyWorkspaceWindow as applyWorkspaceWindowSvc, closeWindow as closeWindowSvc, minimizeWindow as minimizeWindowSvc, showWindow as showWindowSvc, toggleFullscreen as toggleFullscreenSvc, toggleMaximizeWindow as toggleMaximizeWindowSvc } from "@/services/window";
+import { applyStartupWindow as applyStartupWindowSvc, applyWorkspaceWindow as applyWorkspaceWindowSvc, closeWindow as closeWindowSvc, minimizeWindow as minimizeWindowSvc, toggleFullscreen as toggleFullscreenSvc, toggleMaximizeWindow as toggleMaximizeWindowSvc } from "@/services/window";
 import type { CanvasFileRow, RecentVault } from "@/types";
 
 /**
@@ -85,8 +85,6 @@ interface AppState {
   /** 窗口形态切换（view effect 用）：启动页固定 960×640 不可调整 / 工作区恢复可调整。 */
   applyStartupWindow: () => Promise<void>;
   applyWorkspaceWindow: () => Promise<void>;
-  /** 显示窗口（启动时隐藏，初始化完成/超时后显示）。 */
-  showWindow: () => Promise<void>;
 
   loadList: () => Promise<void>;
   /** 打开画布（树行携带 id + file）。 */
@@ -196,17 +194,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
       // 加载仓库级配置覆盖（.atelyx/config.json），需在发消息前完成
       await useSettingsStore.getState().loadVaultConfig();
-      // 切换仓库：清空旧画布运行时状态（防残留 saveTimer 跨仓库写盘/旧消息残留），
-      // 再重载画布列表与文件树——工作区内 VaultSwitcher 切换不重挂载 FileExplorerPanel，
-      // 若只在挂载时 loadFiles，文件树会停留在旧仓库（bug 修复）
+      // 切换仓库：清空旧画布运行时状态（防残留 saveTimer 跨仓库写盘/旧消息残留）
       useCanvasStore.getState().resetCanvasState();
-      await get().loadList();
-      await useVaultStore.getState().loadFiles();
-      // 加载仓库级 UI 使用状态（.atelyx/ui-state.json：文件面板展开 + 上次打开文件），
-      // 恢复 effect 依赖 loaded 标志；先于 AI 会话加载（恢复打开文件时不受会话加载阻塞）
-      await useUiStateStore.getState().load();
-      // 重载新仓库的 AI 对话会话（.atelyx/editor-chats.json 为仓库级），记录会话归属仓库 ID
-      await useChatPanelStore.getState().load(info.id);
+      // 文件树/画布列表/UI 状态/AI 会话后台填充：不阻塞工作区显示（启动提速，渐进加载）
+      void (async () => {
+        try {
+          await get().loadList();
+          await useVaultStore.getState().loadFiles();
+          await useUiStateStore.getState().load();
+          await useChatPanelStore.getState().load(info.id);
+        } catch (e) {
+          console.error("加载仓库数据失败", e);
+        }
+      })();
       return true;
     } catch (e) {
       console.error("打开仓库失败", e);
@@ -253,11 +253,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   toggleFullscreen: () => toggleFullscreenSvc(),
   applyStartupWindow: () => applyStartupWindowSvc(),
   applyWorkspaceWindow: () => applyWorkspaceWindowSvc(),
-  showWindow: () => showWindowSvc(),
 
   loadList: async () => {
+    const vaultId = get().vaultId;
     try {
       const canvases = await listCanvasesVault();
+      // 切仓库竞态守卫：等待期间用户可能已切到新仓库（后台填充链与 VaultSwitcher 快速切换并发），
+      // 旧仓库的扫描结果不得覆盖新仓库的列表
+      if (get().vaultId !== vaultId) return;
       set({ canvases });
     } catch (e) {
       console.error("加载画布列表失败", e);

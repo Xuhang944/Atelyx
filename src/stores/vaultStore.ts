@@ -49,6 +49,9 @@ export function lastNoteRenameTarget(oldFile: string): string | null {
   return lastNoteRename?.oldFile === oldFile ? lastNoteRename.newFile : null;
 }
 
+/** loadFiles 并发守卫：递增序号，仅最后一次发起者的扫描结果落盘（后台填充与 watcher 触发并发时防旧结果覆盖）。 */
+let loadFilesSeq = 0;
+
 /**
  * renameNote/moveNote 共用核心：pendingRename 记录 + 服务调用 + 自写抑制 + 乐观锁基准 +
  * 画布节点同步（text file/systemPromptFile）+ 树刷新 + 重命名记录。
@@ -206,8 +209,10 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
   noteList: [],
 
   loadFiles: async () => {
+    const seq = ++loadFilesSeq;
     try {
       const tree = await listVaultTree();
+      if (seq !== loadFilesSeq) return;
       set({ tree, noteList: collectMdNotes(tree) });
     } catch (e) {
       console.error("加载仓库文件树失败", e);

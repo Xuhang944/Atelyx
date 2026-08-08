@@ -14,6 +14,7 @@ import { WEB_SEARCH_TOOL } from "@/constants/tools";
 import { runStreamExchange, decideCleanup } from "./streaming";
 import { prefix, scanMentionHits } from "@/utils/text";
 import { useSettingsStore } from "./settingsStore";
+import { useAppStore } from "./appStore";
 import {
   EDITOR_CHATS_SCHEMA,
   EDITOR_CHATS_SCHEMA_V1,
@@ -512,6 +513,9 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
           sessions.push({ ...s, messages });
         }
       }
+      // 切仓库竞态守卫：后台填充链与 VaultSwitcher 快速切换并发时，
+      // 旧仓库读取结果不得覆盖新仓库的会话（等待期间已切走则丢弃）
+      if (useAppStore.getState().vaultId !== vaultId) return;
       // 新仓库干净状态：清脏标记（旧仓库未写完的改动不再写回）；v1 迁移置脏以便落 v2 索引
       dirty = migratedV1;
       lastLoadedVaultId = vaultId;
@@ -530,6 +534,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
       if (migratedV1) schedulePersist(); // 触发索引 v2 落盘
     } catch (e) {
       console.error("读取 AI 对话会话失败", e);
+      if (useAppStore.getState().vaultId !== vaultId) return;
       set({ loaded: true, error: "读取 AI 对话会话失败" });
     }
   },

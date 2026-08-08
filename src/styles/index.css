@@ -562,3 +562,23 @@ input[type="number"]::-webkit-inner-spin-button {
   animation: thinking-sweep 1.6s linear infinite;
 }
 
+
+/* 启动加载屏：循环扫光进度条（indeterminate） */
+@keyframes sweep-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+.sweep-track {
+  width: 240px;
+  height: 3px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.sweep-bar {
+  width: 33%;
+  height: 100%;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, transparent, #d4af37, transparent);
+  animation: sweep-slide 1.2s linear infinite;
+}

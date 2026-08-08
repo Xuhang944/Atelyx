@@ -114,8 +114,11 @@ export const useUiStateStore = create<UiStateStore>((set, get) => ({
       clearTimeout(persistTimer);
       persistTimer = null;
     }
+    // 切仓库竞态守卫：后台填充链与 VaultSwitcher 快速切换并发时，旧仓库读取结果不得覆盖新仓库内存态
+    const vaultId = currentVaultId();
     try {
       const [deviceId, disk] = await Promise.all([getDeviceId(), readVaultUiState()]);
+      if (currentVaultId() !== vaultId) return;
       // 本设备无条目时回退旧平铺字段（首次升级迁移；旧文件只写了平铺字段）
       const mine = disk.perDevice?.[deviceId] ?? legacyToDeviceState(disk);
       set({
@@ -127,6 +130,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => ({
       });
     } catch (e) {
       console.error("读取仓库 UI 状态失败", e);
+      if (currentVaultId() !== vaultId) return;
       set({ fileExplorerExpanded: new Set(), lastCanvasFile: null, lastNoteFile: null, lastActiveWindow: null, loaded: true });
     }
   },

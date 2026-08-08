@@ -24,19 +24,6 @@ pub fn run() {
             app.manage(vault::VaultState::default());
             // 文件监听：持有当前仓库的 notify debouncer，open_vault 时启动
             app.manage(watcher::WatcherState::default());
-            // 窗口显示看门狗：窗口启动隐藏（visible: false）由前端初始化完成后 show；
-            // 前端加载失败/挂起时 5s 后强制显示，防窗口永久不可见
-            let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(5));
-                let h = handle.clone();
-                let h2 = h.clone();
-                let _ = h.run_on_main_thread(move || {
-                    if let Some(win) = h2.get_webview_window("main") {
-                        let _ = win.show();
-                    }
-                });
-            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -1,23 +1,33 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { VaultSelectPage } from "@/pages/VaultSelectPage";
-import { ProjectWorkspacePage } from "@/pages/ProjectWorkspacePage";
+import { LoadingScreen } from "@/components/common/LoadingScreen";
 import { useVaultFileWatcher } from "@/hooks/useVaultFileWatcher";
 import { checkAndAutoUpdate } from "@/services/updater";
 
-/** 按当前视图应用窗口形态 → 显示。各步独立降级：形态失败不连带跳过显示。
- * 屏幕居中由窗口创建时 `center: true` 保证（tao 原生，见 tauri.conf.json），前端不再移动窗口。 */
-function applyShapeAndShow(): void {
-  const s = useAppStore.getState();
-  void (async () => {
-    const apply = s.view === "vaultSelect" ? s.applyStartupWindow : s.applyWorkspaceWindow;
-    await apply().catch(() => {});
-    await s.showWindow().catch(() => {});
-  })();
-}
+// 页面 lazy 分割：主包不含 CodeMirror/KaTeX/高亮语言包等重库，LoadingScreen 更快出现。
+// ReactFlowProvider 留在 App 层（页面组件自身的 useReactFlow hooks 需要它在组件外；
+// React Flow 因 canvasStore 依赖本就在主包，不额外增加首屏体积）。
+const VaultSelectPage = lazy(async () => {
+  const mod = await import("@/pages/VaultSelectPage");
+  return { default: mod.VaultSelectPage };
+});
+const ProjectWorkspacePage = lazy(async () => {
+  const mod = await import("@/pages/ProjectWorkspacePage");
+  return { default: mod.ProjectWorkspacePage };
+});
 
+/** 窗口形态应用串行队列：view 切换（含 booting 结束的首应用）多次触发时按序执行，
+ * 最终形态 = 最后一次调用的视图（防并发乱序把工作区窗口锁成启动页形态）。
+ * 队列 promise 因内层 catch 永不 reject。 */
+let windowShapeQueue: Promise<void> = Promise.resolve();
+function applyWindowShape(): Promise<void> {
+  const s = useAppStore.getState();
+  const apply = s.view === "vaultSelect" ? s.applyStartupWindow : s.applyWorkspaceWindow;
+  windowShapeQueue = windowShapeQueue.then(() => apply().catch(() => {}));
+  return windowShapeQueue;
+}
 export default function App() {
   const view = useAppStore((s) => s.view);
   const currentCanvasId = useAppStore((s) => s.currentCanvasId);
@@ -27,6 +37,9 @@ export default function App() {
   const theme = useSettingsStore((s) => s.theme);
   const fontSize = useSettingsStore((s) => s.vaultConfig?.fontSize);
   const fontFamily = useSettingsStore((s) => s.vaultConfig?.fontFamily);
+
+  /** 初始化未完成前渲染加载屏（循环扫光进度条），完成后按 view 渲染启动页/工作区。 */
+  const [booting, setBooting] = useState(true);
 
   // 跟随系统主题：监听 prefers-color-scheme 变化（theme === "system" 时实时生效）
   const [systemDark, setSystemDark] = useState(() =>
@@ -60,21 +73,12 @@ export default function App() {
     return () => document.removeEventListener("contextmenu", suppress);
   }, []);
 
-  // 窗口形态随视图切换：启动页固定 960×640 不可调整，工作区恢复可调整（静默降级）。
-  // 启动页内容按固定窗口设计，窗口不可调整避免布局变形。
-  // 首次渲染跳过：窗口隐藏期由初始化链路统一应用最终形态（applyShapeAndShow），
-  // 避免 mount 时的 applyStartupWindow 与初始化链并发导致最终形态被旧调用覆盖。
-  const firstViewApply = useRef(true);
+  // 窗口形态随视图切换：启动页固定 960×640 不可调整，工作区恢复可调整（静默降级，串行队列）。
+  // 窗口恒以启动页尺寸创建（tauri.conf.json），加载屏期间即小窗；booting 期间 view 变化触发的
+  // applyWorkspaceWindow 幂等（窗口小于默认时才放大），booting 结束再由 applyWindowShape
+  // 统一按最终视图应用一次，进入工作区全程只有一次放大。
   useEffect(() => {
-    if (firstViewApply.current) {
-      firstViewApply.current = false;
-      return;
-    }
-    const apply =
-      view === "vaultSelect"
-        ? useAppStore.getState().applyStartupWindow
-        : useAppStore.getState().applyWorkspaceWindow;
-    void apply().catch(() => {});
+    applyWindowShape();
   }, [view]);
 
   // 仓库文件监听：进仓库后全程订阅（工作区）。
@@ -84,14 +88,15 @@ export default function App() {
   // 应用挂载：init 登记最近仓库（首启建默认仓库），loadSettings 重置运行时配置，
   // selectVault 进入仓库后由 loadVaultConfig 填充仓库级配置（AI 供应商/主题/搜索源 + keychain key）。
   // 记住上次所在仓库：init 返回非 null 时跳过启动页直接进入。
-  // 窗口启动时隐藏（visible: false）：初始化完成后才显示——非首启自动进入工作区时，
-  // 窗口直接以工作区形态（1440×900 可调整）出现，避免先闪小窗口启动页再跳变的闪烁。
   useEffect(() => {
+    // 预载工作区页面 chunk（lazy 在首次渲染才触发加载，booting 期间先编译/加载，切换无感）
+    void import("@/pages/ProjectWorkspacePage").catch(() => {});
     let settled = false;
-    // 兜底：初始化异常挂起（如读取配置卡死）时按当前形态强制显示窗口，防无窗口可用
+    // 兜底：初始化 IPC 异常挂起（如读取配置卡死）时强制结束加载屏落到启动页，防永久卡加载屏
     const fallback = setTimeout(() => {
-      if (!settled) applyShapeAndShow();
-    }, 3000);
+      if (settled) return;
+      void applyWindowShape().then(() => setBooting(false));
+    }, 5000);
     void (async () => {
       const autoEnterRoot = await init();
       await loadSettings();
@@ -102,21 +107,26 @@ export default function App() {
       if (useAppStore.getState().autoUpdate) {
         void checkAndAutoUpdate().catch(() => {});
       }
-    })().finally(() => {
-      clearTimeout(fallback);
+    })().finally(async () => {
       settled = true;
-      // 窗口以最终形态一次性出现在屏幕中心（view 此时已确定）
-      applyShapeAndShow();
+      clearTimeout(fallback);
+      // 等窗口形态应用完成再结束加载屏：工作区渲染时窗口已是最终大小，防跳变
+      await applyWindowShape();
+      setBooting(false);
     });
   }, [init, loadSettings]);
 
   return (
     <ReactFlowProvider>
-      {view === "workspace" ? (
-        <ProjectWorkspacePage canvasId={currentCanvasId} canvasFile={currentCanvasFile} />
-      ) : (
-        <VaultSelectPage />
-      )}
+      <Suspense fallback={<LoadingScreen />}>
+        {booting ? (
+          <LoadingScreen />
+        ) : view === "workspace" ? (
+          <ProjectWorkspacePage canvasId={currentCanvasId} canvasFile={currentCanvasFile} />
+        ) : (
+          <VaultSelectPage />
+        )}
+      </Suspense>
     </ReactFlowProvider>
   );
 }
