@@ -7,14 +7,14 @@
  * 资产列表项点击 → setCenter 定位到对应节点（与 @chip 点击定位一致）。
  * 分层：走 canvasStore / vaultStore，不直调 service。
  */
-import { BookMarked, FileText, GitBranch, Image, Info, LayoutDashboard, Link2, MessageSquare, Network } from "lucide-react";
+import { BookMarked, FileText, GitBranch, Image, Info, LayoutDashboard, Link2, MessageSquare, Network, Table as TableIcon } from "lucide-react";
 import { useReactFlow, type Node as FlowNode } from "@xyflow/react";
 import { useShallow } from "zustand/react/shallow";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useVaultStore } from "@/stores/vaultStore";
 import { mentionTextOf, prefix } from "@/utils/text";
-import type { ConversationData, MediaData, Message, TextData } from "@/types";
+import type { ConversationData, MediaData, Message, TableData, TextData } from "@/types";
 
 const NODE_TYPE_LABEL: Record<string, string> = {
   conversation: "对话",
@@ -23,6 +23,7 @@ const NODE_TYPE_LABEL: Record<string, string> = {
   search: "搜索",
   group: "分组",
   link: "链接",
+  table: "表格",
 };
 
 /** 无入边/出边时的空派生（模块级常量，useShallow 数组比较依赖元素引用稳定）。 */
@@ -47,6 +48,9 @@ function sourceFallback(node: FlowNode): string {
   if (node.type === "text") {
     return (node.data as unknown as TextData).file ?? "手动创建";
   }
+  if (node.type === "table") {
+    return (node.data as unknown as TableData).file ?? "手动创建";
+  }
   if (node.type === "media") return "手动创建";
   return "暂无";
 }
@@ -58,6 +62,8 @@ function AssetRow({ node, onLocate }: { node: FlowNode; onLocate: (id: string) =
       <MessageSquare size={13} className="flex-shrink-0" />
     ) : node.type === "text" ? (
       <FileText size={13} className="flex-shrink-0" />
+    ) : node.type === "table" ? (
+      <TableIcon size={13} className="flex-shrink-0" />
     ) : node.type === "group" ? (
       <LayoutDashboard size={13} className="flex-shrink-0" />
     ) : node.type === "link" ? (
@@ -193,6 +199,10 @@ export function InspectorPanel({ nodeId }: { nodeId: string | null }) {
     const d = node.data as unknown as { url?: string };
     title = d.url || "未命名链接";
     sub = "链接节点（单击在浏览器打开）";
+  } else if (node.type === "table") {
+    const d = node.data as unknown as TableData;
+    title = d.title || "未命名表格";
+    sub = d.file ?? "表格";
   }
 
   const sysPromptFile = isConv

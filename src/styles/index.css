@@ -259,6 +259,11 @@ body {
   background: var(--scrollbar-thumb-hover);
 }
 
+/* 表格窗口滚动容器：隐藏原生横向滚动条（底部有专用同步滑动条，避免双条），保留纵向 */
+.no-horizontal-scrollbar::-webkit-scrollbar:horizontal {
+  display: none;
+}
+
 /* ===== Markdown ===== */
 /* 段落间距统一对齐源码空行高度：`\n\n` 的空行 = 一整行行高（line-height 1.625），
    宽松换行下单换行 `<br>` 天然同高；首/末段 margin 归零防内容顶部/底部多出空白 */

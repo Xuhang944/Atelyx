@@ -17,8 +17,8 @@
 /** `ui-state.json` 文件 schema 版本（Rust 侧 `vault.rs` 有同名常量，两端须保持一致）。 */
 export const UI_STATE_SCHEMA = "atelyx-ui-state/v1" as const;
 
-/** 上次退出时的窗口布局（双窗口并存：画布 + 笔记各一个）。 */
-export type LastActiveWindow = "canvas" | "note";
+/** 上次退出时的窗口布局（三窗口并存：画布 + 笔记 + 表格各一个）。 */
+export type LastActiveWindow = "canvas" | "note" | "table";
 
 /** 单设备的仓库级 UI 使用状态（`VaultUiState.perDevice` 的一个条目）。 */
 export interface DeviceUiState {
@@ -28,7 +28,9 @@ export interface DeviceUiState {
   lastCanvasFile?: string;
   /** 上次打开的笔记文件（相对仓库根路径；关闭/删除后清空）。 */
   lastNoteFile?: string;
-  /** 上次激活的窗口（画布 / 笔记；缺省 = 画布槽）。 */
+  /** 上次打开的表格文件（相对仓库根路径；关闭/删除后清空）。 */
+  lastTableFile?: string;
+  /** 上次激活的窗口（画布 / 笔记 / 表格；缺省 = 画布槽）。 */
   lastActiveWindow?: LastActiveWindow;
 }
 
@@ -44,6 +46,8 @@ export interface VaultUiState {
   lastCanvasFile?: string;
   /** 上次打开的笔记文件（旧格式，见 perDevice）。 */
   lastNoteFile?: string;
+  /** 上次打开的表格文件（旧格式，见 perDevice）。 */
+  lastTableFile?: string;
   /** 上次激活的窗口（旧格式，见 perDevice）。 */
   lastActiveWindow?: LastActiveWindow;
 }

@@ -1,8 +1,8 @@
-import { Image, StickyNote } from "lucide-react";
+import { Image, StickyNote, Table as TableIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useCanvasStore } from "@/stores/canvasStore";
 import type { Node as FlowNode } from "@xyflow/react";
-import type { TextData, MediaData, SearchResultData } from "@/types";
+import type { TableData, TextData, MediaData, SearchResultData } from "@/types";
 import { mentionTextOf } from "@/utils/text";
 
 /**
@@ -59,6 +59,12 @@ export function ConversationAtPicker({ conversationId, x, y, openUp, yBottom, qu
           // 搜索结果节点可被 @提及（复用）
           const query = (n.data as unknown as SearchResultData).query ?? "";
           return q === "" || query.toLowerCase().includes(q);
+        }
+        if (n.type === "table") {
+          // 表格节点可被 @提及（快照注入对话上下文）
+          const d = n.data as unknown as TableData;
+          const haystack = `${d.title ?? ""}\n${d.snapshot ?? ""}`.toLowerCase();
+          return q === "" || haystack.includes(q);
         }
         return false;
       }),
@@ -126,6 +132,17 @@ export function ConversationAtPicker({ conversationId, x, y, openUp, yBottom, qu
           </span>
         ),
         full: (n.data as unknown as TextData).bodyMd ?? "",
+      };
+    }
+    if (n.type === "table") {
+      return {
+        label: (
+          <span className="inline-flex items-center gap-1">
+            <TableIcon size={14} className="flex-shrink-0" />
+            {mentionTextOf(n)}
+          </span>
+        ),
+        full: (n.data as unknown as TableData).title ?? "",
       };
     }
     const md = n.data as unknown as MediaData;

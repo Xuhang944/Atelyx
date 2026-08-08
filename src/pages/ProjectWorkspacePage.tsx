@@ -1,4 +1,4 @@
-import { FileOutput, FilePlus, FileText, Grid3x3, LayoutDashboard, LayoutTemplate, Link2, Magnet, Maximize, MessageSquarePlus, Minus, Palette, PanelRightClose, PanelRightOpen, Plus, X } from "lucide-react";
+import { FileOutput, FilePlus, FileText, Grid3x3, LayoutDashboard, LayoutTemplate, Link2, Magnet, Maximize, MessageSquarePlus, Minus, Palette, PanelRightClose, PanelRightOpen, Plus, Table, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useState, useCallback, useRef } from "react";
 import type { Node, Edge } from "@xyflow/react";
 import {
@@ -17,7 +17,8 @@ import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { useVaultStore, lastFolderRenameTarget, lastNoteRenameTarget } from "@/stores/vaultStore";
+import { useVaultStore, lastFolderRenameTarget, lastNoteRenameTarget, lastTableRenameTarget } from "@/stores/vaultStore";
+import { useTableStore } from "@/stores/tableStore";
 import { dedupeFilename } from "@/utils/filename";
 import { useClampedMenuPosition } from "@/hooks/useClampedMenuPosition";
 import { DEFAULT_CONVERSATION_WIDTH, DEFAULT_CONVERSATION_HEIGHT, DEFAULT_TEXT_NODE_WIDTH, DEFAULT_TEXT_NODE_HEIGHT, DEFAULT_GROUP_WIDTH, DEFAULT_GROUP_HEIGHT, DEFAULT_LINK_WIDTH, DEFAULT_LINK_HEIGHT } from "@/constants/canvas";
@@ -28,11 +29,13 @@ import { MediaNode } from "@/components/canvas/nodes/MediaNode";
 import { SearchResultNode } from "@/components/canvas/nodes/SearchResultNode";
 import { GroupNode } from "@/components/canvas/nodes/GroupNode";
 import { LinkNode } from "@/components/canvas/nodes/LinkNode";
+import { TableNode, OPEN_TABLE_EVENT } from "@/components/canvas/nodes/TableNode";
 import { NodeContextMenu } from "@/components/canvas/panels/NodeContextMenu";
 import { ActivityBar } from "@/components/canvas/panels/ActivityBar";
 import { InspectorPanel } from "@/components/canvas/panels/InspectorPanel";
 import { AiChatPanel } from "@/components/canvas/panels/AiChatPanel";
 import { NoteEditor } from "@/components/editor/NoteEditor";
+import { TableEditor } from "@/components/table/TableEditor";
 import { useChatPanelStore } from "@/stores/chatPanelStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import {
@@ -46,11 +49,11 @@ import { SettingsModal } from "@/components/settings/SettingsModal";
 import { TitleBarControls } from "@/components/common/TitleBarControls";
 import type { CanvasFileRow, FileTreeNode } from "@/types";
 
-const nodeTypes = { conversation: ConversationNode, text: TextNode, media: MediaNode, search: SearchResultNode, group: GroupNode, link: LinkNode };
+const nodeTypes = { conversation: ConversationNode, text: TextNode, media: MediaNode, search: SearchResultNode, group: GroupNode, link: LinkNode, table: TableNode };
 const edgeTypes = { default: DataFlowEdge };
 
 // 连线合法性（边类型自动分类，见 2.4）：
-// - 资产（text/media/search）→ 对话：数据流引用边，放行（重复由 onConnect「再次注入」处理）
+// - 资产（text/media/search/table）→ 对话：数据流引用边，放行（重复由 onConnect「再次注入」处理）
 // - 对话 → 资产：数据流产出边，同对已有边拦截（防重复）
 // - 其余（对话↔对话、link/group 参与、无对话组合）：关联自由线，同对已有边拦截
 const isValidConnection = (connection: Edge | Connection) => {
@@ -61,7 +64,7 @@ const isValidConnection = (connection: Edge | Connection) => {
   const tgt = nodes.find((n) => n.id === connection.target);
   if (!src || !tgt) return false;
   const isAsset = (t: string | undefined) =>
-    t === "text" || t === "media" || t === "search";
+    t === "text" || t === "media" || t === "search" || t === "table";
   const isAssetToConv = isAsset(src.type) && tgt.type === "conversation";
   // 同对已有任意边（数据流产出/关联）→ 拦截；资产→对话例外（onConnect 处理「再次注入」）
   if (!isAssetToConv) {
@@ -120,18 +123,24 @@ export function ProjectWorkspacePage({
   const [inspectorNodeId, setInspectorNodeId] = useState<string | null>(null);
   // 无画布时的笔记编辑器（单击文件面板笔记打开，）
   const [editingNote, setEditingNote] = useState<{ file: string; title: string } | null>(null);
+  // 表格编辑器（单击文件面板表格打开，与笔记窗口同模式）
+  const [editingTable, setEditingTable] = useState<{ file: string; title: string } | null>(null);
 
   const vaultNoteList = useVaultStore((s) => s.noteList);
-  // 仓库级 UI 使用状态：上次打开的画布/笔记 + 激活窗口，进仓库自动恢复
+  const vaultTableList = useVaultStore((s) => s.tableList);
+  // 仓库级 UI 使用状态：上次打开的画布/笔记/表格 + 激活窗口，进仓库自动恢复
   const uiLoaded = useUiStateStore((s) => s.loaded);
   const lastCanvasFile = useUiStateStore((s) => s.lastCanvasFile);
   const lastNoteFile = useUiStateStore((s) => s.lastNoteFile);
+  const lastTableFile = useUiStateStore((s) => s.lastTableFile);
   const lastActiveWindow = useUiStateStore((s) => s.lastActiveWindow);
   const recordOpenCanvas = useUiStateStore((s) => s.recordOpenCanvas);
   const recordOpenNote = useUiStateStore((s) => s.recordOpenNote);
+  const recordOpenTable = useUiStateStore((s) => s.recordOpenTable);
   const recordActiveWindow = useUiStateStore((s) => s.recordActiveWindow);
   const closeUiCanvas = useUiStateStore((s) => s.closeCanvas);
   const closeUiNote = useUiStateStore((s) => s.closeNote);
+  const closeUiTable = useUiStateStore((s) => s.closeTable);
   const autoRestoreFiles = useSettingsStore((s) => s.vaultConfig?.autoRestoreFiles ?? true);
 
   // 当前打开的笔记从列表消失 → 区分处理：软件内重命名/文件夹重命名（切到新文件）；真删除/外部删除（关闭笔记窗口）
@@ -151,8 +160,26 @@ export function ProjectWorkspacePage({
       }
     }
   }, [vaultNoteList, editingNote]);
-  // 窗口系统：画布 / 笔记最多各开一个窗口，主编辑区顶部窗口条切换显示
-  const [activeWindow, setActiveWindow] = useState<"canvas" | "note" | null>(canvasId ? "canvas" : null);
+  // 当前打开的表格从列表消失 → 同笔记：软件内重命名/文件夹重命名切到新文件（重载内容）；
+  // 真删除/外部删除关闭窗口（不 flush——防写回重建已删文件，只清内存态）
+  useEffect(() => {
+    if (!editingTable) return;
+    const stillExists = vaultTableList.some((t) => t.file === editingTable.file);
+    if (!stillExists) {
+      const newFile =
+        lastTableRenameTarget(editingTable.file) ?? lastFolderRenameTarget(editingTable.file);
+      if (newFile) {
+        const newTitle = newFile.split("/").pop()?.replace(/\.atb$/i, "") ?? newFile;
+        setEditingTable({ file: newFile, title: newTitle });
+        void useTableStore.getState().load(newFile);
+      } else {
+        useTableStore.getState().clear();
+        setEditingTable(null);
+      }
+    }
+  }, [vaultTableList, editingTable]);
+  // 窗口系统：画布 / 笔记 / 表格最多各开一个窗口，主编辑区顶部窗口条切换显示
+  const [activeWindow, setActiveWindow] = useState<"canvas" | "note" | "table" | null>(canvasId ? "canvas" : null);
   // 画布视口缓存（按画布隔离）：窗口切换卸载 ReactFlow，返回时恢复平移/缩放位置
   const viewportCacheRef = useRef(new Map<string, Viewport>());
   const addNode = useCanvasStore((s) => s.addNode);
@@ -209,8 +236,11 @@ export function ProjectWorkspacePage({
   useEffect(() => {
     if (editingNote) setActiveWindow("note");
   }, [editingNote]);
+  useEffect(() => {
+    if (editingTable) setActiveWindow("table");
+  }, [editingTable]);
   // 窗口标签联动：点击标题栏窗口标签切换时，展开右侧边栏并切对应 tab——
-  // 笔记槽 → AI 对话 tab；画布槽 → 属性 tab（打开/关闭笔记、点击标签均走 activeWindow 变化）
+  // 笔记槽 → AI 对话 tab；画布/表格槽 → 属性 tab（打开/关闭文件、点击标签均走 activeWindow 变化）
   useEffect(() => {
     setShowInspector(true);
     setInspectorTab(activeWindow === "note" ? "ai" : "properties");
@@ -227,11 +257,12 @@ export function ProjectWorkspacePage({
     setActiveWindow((w) => {
       // 初始/未知态（null）→ 默认激活画布槽
       if (w === null) return "canvas";
-      if (w === "canvas" && !canvasId) return editingNote ? "note" : "canvas";
-      if (w === "note" && !editingNote) return "canvas";
+      if (w === "canvas" && !canvasId) return editingNote ? "note" : editingTable ? "table" : "canvas";
+      if (w === "note" && !editingNote) return editingTable ? "table" : "canvas";
+      if (w === "table" && !editingTable) return editingNote ? "note" : "canvas";
       return w;
     });
-  }, [canvasId, editingNote]);
+  }, [canvasId, editingNote, editingTable]);
 
   const saveTitle = useCallback(() => {
     // Escape 取消后 input 卸载触发 blur，靠 flag 拦截这次误提交（ref 同步生效，blur 闭包仍旧 draft）
@@ -450,6 +481,26 @@ export function ProjectWorkspacePage({
     setActiveWindow("note");
   }, [recordOpenNote]);
 
+  /** 单击文件面板表格 → 打开表格窗口并激活（重复打开同一表格 = 切回窗口，不重载）。 */
+  const handleOpenTableFile = useCallback((file: string, title: string) => {
+    setEditingTable({ file, title });
+    recordOpenTable(file);
+    setActiveWindow("table");
+    if (useTableStore.getState().tableFile !== file) {
+      void useTableStore.getState().load(file);
+    }
+  }, [recordOpenTable]);
+
+  // 画布表格节点「打开表格」按钮 → 打开表格窗口（ReactFlow 节点无法经 props 回调，走事件桥接）
+  useEffect(() => {
+    const onOpenTable = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { file: string; title: string } | undefined;
+      if (detail?.file) handleOpenTableFile(detail.file, detail.title ?? "表格");
+    };
+    window.addEventListener(OPEN_TABLE_EVENT, onOpenTable);
+    return () => window.removeEventListener(OPEN_TABLE_EVENT, onOpenTable);
+  }, [handleOpenTableFile]);
+
   /** 关闭画布窗口：槽位占位化（canvasId 置 null、标签保留为「画布」），不切相邻画布。 */
   const handleCloseCanvasWindow = useCallback(() => {
     closeCanvasFile();
@@ -461,6 +512,22 @@ export function ProjectWorkspacePage({
     setEditingNote(null);
     closeUiNote();
   }, [closeUiNote]);
+
+  /** 关闭表格窗口：先落盘（防 debounce 窗口内丢改动）再清内存态；激活联动在 useEffect。 */
+  const handleCloseTableWindow = useCallback(() => {
+    void useTableStore.getState().flush().finally(() => {
+      useTableStore.getState().clear();
+    });
+    setEditingTable(null);
+    closeUiTable();
+  }, [closeUiTable]);
+
+  // 页面卸载（切仓库/回启动页）：flush 表格改动，防 debounce 窗口内丢
+  useEffect(() => {
+    return () => {
+      void useTableStore.getState().flush();
+    };
+  }, []);
 
   /** 进仓库后恢复上次打开的文件（设置「自动恢复上次打开的文件」开启时；）。
    * 依赖 uiLoaded（uiState 已从磁盘加载）+ canvases/noteList（文件树已刷新）就绪后才执行，
@@ -492,15 +559,23 @@ export function ProjectWorkspacePage({
       const note = vaultNoteList.find((n) => n.file === lastNoteFile);
       if (note) setEditingNote({ file: note.file, title: note.name.replace(/\.md$/i, "") });
     }
-    // 恢复后按上次激活窗口激活；openCanvas/setEditingNote 的联动 effect 会无条件激活对应窗口，
+    // 表格：lastTableFile 能在表格列表命中才打开（文件缺失/已删除则跳过）
+    if (lastTableFile && !editingTable) {
+      const table = vaultTableList.find((t) => t.file === lastTableFile);
+      if (table) {
+        setEditingTable({ file: table.file, title: table.name.replace(/\.atb$/i, "") });
+        void useTableStore.getState().load(table.file);
+      }
+    }
+    // 恢复后按上次激活窗口激活；openCanvas/setEditingNote/setEditingTable 的联动 effect 会无条件激活对应窗口，
     // 用 setTimeout 兜底让联动 effect 先跑完再最终覆盖（lastActiveWindow 优先级最高）
     const t = setTimeout(() => setActiveWindow(lastActiveWindow ?? "canvas"), 0);
     return () => clearTimeout(t);
-  }, [uiLoaded, autoRestoreFiles, lastCanvasFile, lastNoteFile, openCanvas, vaultNoteList, editingNote, lastActiveWindow]);
+  }, [uiLoaded, autoRestoreFiles, lastCanvasFile, lastNoteFile, lastTableFile, openCanvas, vaultNoteList, vaultTableList, editingNote, editingTable, lastActiveWindow]);
 
   // 记录激活窗口变化（标题栏标签切换/打开文件联动均走 activeWindow）：写回 uiStateStore 供下次恢复
   useEffect(() => {
-    if (activeWindow === "canvas" || activeWindow === "note") {
+    if (activeWindow === "canvas" || activeWindow === "note" || activeWindow === "table") {
       recordActiveWindow(activeWindow);
     }
   }, [activeWindow, recordActiveWindow]);
@@ -591,6 +666,13 @@ export function ProjectWorkspacePage({
                 active={activeWindow === "note"}
                 onSelect={() => setActiveWindow("note")}
                 onClose={editingNote ? handleCloseNoteWindow : undefined}
+              />
+              {/* 表格槽 */}
+              <WindowTab
+                title={editingTable ? `${editingTable.title}.atb` : "表格"}
+                active={activeWindow === "table"}
+                onSelect={() => setActiveWindow("table")}
+                onClose={editingTable ? handleCloseTableWindow : undefined}
               />
             </div>
 
@@ -700,12 +782,15 @@ export function ProjectWorkspacePage({
                     onOpenCanvasFile={handleOpenCanvasFile}
                     onOpenNoteForEdit={handleOpenNoteEditor}
                     openedNoteFile={editingNote?.file ?? null}
+                    onOpenTableFile={handleOpenTableFile}
+                    openedTableFile={editingTable?.file ?? null}
                     onConvertWhiteboard={(file) => void handleConvertWhiteboard(file)}
                   />
                 ) : (
                   <SearchPanel
                     onOpenCanvasFile={handleOpenCanvasFile}
                     onOpenNoteForEdit={handleOpenNoteEditor}
+                    onOpenTableFile={handleOpenTableFile}
                   />
                 )}
               </Panel>
@@ -738,6 +823,29 @@ export function ProjectWorkspacePage({
                         </h2>
                         <p className="text-sm" style={{ color: "var(--text-muted)" }}>
                           从左侧文件面板或搜索面板单击一个 .md 笔记开始编辑。
+                        </p>
+                      </div>
+                    </div>
+                  )
+                ) : activeWindow === "table" ? (
+                  /* 表格槽激活：有文件 → 表格编辑器；占位 → 打开提示 */
+                  editingTable ? (
+                    <TableEditor key={editingTable.file} />
+                  ) : (
+                    <div
+                      className="h-full w-full flex items-center justify-center"
+                      style={{ background: "var(--bg-primary)" }}
+                    >
+                      <div className="flex flex-col items-center gap-4 max-w-sm text-center px-6">
+                        <div className="opacity-60"><Table size={64} strokeWidth={1.5} /></div>
+                        <h2
+                          className="text-xl font-semibold"
+                          style={{ color: "var(--text-primary)" }}
+                        >
+                          打开表格
+                        </h2>
+                        <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+                          从左侧文件面板或搜索面板单击一个 .atb 表格开始编辑。
                         </p>
                       </div>
                     </div>

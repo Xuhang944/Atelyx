@@ -361,7 +361,7 @@ pub fn import_attachment_vault(
 }
 
 /// 按扩展名推图片 mime（仅图片，其他返回 None）。
-fn mime_from_ext(file: &str) -> Option<&'static str> {
+pub(crate) fn mime_from_ext(file: &str) -> Option<&'static str> {
     let ext = Path::new(file)
         .extension()
         .and_then(|s| s.to_str())
@@ -581,7 +581,8 @@ fn vault_info_from(root: PathBuf, id: String) -> VaultInfo {
 
 /// 递归扫描仓库内全部 .atlx，命中更新条件的收集（不写盘，flush_canvas_updates 统一写回）。
 /// 全仓库扫描：被引用文件与画布可能位于任意文件夹（含排除/隐藏目录），链接维护不过滤。
-fn collect_canvas_updates(
+/// pub(crate)：table 命令的引用扫描复用（rename/move_table_vault）。
+pub(crate) fn collect_canvas_updates(
     root: &Path,
     update: &mut dyn FnMut(&mut CanvasFile) -> bool,
 ) -> Result<Vec<(PathBuf, CanvasFile)>, String> {
@@ -654,6 +655,37 @@ fn collect_attachment_ref_updates(
     })
 }
 
+/// 收集需更新 table 节点 file 引用的画布（不写盘，rename/move_table_vault 用）。
+pub(crate) fn collect_table_ref_updates(
+    root: &Path,
+    old_file: &str,
+    new_file: &str,
+) -> Result<Vec<(PathBuf, CanvasFile)>, String> {
+    collect_canvas_updates(root, &mut |canvas| {
+        update_table_refs_in_canvas(canvas, old_file, new_file)
+    })
+}
+
+/// 更新单个 .atlx 内 table 节点的 file 引用（内存中），返回是否有变更。
+fn update_table_refs_in_canvas(canvas: &mut CanvasFile, old_file: &str, new_file: &str) -> bool {
+    let mut changed = false;
+    for node in &mut canvas.nodes {
+        if node.node_type != "table" {
+            continue;
+        }
+        if let Some(obj) = node.data.as_object_mut() {
+            if obj.get("file").and_then(|v| v.as_str()) == Some(old_file) {
+                obj.insert(
+                    "file".to_string(),
+                    serde_json::Value::String(new_file.to_string()),
+                );
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
 /// 更新单个 .atlx 内的 `.md` 引用（内存中）：text 节点的 `file` + conversation 节点的 `systemPromptFile`。
 /// 返回是否有变更。
 fn update_note_refs_in_canvas(
@@ -684,7 +716,8 @@ fn update_note_refs_in_canvas(
 }
 
 /// 统一写回收集的画布更新（rename 成功后才调用；失败由调用方回滚 rename）。
-fn flush_canvas_updates(updates: &[(PathBuf, CanvasFile)]) -> Result<(), String> {
+/// pub(crate)：table 命令的引用写回复用。
+pub(crate) fn flush_canvas_updates(updates: &[(PathBuf, CanvasFile)]) -> Result<(), String> {
     for (path, canvas) in updates {
         write_canvas_file(path, canvas)?;
     }
@@ -732,6 +765,8 @@ fn remap_dir_refs_in_canvas(canvas: &mut CanvasFile, old_dir: &str, new_dir: &st
             "conversation" => Some("systemPromptFile"),
             // media 节点附件引用（任意文件）
             "media" => Some("file"),
+            // table 节点表格引用（.atb）
+            "table" => Some("file"),
             _ => None,
         };
         if let Some(field) = ref_field {

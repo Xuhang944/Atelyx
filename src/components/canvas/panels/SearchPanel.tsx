@@ -44,9 +44,11 @@ interface SearchPanelProps {
   onOpenCanvasFile: (row: CanvasFileRow) => void;
   /** 单击 `.md` 结果行：打开笔记窗口。 */
   onOpenNoteForEdit: (file: string, title: string) => void;
+  /** 单击 `.atb` 结果行：打开表格窗口。 */
+  onOpenTableFile: (file: string, title: string) => void;
 }
 
-export function SearchPanel({ onOpenCanvasFile, onOpenNoteForEdit }: SearchPanelProps) {
+export function SearchPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenTableFile }: SearchPanelProps) {
   const tree = useVaultStore((s) => s.tree);
   const canvases = useAppStore((s) => s.canvases);
 
@@ -82,6 +84,8 @@ export function SearchPanel({ onOpenCanvasFile, onOpenNoteForEdit }: SearchPanel
       });
     } else if (node.name.toLowerCase().endsWith(".md")) {
       onOpenNoteForEdit(node.path, noteTitleFromName(node.name));
+    } else if (node.name.toLowerCase().endsWith(".atb")) {
+      onOpenTableFile(node.path, node.name.replace(/\.atb$/i, ""));
     }
   };
 

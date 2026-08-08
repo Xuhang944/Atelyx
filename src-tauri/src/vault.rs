@@ -358,6 +358,66 @@ fn scan_canvases_in(
     Ok(())
 }
 
+// ===== .atb 表格文件结构（对应前端 types/table.ts）=====
+// values 用 serde_json::Map（值类型随字段类型：string/number/string[]），不耦合单元格业务。
+
+/// `.atb` 表格文件（schema `atelyx-table/v1`）。
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TableFile {
+    #[serde(default)]
+    pub schema: String,
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub fields: Vec<TableField>,
+    #[serde(default)]
+    pub rows: Vec<TableRow>,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TableField {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub field_type: String,
+    /// singleSelect 的选项列表（其他类型无此字段）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<String>>,
+    /// 用户拖拽调整后的列宽（px；缺省 = 前端按字段名自适应）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f64>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct TableRow {
+    pub id: String,
+    /// 单元格值按字段 id 存（缺 key = 空单元格）。
+    #[serde(default)]
+    pub values: serde_json::Map<String, serde_json::Value>,
+}
+
+/// 读 .atb 文件并反序列化（schema 校验同 .atlx 私有格式保护）。
+pub fn read_table_file(path: &Path) -> Result<TableFile, String> {
+    let json = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let table = serde_json::from_str::<TableFile>(&json).map_err(|e| e.to_string())?;
+    if table.schema != TABLE_SCHEMA {
+        return Err(format!("表格 schema 不匹配：{}", table.schema));
+    }
+    Ok(table)
+}
+
+/// 原子写 .atb：写 `.tmp` → rename 覆盖目标（同 write_canvas_file）。
+pub fn write_table_file(path: &Path, table: &TableFile) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(table).map_err(|e| e.to_string())?;
+    atomic_write(path, &json)
+}
+
 // ===== 笔记/*.md 读写 =====
 
 pub fn read_note(root: &Path, file: &str) -> Result<String, String> {
@@ -610,7 +670,10 @@ pub struct DeviceUiState {
     /// 上次打开的笔记文件（相对仓库根路径；关闭/删除后清空）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_note_file: Option<String>,
-    /// 上次激活的窗口（"canvas" | "note"；缺省 = 画布槽）。
+    /// 上次打开的表格文件（相对仓库根路径；关闭/删除后清空）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_table_file: Option<String>,
+    /// 上次激活的窗口（"canvas" | "note" | "table"；缺省 = 画布槽）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_active_window: Option<String>,
 }
@@ -635,6 +698,9 @@ pub struct VaultUiState {
     /// 上次打开的笔记文件（旧格式，见 per_device）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_note_file: Option<String>,
+    /// 上次打开的表格文件（旧格式，见 per_device）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_table_file: Option<String>,
     /// 上次激活的窗口（旧格式，见 per_device）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_active_window: Option<String>,
@@ -953,3 +1019,6 @@ pub fn vault_display_name(root: &Path) -> String {
 
 /// `.atlx` schema 版本号（对应前端 `types/canvas.ts` 的 `CANVAS_SCHEMA`）。
 pub const CANVAS_SCHEMA: &str = "atelyx-canvas/v1";
+
+/// `.atb` schema 版本号（对应前端 `types/table.ts` 的 `TABLE_SCHEMA`）。
+pub const TABLE_SCHEMA: &str = "atelyx-table/v1";

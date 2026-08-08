@@ -20,13 +20,15 @@ import {
   renameCanvasVault,
   importAttachmentVault,
 } from "@/services/vault";
+import { readTableVault } from "@/services/table";
+import { tableToSnapshotText } from "@/utils/table";
 import { toApiMessages, type ChatParams } from "@/services/ai/client";
 import { abortAutoTitle } from "@/services/ai/autoTitle";
 import { runSearch, resultsToText } from "@/services/search";
 import { pickFile } from "@/services/dialog";
 import { findFreeSpot, pickEdgeHandles } from "@/utils/layout";
 import { inferImageMime } from "@/utils/whiteboard";
-import { DEFAULT_CONVERSATION_WIDTH, DEFAULT_CONVERSATION_HEIGHT, DEFAULT_TEXT_NODE_WIDTH, DEFAULT_TEXT_NODE_HEIGHT } from "@/constants/canvas";
+import { DEFAULT_CONVERSATION_WIDTH, DEFAULT_CONVERSATION_HEIGHT, DEFAULT_TEXT_NODE_WIDTH, DEFAULT_TEXT_NODE_HEIGHT, DEFAULT_TABLE_NODE_WIDTH, DEFAULT_TABLE_NODE_HEIGHT } from "@/constants/canvas";
 import { WEB_SEARCH_TOOL } from "@/constants/tools";
 import { runStreamExchange, decideCleanup, runAutoNaming } from "./streaming";
 import { isAssetConsumed } from "@/utils/consumed";
@@ -39,6 +41,7 @@ import type {
   CanvasEdge,
   ConversationData,
   LinkMode,
+  TableData,
   TextData,
   MediaData,
   Message,
@@ -126,6 +129,11 @@ interface CanvasState {
    * 解析失败标 parseFailed。file 引用该文件（不复制）。
    */
   addMediaFromVault: (file: string, name: string, position: { x: number; y: number }, exact?: boolean) => Promise<void>;
+  /**
+   * 从仓库 `.atb` 表格建表格节点（文件面板拖拽）：读文件填快照 snapshot，
+   * file 引用该文件（不复制）。findFreeSpot 避让已有节点。
+   */
+  addTableFromVault: (file: string, title: string, position: { x: number; y: number }, exact?: boolean) => Promise<void>;
   /** 导入系统文件到仓库（service 只经 store 出口）。返回相对路径。 */
   importAttachment: (src: string, name: string) => Promise<string>;
   /** 系统对话框选文件 → 导入仓库 → 画布中心建媒体节点。用户取消返回 false。 */
@@ -187,8 +195,13 @@ interface CanvasState {
    * 读失败 → markFileMissing。
    */
   refreshMediaContent: (file: string) => Promise<void>;
+  /**
+   * silent 刷新 table 节点快照（重读 `.atb`，不 persist 避免回环）。
+   * 读失败 → markFileMissing。无引用节点时 no-op。
+   */
+  refreshTableContent: (file: string) => Promise<void>;
   /** 标记某 file 引用缺失（删除/重命名事件用，不删节点保留位置与边）。 */
-  markFileMissing: (file: string, kind: "text" | "media") => void;
+  markFileMissing: (file: string, kind: "text" | "media" | "table") => void;
   /** 重载当前画布（外部修改自动重载时调用，读磁盘最新内容）。 */
   reloadFromDisk: () => Promise<void>;
   /** 冲突合并：以磁盘最新为基底，保留本地新增节点/边/消息（重叠以磁盘为准），合并后落盘。 */
@@ -563,7 +576,7 @@ function nowId() {
   return { id: crypto.randomUUID(), ts: Date.now() };
 }
 
-/** 引用节点 → 最新注入内容（regenerate 重建用）：text 取 bodyMd；媒体图片取 name + thumb，文本类取 body；search 取结果摘要。 */
+/** 引用节点 → 最新注入内容（regenerate 重建用）：text 取 bodyMd；媒体图片取 name + thumb，文本类取 body；search 取结果摘要；table 取快照。 */
 function latestRefOf(node: Node): { text: string; attach?: Attachment } | null {
   if (node.type === "text") {
     const d = node.data as unknown as TextData;
@@ -572,6 +585,11 @@ function latestRefOf(node: Node): { text: string; attach?: Attachment } | null {
   if (node.type === "search") {
     const text = resultsToText(node.data as unknown as SearchResultData);
     return text ? { text } : null;
+  }
+  if (node.type === "table") {
+    const td = node.data as unknown as TableData;
+    const snapshot = td.snapshot || td.title;
+    return snapshot ? { text: snapshot } : null;
   }
   const md = node.data as unknown as MediaData;
   if (md.kind === "image" && md.thumb) {
@@ -920,6 +938,46 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     );
     return node?.id ?? null;
   },
+  addTableFromVault: async (file, title, position, exact = false) => {
+    let snapshot = "";
+    let fileMissing = false;
+    try {
+      snapshot = tableToSnapshotText(await readTableVault(file));
+    } catch {
+      // 文件缺失/读取失败：标 fileMissing，TableNode 显示「文件缺失」降级
+      fileMissing = true;
+    }
+    // 拖拽落点精确（exact=true 跳过避让）；其他入口走 findFreeSpot 避让
+    const spot = exact ? position : findFreeSpot(get().nodes, position, { w: 320, h: 240 });
+    get().addNode({
+      id: crypto.randomUUID(),
+      type: "table",
+      position: spot,
+      width: DEFAULT_TABLE_NODE_WIDTH,
+      height: DEFAULT_TABLE_NODE_HEIGHT,
+      data: { title, file, snapshot, fileMissing } as unknown as Node["data"],
+    });
+  },
+  refreshTableContent: async (file) => {
+    // 同一 .atb 可被多个 table 节点引用（同画布多节点），全部刷新（与 refreshTextContent 同构）
+    const ids = get()
+      .nodes.filter((n) => n.type === "table" && (n.data as unknown as TableData).file === file)
+      .map((n) => n.id);
+    if (ids.length === 0) return;
+    try {
+      const snapshot = tableToSnapshotText(await readTableVault(file));
+      // silent set：直接改 nodes，不调 schedulePersist（变更来自磁盘，写回会回环）
+      set((s) => ({
+        nodes: s.nodes.map((n) =>
+          ids.includes(n.id)
+            ? { ...n, data: { ...n.data, snapshot, fileMissing: false } as unknown as Node["data"] }
+            : n
+        ),
+      }));
+    } catch {
+      get().markFileMissing(file, "table");
+    }
+  },
   refreshTextContent: async (file) => {
     // 同一 .md 可被多个 text 节点引用（同画布多节点），全部刷新（与 markFileMissing 更新全部节点同构）
     const ids = get()
@@ -989,6 +1047,13 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           kind === "media" &&
           n.type === "media" &&
           (n.data as unknown as MediaData).file === file
+        ) {
+          return { ...n, data: { ...n.data, fileMissing: true } as unknown as Node["data"] };
+        }
+        if (
+          kind === "table" &&
+          n.type === "table" &&
+          (n.data as unknown as TableData).file === file
         ) {
           return { ...n, data: { ...n.data, fileMissing: true } as unknown as Node["data"] };
         }
@@ -1089,6 +1154,13 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
             label: prefix((data as SearchResultData).query) || "搜索",
             content: text,
           });
+        }
+      } else if (sourceNode.type === "table") {
+        // 表格节点：注入快照（字段名 + 每行值，行限 MAX_TABLE_INJECT_ROWS）
+        const td = data as unknown as TableData;
+        const content = td.snapshot || td.title;
+        if (content) {
+          inputs.push({ nodeId: sourceNode.id, label: td.title || "表格", content });
         }
       }
     }
@@ -1192,6 +1264,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         if (text) {
           finalContent = finalContent.slice(0, start) + text + finalContent.slice(end);
           mentionRefs.push({ nodeId: node.id, label: m.text.slice(1), content: text });
+        }
+      } else if (node.type === "table") {
+        // 表格节点：@提及 就地替换为快照（字段名 + 每行值，行限 MAX_TABLE_INJECT_ROWS）
+        const td = node.data as unknown as TableData;
+        const snapshot = td.snapshot || td.title;
+        if (snapshot) {
+          finalContent = finalContent.slice(0, start) + snapshot + finalContent.slice(end);
+          mentionRefs.push({ nodeId: node.id, label: m.text.slice(1), content: snapshot });
         }
       }
     }

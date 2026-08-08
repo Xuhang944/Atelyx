@@ -2,7 +2,7 @@
  * 文本展示工具。
  */
 import type { Node as FlowNode } from "@xyflow/react";
-import type { ProviderConfig, SearchResultData, TextData, MediaData } from "@/types";
+import type { ProviderConfig, SearchResultData, TableData, TextData, MediaData } from "@/types";
 
 /** 模型显示名：昵称优先，缺省 = API 模型 ID（长 ID 可用昵称替代，值仍存 ID）。 */
 export function modelDisplayName(provider: ProviderConfig, modelId: string): string {
@@ -29,7 +29,7 @@ export function prefix(text: string, len = 12): string {
 
 /**
  * @ 提及显示名：文本节点取**笔记名称（title）**（缺失回退正文前缀），
- * 媒体节点取文件名。输入框内插入的可见文本 = `@${mentionTextOf(node)}`，发送时按此文本就地替换为引用内容。
+ * 媒体节点取文件名，表格节点取标题。输入框内插入的可见文本 = `@${mentionTextOf(node)}`，发送时按此文本就地替换为引用内容。
  */
 export function mentionTextOf(node: FlowNode): string {
   if (node.type === "text") {
@@ -39,6 +39,10 @@ export function mentionTextOf(node: FlowNode): string {
   if (node.type === "search") {
     const d = node.data as unknown as SearchResultData;
     return prefix(d.query) || "搜索";
+  }
+  if (node.type === "table") {
+    const d = node.data as unknown as TableData;
+    return d.title || "表格";
   }
   if (node.type === "group") {
     const d = node.data as unknown as { label?: string };

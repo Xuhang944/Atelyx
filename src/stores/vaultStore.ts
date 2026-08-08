@@ -24,6 +24,12 @@ import {
   renameNote as renameNoteSvc,
   writeNote,
 } from "@/services/vault";
+import {
+  createTableVault,
+  deleteTableVault,
+  moveTableVault,
+  renameTableVault,
+} from "@/services/table";
 import { markSelfSave, useCanvasStore } from "@/stores/canvasStore";
 import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -50,6 +56,13 @@ let lastNoteRename: { oldFile: string; newFile: string } | null = null;
 /** 文件若是最近一次重命名的旧路径，返回新路径；否则 null（真删除/外部变化）。 */
 export function lastNoteRenameTarget(oldFile: string): string | null {
   return lastNoteRename?.oldFile === oldFile ? lastNoteRename.newFile : null;
+}
+
+/** 最近一次软件内表格重命名/移动（同 lastNoteRename，供表格窗口联动）。 */
+let lastTableRename: { oldFile: string; newFile: string } | null = null;
+/** 文件若是最近一次表格重命名/移动的旧路径，返回新路径；否则 null。 */
+export function lastTableRenameTarget(oldFile: string): string | null {
+  return lastTableRename?.oldFile === oldFile ? lastTableRename.newFile : null;
 }
 
 /** 软件内正在进行的文件夹重命名（old → new）。watcher 收到旧目录下文件事件时据此跳过（同 pendingRename）。 */
@@ -136,6 +149,40 @@ async function applyAttachmentFileChange(oldFile: string, newFile: string): Prom
   }
 }
 
+/**
+ * renameTable/moveTable 共用核心：pendingRename 记录 + 服务调用 + 自写抑制 + 乐观锁基准 +
+ * 画布 table 节点同步（file/title）+ 树刷新 + 重命名记录（模式同 applyNoteFileChange）。
+ * 服务命令内部已按 title/新路径扫描更新全部 .atlx 的 table 节点引用。
+ */
+async function applyTableFileChange(oldFile: string, newFile: string, newTitle: string | null): Promise<void> {
+  pendingRename = { oldFile, newFile };
+  try {
+    if (newTitle !== null) {
+      await renameTableVault(oldFile, newTitle);
+    } else {
+      await moveTableVault(oldFile, newFile);
+    }
+    markSelfSave();
+    await useCanvasStore.getState().syncBaseUpdatedAt();
+    // 同步当前画布内引用该表格的 table 节点（防下次保存把旧值回写覆盖 + watcher 误标缺失）
+    const canvasState = useCanvasStore.getState();
+    for (const n of canvasState.nodes) {
+      if (n.type === "table" && (n.data as { file?: string }).file === oldFile) {
+        canvasState.updateNodeData(
+          n.id,
+          newTitle !== null ? { title: newTitle, file: newFile } : { file: newFile },
+        );
+      }
+    }
+    await useVaultStore.getState().loadFiles();
+    lastTableRename = { oldFile, newFile };
+    // 「上次打开」的表格随路径更新（否则下次进入仓库尝试恢复旧路径）
+    useUiStateStore.getState().renameLastTable(oldFile, newFile);
+  } finally {
+    pendingRename = null;
+  }
+}
+
 /** renameFolder/moveFolder 共用核心：pendingFolderRename 记录 + 服务调用 + 自写抑制 + 画布路径/节点引用同步 + 树刷新。 */
 async function applyFolderFileChange(oldDir: string, newDir: string): Promise<void> {
   pendingFolderRename = { oldDir, newDir };
@@ -199,6 +246,19 @@ function collectMdNotes(nodes: FileTreeNode[]): { name: string; file: string }[]
   return out;
 }
 
+/** 递归提取树中全部 `.atb` 表格（表格窗口联动 / AI 填行目标选择共用）。 */
+function collectAtbTables(nodes: FileTreeNode[]): { name: string; file: string }[] {
+  const out: { name: string; file: string }[] = [];
+  for (const n of nodes) {
+    if (n.isDir) {
+      out.push(...collectAtbTables(n.children));
+    } else if (n.name.toLowerCase().endsWith(".atb")) {
+      out.push({ name: n.name, file: n.path });
+    }
+  }
+  return out;
+}
+
 /** 按相对路径查树节点（dir = "" 返回根容器）。 */
 function findNode(nodes: FileTreeNode[], path: string): FileTreeNode | null {
   for (const n of nodes) {
@@ -230,6 +290,8 @@ interface VaultFileState {
   tree: FileTreeNode[];
   /** 全部 `.md` 笔记（递归提取，file = 相对仓库根路径；系统提示词下拉/存在检查用）。 */
   noteList: { name: string; file: string }[];
+  /** 全部 `.atb` 表格（递归提取，file = 相对仓库根路径；表格窗口联动/AI 填行目标选择用）。 */
+  tableList: { name: string; file: string }[];
   /** 拉取全仓库文件树（watcher 事件/挂载时调用）。canvases 走 appStore.loadList。 */
   loadFiles: () => Promise<void>;
   /**
@@ -262,6 +324,21 @@ interface VaultFileState {
   moveAttachment: (oldFile: string, targetDir: string) => Promise<string>;
   /** 删除附件。 */
   deleteAttachment: (file: string) => Promise<void>;
+  /**
+   * 新建空 `.atb` 表格（自带「名称」文本字段；同名自动加序号），
+   * 返回 { id, file, title }（title 可能被去重改名）。
+   */
+  createTable: (title: string, dir?: string) => Promise<{ id: string; file: string; title: string }>;
+  /**
+   * 重命名 `.atb`：新路径 = 同目录 `<sanitized-newTitle>.atb`（同名自动加序号，排除自身）。
+   * 返回实际落盘文件名（被去重时 ≠ 期望名，调用方据此提示）。
+   * 服务端 `rename_table_vault` 同步更新所有 .atlx 的 table 节点 file 引用 + 文件内 title。
+   */
+  renameTable: (oldFile: string, newTitle: string) => Promise<string>;
+  /** 移动 `.atb` 到目标文件夹（保持文件名，目标同名自动加序号；同目录 = no-op），同步 table 节点引用。 */
+  moveTable: (oldFile: string, targetDir: string) => Promise<string>;
+  /** 删除 `.atb`（不更新 .atlx 引用，画布 table 节点断链降级）。 */
+  deleteTable: (file: string) => Promise<void>;
   /** 新建文件夹（相对仓库根路径，如 `项目A/素材`，自动建父目录），返回相对路径。 */
   createFolder: (dir: string) => Promise<string>;
   /**
@@ -303,13 +380,14 @@ interface VaultFileState {
 export const useVaultStore = create<VaultFileState>((set, get) => ({
   tree: [],
   noteList: [],
+  tableList: [],
 
   loadFiles: async () => {
     const seq = ++loadFilesSeq;
     try {
       const tree = await listVaultTree();
       if (seq !== loadFilesSeq) return;
-      set({ tree, noteList: collectMdNotes(tree) });
+      set({ tree, noteList: collectMdNotes(tree), tableList: collectAtbTables(tree) });
     } catch (e) {
       console.error("加载仓库文件树失败", e);
     }
@@ -387,6 +465,51 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
 
   deleteAttachment: async (file) => {
     await deleteAttachment(file);
+    await get().loadFiles();
+  },
+
+  createTable: async (title, dir = "") => {
+    const base = sanitizeFilename(title) || "未命名表格";
+    // 同名自动加序号（-2、-3），保证同目录不重名
+    const name = dedupeFilename(`${base}.atb`, siblingFileNames(dir));
+    const actual = name.replace(/\.atb$/i, "");
+    const { id, file } = await createTableVault(actual, dir);
+    await get().loadFiles();
+    return { id, file, title: actual };
+  },
+
+  renameTable: async (oldFile, newTitle) => {
+    const oldDir = parentDir(oldFile);
+    const base = sanitizeFilename(newTitle) || "未命名表格";
+    // 同名自动加序号（排除自身，改名到原名不重复）
+    const newName = dedupeFilename(
+      `${base}.atb`,
+      siblingFileNames(oldDir).filter((n) => n !== oldFile.split("/").pop()),
+    );
+    const newFile = oldDir ? `${oldDir}/${newName}` : newName;
+    if (newFile === oldFile) return newFile;
+    await applyTableFileChange(oldFile, newFile, newName.replace(/\.atb$/i, ""));
+    return newFile;
+  },
+
+  moveTable: async (oldFile, targetDir) => {
+    const name = oldFile.split("/").pop() ?? oldFile;
+    const existing = siblingFileNames(targetDir).filter(
+      (n) => (targetDir ? `${targetDir}/${n}` : n) !== oldFile,
+    );
+    const safe = dedupeFilename(name, existing);
+    const newFile = targetDir ? `${targetDir}/${safe}` : safe;
+    if (newFile === oldFile) return oldFile;
+    await applyTableFileChange(oldFile, newFile, null);
+    return newFile;
+  },
+
+  deleteTable: async (file) => {
+    await deleteTableVault(file);
+    // 删除的是「上次打开」的表格：清空 uiState 记录（否则下次进入仓库尝试恢复已删文件）
+    if (useUiStateStore.getState().lastTableFile === file) {
+      useUiStateStore.getState().closeTable();
+    }
     await get().loadFiles();
   },
 

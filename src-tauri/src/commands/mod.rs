@@ -4,4 +4,5 @@
 pub mod global;
 pub mod keychain;
 pub mod search;
+pub mod table;
 pub mod vault;

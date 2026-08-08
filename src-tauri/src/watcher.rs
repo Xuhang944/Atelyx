@@ -41,7 +41,7 @@ impl Default for WatcherState {
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct VaultFileChange {
-    /// `"note"` | `"attachment"` | `"canvas"`，由扩展名判定（`.md` / 其余 / `.atlx`）
+    /// `"note"` | `"attachment"` | `"canvas"` | `"table"`，由扩展名判定（`.md` / 其余 / `.atlx` / `.atb`）
     pub kind: &'static str,
     /// 相对仓库根路径，如 `"笔记/foo.md"`（Windows 分隔符已统一为 `/`）
     pub path: String,
@@ -111,6 +111,7 @@ fn dispatch(app: &AppHandle, root: &Path, exclude: &[String], evt: DebouncedEven
     let kind = match path.extension().and_then(|s| s.to_str()) {
         Some("atlx") | Some("canvas") => "canvas",
         Some("md") => "note",
+        Some("atb") => "table",
         _ => "attachment",
     };
     let _ = app.emit(

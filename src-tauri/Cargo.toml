@@ -55,6 +55,9 @@ notify-debouncer-mini = "0.4"
 # dunce::canonicalize 去除前缀、保持标准 Windows 路径（E:\xxx），跨平台同语义
 dunce = "1"
 
+# 表格导出 xlsx（rust_xlsxwriter 原生生成，样式：表头/边框/列宽/冻结首行/图片嵌入）
+rust_xlsxwriter = "0.80"
+
 [features]
 # 自定义 protocol 用
 custom-protocol = ["tauri/custom-protocol"]

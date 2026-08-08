@@ -31,13 +31,19 @@ export interface CanvasFile {
 /** 磁盘节点：扁平 x/y，data 按类型存不同结构。 */
 export interface CanvasFileNode {
   id: string;
-  type: "conversation" | "text" | "media" | "group" | "link";
+  type: "conversation" | "text" | "media" | "group" | "link" | "table";
   x: number;
   y: number;
   width?: number;
   /** 用户 NodeResizeControl 调整后的高度（缺省 = 内容自适应） */
   height?: number;
-  data: ConversationFileData | TextFileData | MediaFileData | GroupFileData | LinkFileData;
+  data:
+    | ConversationFileData
+    | TextFileData
+    | MediaFileData
+    | GroupFileData
+    | LinkFileData
+    | TableFileData;
 }
 
 /** 对话节点：messages 嵌在此处（替代独立 messages 表，整体随 .atlx 写）。 */
@@ -88,6 +94,13 @@ export interface GroupFileData {
 /** 链接节点：URL 卡片，点击外部浏览器打开。 */
 export interface LinkFileData {
   url: string;
+}
+
+/** 表格节点：引用 `.atb` 表格文件（快照不落盘，内容在独立文件，可跨画布共享）。 */
+export interface TableFileData {
+  title: string;
+  /** 相对仓库根的 .atb 路径，如 `项目A/分镜.atb` */
+  file: string;
 }
 
 /** 关联边（directed: false）的箭头模式：无向 / 单向 / 双向。缺省 = 无向（LinkMode 定义见 node.ts）。 */

@@ -1,0 +1,174 @@
+/**
+ * 表格节点（仓库 `.atb` 文件引用）。
+ *
+ * 引用模型同笔记节点：`.atlx` 只存 `{title, file}`，内容快照（snapshot）运行时从
+ * `.atb` 读取/外部修改刷新（watcher → refreshTableContent），持久化时剥离。
+ * 快照可被 @提及 / 连边接入对话注入（AI 读取表格内容生成参考图提示词等）。
+ *
+ * 交互：header 标题双击重命名（renameTable 同步画布引用）；「打开表格」按钮 →
+ * 派发 `atelyx:open-table` 自定义事件（页面层监听打开表格窗口——ReactFlow 节点
+ * 无法经 props 回调，走事件桥接）。
+ */
+import { AlertTriangle, Table as TableIcon, ExternalLink } from "lucide-react";
+import { useState } from "react";
+import { NodeResizeControl, type NodeProps } from "@xyflow/react";
+import type { TableData } from "@/types";
+import { useCanvasStore } from "@/stores/canvasStore";
+import { useVaultStore } from "@/stores/vaultStore";
+import { DEFAULT_TABLE_NODE_HEIGHT, DEFAULT_TABLE_NODE_WIDTH } from "@/constants/canvas";
+import { ConnectionFrame } from "./ConnectionFrame";
+
+/** 打开表格窗口事件（detail = { file, title }；页面层 ProjectWorkspacePage 监听）。 */
+export const OPEN_TABLE_EVENT = "atelyx:open-table";
+
+export function TableNode({ id, data, width, height }: NodeProps) {
+  const { title, file, snapshot, fileMissing } = data as unknown as TableData;
+  const readOnly = useCanvasStore((s) => s.readOnly);
+  const [renaming, setRenaming] = useState(false);
+  const [draftTitle, setDraftTitle] = useState("");
+
+  /** 确认重命名：renameTable 改名 + 扫全部 .atlx 更新引用（模式同 TextNode 笔记节点）。 */
+  const commitRename = async () => {
+    const t = draftTitle.trim();
+    setRenaming(false);
+    if (!t || t === title) return;
+    try {
+      const newFile = await useVaultStore.getState().renameTable(file, t);
+      // 用去重后的实际标题（同名自动加序号时 ≠ 草稿），与文件内 title/窗口标签保持一致
+      const actualTitle = newFile.split("/").pop()?.replace(/\.atb$/i, "") ?? t;
+      useCanvasStore.getState().updateNodeData(id, { title: actualTitle, file: newFile });
+    } catch (e) {
+      console.error("重命名表格失败", e);
+      useCanvasStore.setState({ error: "重命名表格失败，请重试" });
+    }
+  };
+
+  const openTableWindow = () => {
+    if (fileMissing || readOnly) return;
+    window.dispatchEvent(
+      new CustomEvent(OPEN_TABLE_EVENT, { detail: { file, title: title || "表格" } }),
+    );
+  };
+
+  // 快照预览：字段行 + 前 3 数据行（注入文本完整走 snapshot，此处仅摘要展示）
+  const lines = (snapshot ?? "").split("\n").slice(0, 4);
+  const rowCount = (snapshot ?? "").match(/^行\d+：/gm)?.length ?? 0;
+
+  return (
+    <div
+      className="rounded-lg shadow-lg border flex flex-col text-sm"
+      style={{
+        width: width ?? DEFAULT_TABLE_NODE_WIDTH,
+        height: height ?? DEFAULT_TABLE_NODE_HEIGHT,
+        minWidth: 240,
+        minHeight: 120,
+        background: "var(--bg-card)",
+        borderColor: "var(--border)",
+        position: "relative",
+      }}
+    >
+      <ConnectionFrame topType="source" />
+
+      <header
+        className="px-3 py-1.5 border-b rounded-t-lg text-xs font-medium flex-shrink-0 flex items-center justify-between gap-1"
+        style={{
+          cursor: "grab",
+          borderColor: "var(--border)",
+          color: "var(--text-secondary)",
+        }}
+      >
+        <span className="inline-flex items-center gap-1 min-w-0 flex-1 overflow-hidden">
+          <TableIcon size={14} className="flex-shrink-0" />
+          {renaming ? (
+            <input
+              value={draftTitle}
+              onChange={(e) => setDraftTitle(e.target.value)}
+              onBlur={() => commitRename()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitRename();
+                else if (e.key === "Escape") {
+                  setDraftTitle(title ?? "");
+                  setRenaming(false);
+                }
+              }}
+              autoFocus
+              onClick={(e) => e.stopPropagation()}
+              className="nodrag w-full min-w-0 rounded px-1 text-xs outline-none focus:ring-1 focus:ring-[var(--accent)]"
+              style={{ background: "var(--input-bg)", color: "var(--text-primary)" }}
+            />
+          ) : (
+            <span
+              className="truncate"
+              title={fileMissing || readOnly ? undefined : "双击重命名"}
+              onDoubleClick={fileMissing || readOnly ? undefined : () => {
+                setDraftTitle(title ?? "");
+                setRenaming(true);
+              }}
+            >
+              {title || "表格"}
+            </span>
+          )}
+        </span>
+        {!fileMissing && !readOnly && (
+          <div className="flex items-center nodrag" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              title="打开表格窗口"
+              onClick={openTableWindow}
+              className="nodrag rounded p-0.5 hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)] transition-colors"
+              style={{ color: "var(--text-muted)" }}
+            >
+              <ExternalLink size={13} />
+            </button>
+          </div>
+        )}
+      </header>
+
+      <div className="nodrag nowheel overflow-auto flex-1 min-h-0 px-3 py-2" style={{ userSelect: "text", cursor: "text" }}>
+        {fileMissing ? (
+          <p className="text-xs flex items-center gap-1" style={{ color: "#f87171" }}>
+            <AlertTriangle size={14} className="flex-shrink-0" />文件缺失（已在文件管理器中删除或重命名）
+          </p>
+        ) : (
+          <div className="text-xs whitespace-pre-wrap break-words" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>
+            {lines.length > 0 ? (
+              lines.map((l, i) => (
+                <div key={i} style={{ color: i === 0 ? "var(--text-primary)" : "var(--text-secondary)" }}>
+                  {l}
+                </div>
+              ))
+            ) : (
+              <span style={{ color: "var(--text-muted)" }}>（空）</span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 底部：行数统计 + 打开提示（fileMissing 不显示） */}
+      {!fileMissing && (
+        <div
+          className="px-3 py-1 border-t rounded-b-lg text-[10px] flex items-center justify-between flex-shrink-0"
+          style={{ borderColor: "var(--border)", color: "var(--text-muted)", cursor: "pointer" }}
+          onClick={openTableWindow}
+        >
+          <span>{rowCount > 0 ? `${rowCount} 行` : "空表格"}</span>
+          <span style={{ color: "var(--accent)" }}>打开表格 ↗</span>
+        </div>
+      )}
+
+      {!readOnly && (
+        <NodeResizeControl
+          position="bottom-right"
+          style={{
+            width: 10,
+            height: 10,
+            background: "#fff",
+            border: "2px solid #d4af37",
+            borderRadius: 2,
+            cursor: "nwse-resize",
+          }}
+        />
+      )}
+    </div>
+  );
+}

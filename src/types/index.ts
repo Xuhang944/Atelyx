@@ -5,6 +5,7 @@ export type {
   MediaData,
   SearchResultItem,
   SearchResultData,
+  TableData,
   CanvasNodeData,
   CanvasNode,
   CanvasEdge,
@@ -45,6 +46,7 @@ export {
   type MediaFileData,
   type GroupFileData,
   type LinkFileData,
+  type TableFileData,
   type CanvasFileEdge,
   type CanvasFileRow,
   type CanvasCreateResult,
@@ -65,5 +67,14 @@ export {
 } from "./canvas";
 
 export { UI_STATE_SCHEMA, type DeviceUiState, type LastActiveWindow, type VaultUiState } from "./uiState";
+
+export type {
+  FieldType,
+  CellValue,
+  TableField,
+  TableRow,
+  TableFile,
+  TableCreateResult,
+} from "./table";
 
 export type { VaultFileChange } from "./watcher";

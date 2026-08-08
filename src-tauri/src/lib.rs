@@ -63,6 +63,15 @@ pub fn run() {
             commands::vault::rename_attachment,
             commands::vault::read_attachment_data_url,
             commands::vault::import_attachment_vault,
+            // 多维表格（.atb）文件 CRUD
+            commands::table::create_table_vault,
+            commands::table::read_table_vault,
+            commands::table::write_table_vault,
+            commands::table::rename_table_vault,
+            commands::table::move_table_vault,
+            commands::table::delete_table_vault,
+            commands::table::read_external_image_data_url,
+            commands::table::export_table_xlsx,
             // 全局配置（global.json，最近仓库列表等）
             commands::global::read_global_config,
             commands::global::write_global_config,

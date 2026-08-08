@@ -11,6 +11,8 @@ import type { Edge, Node } from "@xyflow/react";
 import { CANVAS_SCHEMA } from "@/constants/canvas";
 import { dedupeFilename, parentDir, sanitizeFilename } from "@/utils/filename";
 import { mapWhiteboardEdges, mapWhiteboardNodes, parseWhiteboard } from "@/utils/whiteboard";
+import { tableToSnapshotText } from "@/utils/table";
+import { readTableVault } from "@/services/table";
 import {
   type CanvasFile,
   type CanvasCreateResult,
@@ -24,6 +26,8 @@ import {
   type EditorChatsFileOnDisk,
   type FileTreeNode,
   type Message,
+  type TableData,
+  type TableFileData,
   type TextData,
   type TextFileData,
   type VaultConfig,
@@ -251,6 +255,15 @@ async function canvasFileToRuntime(file: CanvasFile): Promise<RuntimeCanvas> {
         messagesByConv[n.id] = cd.messages;
       }
       delete data.messages;
+    } else if (n.type === "table") {
+      // 表格节点：快照从 `.atb` 实时读取（注入上下文/节点摘要用），读失败标 fileMissing
+      const td = data as unknown as TableFileData;
+      try {
+        const table = await readTableVault(td.file);
+        data.snapshot = tableToSnapshotText(table);
+      } catch {
+        data.fileMissing = true;
+      }
     } else if (n.type === "group") {
       // 分组节点：低 zIndex 背景层（磁盘无此字段，运行时注入）
       nodes.push({
@@ -331,6 +344,10 @@ async function runtimeToCanvasFile(
       };
     } else if (n.type === "link") {
       data = { url: (n.data as unknown as { url?: string }).url ?? "" };
+    } else if (n.type === "table") {
+      // 表格节点：只落 {title, file}（快照在 .atb 文件，运行时填充/剥离）
+      const td = n.data as unknown as TableData;
+      data = { title: td.title || "未命名", file: td.file };
     } else {
       // media/search：原样保留（media 的 thumb 暂随 .atlx 持久化，TODO 后续落盘）
       data = { ...n.data };

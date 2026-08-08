@@ -28,6 +28,7 @@ import {
   Paperclip,
   Pencil,
   StickyNote,
+  Table,
   Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -63,8 +64,12 @@ interface PanelProps {
   onOpenCanvasFile: (row: CanvasFileRow) => void;
   /** 单击 `.md`：在工作区主编辑区打开笔记编辑器。 */
   onOpenNoteForEdit: (file: string, title: string) => void;
+  /** 单击 `.atb`：在工作区主编辑区打开表格编辑器。 */
+  onOpenTableFile: (file: string, title: string) => void;
   /** 当前笔记窗口打开的文件（相对仓库根路径）；笔记区用它高亮当前打开的行（与画布区对称）。 */
   openedNoteFile: string | null;
+  /** 当前表格窗口打开的文件（相对仓库根路径）；表格行高亮用（与笔记区对称）。 */
+  openedTableFile: string | null;
   /** 右键 `.canvas` 行「转换为画布」：页面层执行转换并打开新画布。 */
   onConvertWhiteboard: (file: string) => void;
 }
@@ -88,6 +93,11 @@ function isSortKey(v: FileExplorerSortKey | undefined): v is FileExplorerSortKey
 /** 从 `.md` 文件名还原显示标题：仅去 `.md` 后缀。 */
 function noteTitleFromName(name: string): string {
   return name.replace(/\.md$/i, "");
+}
+
+/** 从 `.atb` 文件名还原显示标题：仅去 `.atb` 后缀。 */
+function tableTitleFromName(name: string): string {
+  return name.replace(/\.atb$/i, "");
 }
 
 /** 大写文件扩展名（不含英文句号），无扩展名返回空串。 */
@@ -147,17 +157,19 @@ type MenuTarget =
   | { kind: "folder"; dir: string }
   | { kind: "canvas"; row: CanvasFileRow }
   | { kind: "note"; file: string; name: string }
+  | { kind: "table"; file: string; name: string }
   | { kind: "attachment"; file: string; name: string };
 
 /** inline 输入行（行内重命名 / 文件夹下新建）。 */
 type Editing =
   | { kind: "canvas"; file: string; value: string }
   | { kind: "note"; file: string; value: string }
+  | { kind: "table"; file: string; value: string }
   | { kind: "attachment"; file: string; value: string }
   | { kind: "folder"; dir: string; value: string }
-  | { kind: "creating"; dir: string; type: "canvas" | "note" | "folder"; value: string };
+  | { kind: "creating"; dir: string; type: "canvas" | "note" | "table" | "folder"; value: string };
 
-export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedNoteFile, onConvertWhiteboard }: PanelProps) {
+export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenTableFile, openedNoteFile, openedTableFile, onConvertWhiteboard }: PanelProps) {
   const tree = useVaultStore((s) => s.tree);
   const loadFiles = useVaultStore((s) => s.loadFiles);
   const createNote = useVaultStore((s) => s.createNote);
@@ -181,6 +193,10 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
   const renameCanvas = useAppStore((s) => s.renameCanvas);
   const deleteCanvas = useAppStore((s) => s.deleteCanvas);
   const moveCanvas = useAppStore((s) => s.moveCanvas);
+  const createTable = useVaultStore((s) => s.createTable);
+  const renameTable = useVaultStore((s) => s.renameTable);
+  const deleteTable = useVaultStore((s) => s.deleteTable);
+  const moveTable = useVaultStore((s) => s.moveTable);
 
   // 展开集合（初始空 = 默认全部折叠：进入仓库只显示顶层文件夹；点文件夹展开）。
   // 展开状态仓库级持久化（uiStateStore → .atelyx/ui-state.json），进入仓库自动恢复上次展开情况
@@ -197,8 +213,9 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
   const { screenToFlowPosition } = useReactFlow();
   const addTextNoteFromVault = useCanvasStore((s) => s.addTextNoteFromVault);
   const addMediaFromVault = useCanvasStore((s) => s.addMediaFromVault);
+  const addTableFromVault = useCanvasStore((s) => s.addTableFromVault);
   interface DragSession {
-    kind: "note" | "attachment" | "canvas" | "folder";
+    kind: "note" | "attachment" | "canvas" | "table" | "folder";
     file: string;
     name: string;
     title?: string;
@@ -209,7 +226,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
     y: number;
   }
   const dragRef = useRef<DragSession | null>(null);
-  const [dragGhost, setDragGhost] = useState<{ kind: "note" | "attachment" | "canvas" | "folder"; label: string; x: number; y: number } | null>(null);
+  const [dragGhost, setDragGhost] = useState<{ kind: "note" | "attachment" | "canvas" | "table" | "folder"; label: string; x: number; y: number } | null>(null);
   /** 拖拽悬停的目标文件夹（data-dir 命中），高亮提示可放入；null = 无目标。 */
   const [dropDir, setDropDir] = useState<string | null>(null);
   const dropDirRef = useRef<string | null>(null);
@@ -242,6 +259,10 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
           const newFile = await moveNote(d.file, dir);
           const newName = newFile.split("/").pop() ?? "";
           if (newName !== d.name) setNotice(`「${d.name}」已存在，已重命名为「${newName}」`);
+        } else if (d.kind === "table") {
+          const newFile = await moveTable(d.file, dir);
+          const newName = newFile.split("/").pop() ?? "";
+          if (newName !== d.name) setNotice(`「${d.name}」已存在，已重命名为「${newName}」`);
         } else {
           const newFile = await moveAttachment(d.file, dir);
           const newName = newFile.split("/").pop() ?? "";
@@ -261,7 +282,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
         setNotice("移动文件失败，请重试");
       }
     },
-    [canvases, moveFolder, moveCanvas, moveNote, moveAttachment, expandDirs],
+    [canvases, moveFolder, moveCanvas, moveNote, moveTable, moveAttachment, expandDirs],
   );
 
   // 全局 pointermove/up：位移超 5px 进入拖拽（显示幽灵）；松手在文件夹行 = 移动文件，落点在 .react-flow 内 = 建节点
@@ -299,6 +320,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
           hint = dir === "" ? "移到根目录" : `移动到「${dir.split("/").pop()}」`;
         } else if (hit?.closest(".react-flow")) {
           if (d.kind === "note") hint = "创建文本节点";
+          else if (d.kind === "table") hint = "创建表格节点";
           else if (d.kind === "attachment") hint = "创建媒体节点";
         }
         if (hint !== dragHintRef.current) {
@@ -341,6 +363,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
         if (d.kind === "canvas" || d.kind === "folder") return;
         const pos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
         if (d.kind === "note") void addTextNoteFromVault(d.file, d.title ?? d.name, pos, true);
+        else if (d.kind === "table") void addTableFromVault(d.file, d.title ?? d.name, pos, true);
         else void addMediaFromVault(d.file, d.name, pos, true);
       }
     };
@@ -351,7 +374,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
       document.removeEventListener("pointerup", onUp);
       document.body.style.cursor = "";
     };
-  }, [screenToFlowPosition, addTextNoteFromVault, addMediaFromVault, handleMoveFile]);
+  }, [screenToFlowPosition, addTextNoteFromVault, addMediaFromVault, addTableFromVault, handleMoveFile]);
 
   /** 行按下（左键）记录潜在拖拽会话（文件夹/画布/笔记/附件均可拖：移动到文件夹；文件还可拖到画布建节点）；位移超阈值才真正拖拽。 */
   const startPotentialDrag = (e: React.PointerEvent, node: FileTreeNode) => {
@@ -371,18 +394,20 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
       return;
     }
     // 外部白板（.canvas）与 .atlx 同归 canvas 类：拖到画布不建节点（只支持移动到文件夹）
-    const isCanvasFile =
-      node.name.toLowerCase().endsWith(".atlx") || node.name.toLowerCase().endsWith(".canvas");
+    const lower = node.name.toLowerCase();
+    const isCanvasFile = lower.endsWith(".atlx") || lower.endsWith(".canvas");
     const kind = isCanvasFile
       ? "canvas"
-      : node.name.toLowerCase().endsWith(".md")
+      : lower.endsWith(".md")
         ? "note"
-        : "attachment";
+        : lower.endsWith(".atb")
+          ? "table"
+          : "attachment";
     dragRef.current = {
       kind,
       file: node.path,
       name: node.name,
-      title: kind === "note" ? noteTitleFromName(node.name) : undefined,
+      title: kind === "note" ? noteTitleFromName(node.name) : kind === "table" ? tableTitleFromName(node.name) : undefined,
       startX: e.clientX,
       startY: e.clientY,
       active: false,
@@ -449,6 +474,10 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
         const newFile = await renameNote(e.file, v);
         const actualTitle = noteTitleFromName(newFile.split("/").pop() ?? newFile);
         if (actualTitle !== v) setNotice(`「${v}」已存在，已重命名为「${actualTitle}」`);
+      } else if (e.kind === "table") {
+        const newFile = await renameTable(e.file, v);
+        const actualTitle = tableTitleFromName(newFile.split("/").pop() ?? newFile);
+        if (actualTitle !== v) setNotice(`「${v}」已存在，已重命名为「${actualTitle}」`);
       } else if (e.kind === "attachment") {
         await renameAttachment(e.file, v);
       } else if (e.kind === "folder") {
@@ -466,6 +495,10 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
           const file = await createNote(v, e.dir);
           const actualTitle = noteTitleFromName(file.split("/").pop() ?? file);
           if (actualTitle !== v) setNotice(`「${v}」已存在，已创建为「${actualTitle}」`);
+        } else if (e.type === "table") {
+          const { file, title } = await createTable(v, e.dir);
+          if (title !== v) setNotice(`「${v}」已存在，已创建为「${title}」`);
+          if (file) onOpenTableFile(file, title);
         } else {
           const dirPath = e.dir ? `${e.dir}/${v}` : v;
           await createFolder(dirPath);
@@ -508,7 +541,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
               if (e.key === "Enter") void commitEditing(editing);
               if (e.key === "Escape") setEditing(null);
             }}
-            placeholder={editing.type === "canvas" ? "画布名称" : editing.type === "note" ? "笔记名称" : "文件夹名称"}
+            placeholder={editing.type === "canvas" ? "画布名称" : editing.type === "note" ? "笔记名称" : editing.type === "table" ? "表格名称" : "文件夹名称"}
             className="flex-1 bg-transparent border-b border-[var(--accent)] outline-none text-xs"
             style={{ color: "var(--text-primary)" }}
           />
@@ -586,19 +619,23 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
           const isCanvas = node.name.toLowerCase().endsWith(".atlx");
           const isWhiteboard = node.name.toLowerCase().endsWith(".canvas");
           const isNote = node.name.toLowerCase().endsWith(".md");
+          const isTable = node.name.toLowerCase().endsWith(".atb");
           const row = isCanvas ? canvasRowOf(node.path) : undefined;
           const active =
             (isCanvas && row && currentCanvasFile === row.file) ||
             (isWhiteboard && currentCanvasFile === node.path) ||
-            (isNote && openedNoteFile === node.path);
+            (isNote && openedNoteFile === node.path) ||
+            (isTable && openedTableFile === node.path);
           const editingThis: Editing | null =
             editing?.kind === "canvas" && editing.file === node.path
               ? editing
               : editing?.kind === "note" && editing.file === node.path
                 ? editing
-                : editing?.kind === "attachment" && editing.file === node.path
+                : editing?.kind === "table" && editing.file === node.path
                   ? editing
-                  : null;
+                  : editing?.kind === "attachment" && editing.file === node.path
+                    ? editing
+                    : null;
           return (
             <li key={node.path}>
               {editingThis ? (
@@ -636,6 +673,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
                         updatedAt: node.updatedAt,
                       });
                     } else if (isNote) onOpenNoteForEdit(node.path, noteTitleFromName(node.name));
+                    else if (isTable) onOpenTableFile(node.path, tableTitleFromName(node.name));
                   }}
                   onContextMenu={(e) => {
                     e.preventDefault();
@@ -644,6 +682,8 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
                       setMenu({ x: e.clientX, y: e.clientY, target: { kind: "canvas", row } });
                     } else if (isNote) {
                       setMenu({ x: e.clientX, y: e.clientY, target: { kind: "note", file: node.path, name: node.name } });
+                    } else if (isTable) {
+                      setMenu({ x: e.clientX, y: e.clientY, target: { kind: "table", file: node.path, name: node.name } });
                     } else {
                       setMenu({ x: e.clientX, y: e.clientY, target: { kind: "attachment", file: node.path, name: node.name } });
                     }
@@ -655,6 +695,8 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
                     <LayoutDashboard size={14} style={{ color: "var(--text-muted)" }} />
                   ) : isNote ? (
                     <StickyNote size={14} style={{ color: "var(--text-muted)" }} />
+                  ) : isTable ? (
+                    <Table size={14} style={{ color: "var(--text-muted)" }} />
                   ) : (
                     <Paperclip size={14} style={{ color: "var(--text-muted)" }} />
                   )}
@@ -663,7 +705,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
                     className="ml-auto pl-2 text-[10px] font-bold flex-shrink-0"
                     style={{ color: "var(--text-muted)", opacity: 0.6 }}
                   >
-                    {isCanvas ? "ATLX" : isWhiteboard ? "CANVAS" : isNote ? "MD" : upperExt(node.name)}
+                    {isCanvas ? "ATLX" : isWhiteboard ? "CANVAS" : isNote ? "MD" : isTable ? "ATB" : upperExt(node.name)}
                   </span>
                 </div>
               )}
@@ -808,12 +850,14 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
             onRename={() => {
               if (t.kind === "canvas") setEditing({ kind: "canvas", file: t.row.file, value: t.row.title });
               else if (t.kind === "note") setEditing({ kind: "note", file: t.file, value: noteTitleFromName(t.name) });
+              else if (t.kind === "table") setEditing({ kind: "table", file: t.file, value: tableTitleFromName(t.name) });
               else if (t.kind === "attachment") setEditing({ kind: "attachment", file: t.file, value: t.name });
               setMenu(null);
             }}
             onDelete={() => {
               if (t.kind === "canvas") void deleteCanvas(t.row).catch(() => setNotice("删除画布失败，请重试"));
               else if (t.kind === "note") void deleteNote(t.file).catch(() => setNotice("删除笔记失败，请重试"));
+              else if (t.kind === "table") void deleteTable(t.file).catch(() => setNotice("删除表格失败，请重试"));
               else if (t.kind === "attachment") void deleteAttachment(t.file).catch(() => setNotice("删除附件失败，请重试"));
               setMenu(null);
             }}
@@ -847,7 +891,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, openedN
   );
 }
 
-/** 文件夹右键菜单：新建画布 / 新建笔记 / 新建文件夹 + 重命名 / 删除（根目录仅新建）。 */
+/** 文件夹右键菜单：新建画布 / 新建笔记 / 新建表格 / 新建文件夹 + 重命名 / 删除（根目录仅新建）。 */
 function FolderCreateMenu({
   x,
   y,
@@ -861,7 +905,7 @@ function FolderCreateMenu({
   y: number;
   /** 非根目录才有管理操作（重命名/删除）；树空白处右键 = 根目录，仅新建。 */
   canManage: boolean;
-  onCreate: (type: "canvas" | "note" | "folder") => void;
+  onCreate: (type: "canvas" | "note" | "table" | "folder") => void;
   onRename: () => void;
   onDelete: () => void;
   onClose: () => void;
@@ -910,6 +954,9 @@ function FolderCreateMenu({
       </button>
       <button className={itemClass} onClick={() => onCreate("note")}>
         <StickyNote size={14} /> 新建笔记
+      </button>
+      <button className={itemClass} onClick={() => onCreate("table")}>
+        <Table size={14} /> 新建表格
       </button>
       <button className={itemClass} onClick={() => onCreate("folder")}>
         <FolderPlus size={14} /> 新建文件夹

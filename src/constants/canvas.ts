@@ -18,6 +18,10 @@ export const DEFAULT_GROUP_HEIGHT = 320;
 export const DEFAULT_LINK_WIDTH = 240;
 export const DEFAULT_LINK_HEIGHT = 96;
 
+/** 表格节点默认尺寸（文件面板拖 .atb 建节点时写入节点数据）。 */
+export const DEFAULT_TABLE_NODE_WIDTH = 360;
+export const DEFAULT_TABLE_NODE_HEIGHT = 280;
+
 /**
  * 分组节点色板（对齐外部白板格式的颜色下标 "1"-"5"）。
  * 分组节点 header 色块按钮弹出选择（1-5 或默认）；缺省 = 默认中性灰（与 "6" 同色故不提供）。

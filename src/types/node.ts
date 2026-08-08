@@ -81,6 +81,19 @@ export interface MediaData {
   fileMissing?: boolean;
 }
 
+export interface TableData {
+  /** 相对仓库根的 .atb 路径（表格节点 = 仓库表格文件引用，如 `项目A/分镜.atb`） */
+  file: string;
+  title: string;
+  /**
+   * 表格内容快照文本（运行时从 .atb 填充/外部修改刷新，注入对话上下文用；持久化时剥离——
+   * 与笔记节点 bodyMd 同模式，内容在独立文件）。
+   */
+  snapshot?: string;
+  /** 引用文件被外部删除/重命名时降级标记（运行时态不持久化） */
+  fileMissing?: boolean;
+}
+
 /**
  * 统一的节点 data 联合类型，配合 React Flow 的 Node<T> 泛型使用。
  * 各子类型与 Record<string, unknown> 交叉满足 React Flow 约束，
@@ -90,7 +103,8 @@ export type CanvasNodeData =
   | (ConversationData & Record<string, unknown>)
   | (TextData & Record<string, unknown>)
   | (MediaData & Record<string, unknown>)
-  | (SearchResultData & Record<string, unknown>);
+  | (SearchResultData & Record<string, unknown>)
+  | (TableData & Record<string, unknown>);
 
 export type CanvasNode = Node<CanvasNodeData>;
 

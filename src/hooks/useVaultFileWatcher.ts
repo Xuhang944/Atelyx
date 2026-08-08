@@ -14,6 +14,7 @@ import { useEffect } from "react";
 import { subscribeVaultFileChanges } from "@/services/watcher";
 import { useCanvasStore, isSelfSaveEcho } from "@/stores/canvasStore";
 import { useAppStore } from "@/stores/appStore";
+import { useTableStore } from "@/stores/tableStore";
 import {
   useVaultStore,
   isPendingFolderRenameOldPath,
@@ -64,6 +65,30 @@ export function useVaultFileWatcher(enabled: boolean) {
             void useCanvasStore.getState().refreshTextContent(c.path);
             // NoteEditor 感知外部修改：无本地改动实时刷新、有改动提示冲突
             useVaultStore.getState().markNoteExternallyEdited(c.path);
+          }
+          void useVaultStore.getState().loadFiles();
+          return;
+        }
+
+        if (c.kind === "table") {
+          // 与 canvas 事件同策略：当前打开的表格被外部修改 → 无脏静默重载、有脏冲突提示
+          // （软件内重命名/自写回放跳过，防误触发）
+          const store = useTableStore.getState();
+          if (
+            c.path === store.tableFile &&
+            !isSelfSaveEcho() &&
+            !isPendingRenameOldPath(c.path) &&
+            !isPendingFolderRenameOldPath(c.path)
+          ) {
+            if (store.dirty) {
+              useTableStore.setState({ conflictPending: true });
+            } else {
+              void useTableStore.getState().reloadFromDisk();
+            }
+          }
+          // 画布上引用该表格的节点：silent 刷新快照（与 note 事件刷新 text 节点对称）
+          if (!isPendingRenameOldPath(c.path) && !isPendingFolderRenameOldPath(c.path)) {
+            void useCanvasStore.getState().refreshTableContent(c.path);
           }
           void useVaultStore.getState().loadFiles();
           return;

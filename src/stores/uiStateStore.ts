@@ -34,7 +34,9 @@ interface UiStateStore {
   lastCanvasFile: string | null;
   /** 上次打开的笔记文件（相对仓库根；关闭/删除后清空）。 */
   lastNoteFile: string | null;
-  /** 上次激活的窗口（画布 / 笔记；null = 画布槽）。 */
+  /** 上次打开的表格文件（相对仓库根；关闭/删除后清空）。 */
+  lastTableFile: string | null;
+  /** 上次激活的窗口（画布 / 笔记 / 表格；null = 画布槽）。 */
   lastActiveWindow: LastActiveWindow | null;
   /** 当前 ui-state 是否已从磁盘加载（恢复 effect 依赖它避免在加载前误清状态）。 */
   loaded: boolean;
@@ -53,10 +55,14 @@ interface UiStateStore {
   recordOpenCanvas: (file: string) => void;
   /** 记录打开的笔记文件（lastNoteFile + 激活笔记窗口）。 */
   recordOpenNote: (file: string) => void;
+  /** 记录打开的表格文件（lastTableFile + 激活表格窗口）。 */
+  recordOpenTable: (file: string) => void;
   /** 画布重命名/移动后同步 lastCanvasFile（旧路径命中才更新）。 */
   renameLastCanvas: (oldFile: string, newFile: string) => void;
   /** 笔记重命名/移动后同步 lastNoteFile（旧路径命中才更新）。 */
   renameLastNote: (oldFile: string, newFile: string) => void;
+  /** 表格重命名/移动后同步 lastTableFile（旧路径命中才更新）。 */
+  renameLastTable: (oldFile: string, newFile: string) => void;
   /** 文件夹重命名后同步展开集合/上次打开文件（`oldDir/` 前缀 → `newDir/`）。 */
   renameByDir: (oldDir: string, newDir: string) => void;
   /** 文件夹删除后清理展开集合中该目录及子目录条目。 */
@@ -67,6 +73,8 @@ interface UiStateStore {
   closeCanvas: () => void;
   /** 关闭笔记窗口：清空 lastNoteFile。 */
   closeNote: () => void;
+  /** 关闭表格窗口：清空 lastTableFile。 */
+  closeTable: () => void;
   /** 立即落盘（切仓库前 flush 用，防 debounce 窗口内丢状态）。 */
   flush: () => Promise<void>;
 }
@@ -91,6 +99,7 @@ function legacyToDeviceState(disk: VaultUiState): DeviceUiState {
     fileExplorerExpanded: disk.fileExplorerExpanded ?? [],
     ...(disk.lastCanvasFile ? { lastCanvasFile: disk.lastCanvasFile } : {}),
     ...(disk.lastNoteFile ? { lastNoteFile: disk.lastNoteFile } : {}),
+    ...(disk.lastTableFile ? { lastTableFile: disk.lastTableFile } : {}),
     ...(disk.lastActiveWindow ? { lastActiveWindow: disk.lastActiveWindow } : {}),
   };
 }
@@ -102,6 +111,7 @@ function toDeviceState(get: () => UiStateStore): DeviceUiState {
     fileExplorerExpanded: [...s.fileExplorerExpanded],
     ...(s.lastCanvasFile ? { lastCanvasFile: s.lastCanvasFile } : {}),
     ...(s.lastNoteFile ? { lastNoteFile: s.lastNoteFile } : {}),
+    ...(s.lastTableFile ? { lastTableFile: s.lastTableFile } : {}),
     ...(s.lastActiveWindow ? { lastActiveWindow: s.lastActiveWindow } : {}),
   };
 }
@@ -110,6 +120,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => ({
   fileExplorerExpanded: new Set(),
   lastCanvasFile: null,
   lastNoteFile: null,
+  lastTableFile: null,
   lastActiveWindow: null,
   loaded: false,
 
@@ -130,13 +141,14 @@ export const useUiStateStore = create<UiStateStore>((set, get) => ({
         fileExplorerExpanded: new Set(mine.fileExplorerExpanded),
         lastCanvasFile: mine.lastCanvasFile ?? null,
         lastNoteFile: mine.lastNoteFile ?? null,
+        lastTableFile: mine.lastTableFile ?? null,
         lastActiveWindow: mine.lastActiveWindow ?? null,
         loaded: true,
       });
     } catch (e) {
       console.error("读取仓库 UI 状态失败", e);
       if (currentVaultId() !== vaultId) return;
-      set({ fileExplorerExpanded: new Set(), lastCanvasFile: null, lastNoteFile: null, lastActiveWindow: null, loaded: true });
+      set({ fileExplorerExpanded: new Set(), lastCanvasFile: null, lastNoteFile: null, lastTableFile: null, lastActiveWindow: null, loaded: true });
     }
   },
 
@@ -150,6 +162,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => ({
       fileExplorerExpanded: new Set(),
       lastCanvasFile: null,
       lastNoteFile: null,
+      lastTableFile: null,
       lastActiveWindow: null,
       loaded: false,
     });
@@ -193,6 +206,11 @@ export const useUiStateStore = create<UiStateStore>((set, get) => ({
     persistDebounced(get);
   },
 
+  recordOpenTable: (file) => {
+    set({ lastTableFile: file, lastActiveWindow: "table" });
+    persistDebounced(get);
+  },
+
   renameLastCanvas: (oldFile, newFile) => {
     if (get().lastCanvasFile !== oldFile) return;
     set({ lastCanvasFile: newFile });
@@ -202,6 +220,12 @@ export const useUiStateStore = create<UiStateStore>((set, get) => ({
   renameLastNote: (oldFile, newFile) => {
     if (get().lastNoteFile !== oldFile) return;
     set({ lastNoteFile: newFile });
+    persistDebounced(get);
+  },
+
+  renameLastTable: (oldFile, newFile) => {
+    if (get().lastTableFile !== oldFile) return;
+    set({ lastTableFile: newFile });
     persistDebounced(get);
   },
 
@@ -218,10 +242,11 @@ export const useUiStateStore = create<UiStateStore>((set, get) => ({
       ? remapDirPrefix(s.lastCanvasFile, oldDir, newDir)
       : null;
     const lastNoteFile = s.lastNoteFile ? remapDirPrefix(s.lastNoteFile, oldDir, newDir) : null;
+    const lastTableFile = s.lastTableFile ? remapDirPrefix(s.lastTableFile, oldDir, newDir) : null;
     const changed =
-      expandedChanged || lastCanvasFile !== s.lastCanvasFile || lastNoteFile !== s.lastNoteFile;
+      expandedChanged || lastCanvasFile !== s.lastCanvasFile || lastNoteFile !== s.lastNoteFile || lastTableFile !== s.lastTableFile;
     if (!changed) return;
-    set({ fileExplorerExpanded: expanded, lastCanvasFile, lastNoteFile });
+    set({ fileExplorerExpanded: expanded, lastCanvasFile, lastNoteFile, lastTableFile });
     persistDebounced(get);
   },
 
@@ -247,6 +272,11 @@ export const useUiStateStore = create<UiStateStore>((set, get) => ({
 
   closeNote: () => {
     set({ lastNoteFile: null });
+    persistDebounced(get);
+  },
+
+  closeTable: () => {
+    set({ lastTableFile: null });
     persistDebounced(get);
   },
 
