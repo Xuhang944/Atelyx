@@ -1,7 +1,7 @@
 {
   "name": "atelyx",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "AI 创作工作台：对话/笔记/知识库统一为有向图，AI 贯穿赋能",
   "scripts": {
