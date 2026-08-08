@@ -47,9 +47,12 @@ const PERCENT = 37; // "%"
 const LBRACKET = 91; // "["
 const RBRACKET = 93; // "]"
 
-/** 成对定界符 tokenizer 工厂：`==`、`%%` 共用结构（token 名不同，内容不跨行、单个定界符为普通字符）。 */
+/** 成对定界符 tokenizer 工厂：`==`、`%%` 共用结构（token 名不同，内容不跨行、单个定界符为普通字符）。
+ * 定界符用 `<token>Delimiter` 标记 token 包裹消费（from-markdown 未注册 handler 自动跳过）——
+ * micromark 断言每次 consume 前最后事件必须是 enter，`exit("data")` 后不能直接 consume 同一 code。 */
 function delimitedTokenize(tokenName: string, openCode: number, closeCode: number): Construct {
   const tokenNameTyped = tokenName as Parameters<Effects["enter"]>[0];
+  const delimiterType = `${tokenName}Delimiter` as Parameters<Effects["enter"]>[0];
   return {
     tokenize(this: TokenizeContext, effects: Effects, ok: State, nok: State): State {
       return start;
@@ -73,27 +76,39 @@ function delimitedTokenize(tokenName: string, openCode: number, closeCode: numbe
           effects.enter("data");
           return data(code);
         }
-        effects.consume(code);
-        return maybeClose;
+        return closeStart(code);
       }
 
       function data(code: Code): State | undefined {
-        if (code === closeCode || code === null || markdownLineEnding(code)) {
+        if (code === null || markdownLineEnding(code)) return nok(code);
+        if (code === closeCode) {
           effects.exit("data");
-          return content(code);
+          return closeStart(code);
         }
         effects.consume(code);
         return data;
       }
 
+      /** 消费关闭定界符（进入时最后事件可能是 exit:data，先 enter 标记 token 再 consume 满足断言）。 */
+      function closeStart(code: Code): State | undefined {
+        effects.enter(delimiterType);
+        effects.consume(code);
+        effects.exit(delimiterType);
+        return maybeClose;
+      }
+
       function maybeClose(code: Code): State | undefined {
         if (code === closeCode) {
+          effects.enter(delimiterType);
           effects.consume(code);
+          effects.exit(delimiterType);
           effects.exit(tokenNameTyped);
-          return ok(code);
+          // 成功关闭：交还控制权（不带 code——当前 code 已被 consume，ok 由下一次 go 触发）
+          return ok;
         }
         // 单个定界符（如 `==a=b==` 中的 `=`）按普通字符继续
-        return content(code);
+        effects.enter("data");
+        return data(code);
       }
     },
   };
@@ -102,10 +117,12 @@ function delimitedTokenize(tokenName: string, openCode: number, closeCode: numbe
 const highlightConstruct = delimitedTokenize("highlight", EQUAL, EQUAL);
 const commentConstruct = delimitedTokenize("comment", PERCENT, PERCENT);
 
-/** `[[笔记名]]` / `[[笔记名|别名]]`：内容不递归解析（值原样保留，别名用 `|` 分隔）。 */
+/** `[[笔记名]]` / `[[笔记名|别名]]`：内容不递归解析（值原样保留，别名用 `|` 分隔）。
+ * 结构与 delimitedTokenize 一致（delimiter token 包裹定界符，exit 后不裸 consume）。 */
 const wikiLinkConstruct: Construct = {
   tokenize(this: TokenizeContext, effects: Effects, ok: State, nok: State): State {
     const wikiLinkToken = "wikiLink" as Parameters<Effects["enter"]>[0];
+    const delimiterType = "wikiLinkDelimiter" as Parameters<Effects["enter"]>[0];
     return start;
 
     function start(code: Code): State | undefined {
@@ -126,26 +143,38 @@ const wikiLinkConstruct: Construct = {
         effects.enter("data");
         return data(code);
       }
-      effects.consume(code);
-      return maybeClose;
+      return closeStart(code);
     }
 
     function data(code: Code): State | undefined {
-      if (code === RBRACKET || code === null || markdownLineEnding(code)) {
+      if (code === null || markdownLineEnding(code)) return nok(code);
+      if (code === RBRACKET) {
         effects.exit("data");
-        return content(code);
+        return closeStart(code);
       }
       effects.consume(code);
       return data;
     }
 
+    /** 消费关闭定界符（进入时最后事件可能是 exit:data，先 enter 标记 token 再 consume 满足断言）。 */
+    function closeStart(code: Code): State | undefined {
+      effects.enter(delimiterType);
+      effects.consume(code);
+      effects.exit(delimiterType);
+      return maybeClose;
+    }
+
     function maybeClose(code: Code): State | undefined {
       if (code === RBRACKET) {
+        effects.enter(delimiterType);
         effects.consume(code);
+        effects.exit(delimiterType);
         effects.exit(wikiLinkToken);
-        return ok(code);
+        return ok;
       }
-      return content(code);
+      // 单个定界符（如 `[[a]b]]` 中的 `]`）按普通字符继续
+      effects.enter("data");
+      return data(code);
     }
   },
 };
