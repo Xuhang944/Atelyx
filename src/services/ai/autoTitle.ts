@@ -15,6 +15,9 @@ const DIALOGUE_MAX_CHARS = 400;
 /** 命名响应 token 上限（含思考预算）：短任务小值，防无限生成占住后端槽位。 */
 const TITLE_MAX_TOKENS = 512;
 
+/** 命名请求超时：重新命名（全量会话）时模型可能很慢，但也不能无限挂起等待。 */
+const AUTO_NAMING_TIMEOUT_MS = 60_000;
+
 /** 命名请求延迟发出时长：避开与主对话请求背靠背发送，防触发端点速率限制。 */
 export const AUTO_NAMING_DELAY_MS = 3_000;
 
@@ -47,12 +50,21 @@ export interface AutoTitleParams {
   signal?: AbortSignal;
 }
 
-/** 用 LLM 为对话生成简短标题（失败返回 null，调用方保留占位）。 */
+export interface AutoTitleResult {
+  /** 生成的标题（失败/空结果 = null，调用方保留占位）。 */
+  title: string | null;
+  /** 请求是否被主动中止（发送新消息/切仓库/手动接管）——调用方按「取消」处理，不视为失败。 */
+  aborted: boolean;
+}
+
+/** 用 LLM 为对话生成简短标题。 */
 export async function autoTitle(
   params: AutoTitleParams,
   dialogue: string,
-): Promise<string | null> {
-  const excerpt = dialogue.slice(0, DIALOGUE_MAX_CHARS);
+  opts?: { maxChars?: number },
+): Promise<AutoTitleResult> {
+  // maxChars：自动命名按首轮摘要语义截断防浪费 token；重新命名传 Infinity = 全量会话记录
+  const excerpt = dialogue.slice(0, opts?.maxChars ?? DIALOGUE_MAX_CHARS);
   const messages: ChatParams["messages"] = [
     {
       role: "system",
@@ -62,13 +74,19 @@ export async function autoTitle(
   ];
   const controller = new AbortController();
   lastTitleController = controller;
+  const timer = setTimeout(() => controller.abort(), AUTO_NAMING_TIMEOUT_MS);
   try {
-    return cleanTitle(
-      await chatOnce({ ...params, messages, maxTokens: TITLE_MAX_TOKENS, signal: controller.signal })
-    );
-  } catch {
-    return null;
+    return {
+      aborted: false,
+      title: cleanTitle(
+        await chatOnce({ ...params, messages, maxTokens: TITLE_MAX_TOKENS, signal: controller.signal })
+      ),
+    };
+  } catch (e) {
+    // 被中止（主动取消/超时）与失败区分开：取消静默、失败由调用方提示
+    return { aborted: (e as Error).name === "AbortError", title: null };
   } finally {
+    clearTimeout(timer);
     if (lastTitleController === controller) lastTitleController = null;
   }
 }

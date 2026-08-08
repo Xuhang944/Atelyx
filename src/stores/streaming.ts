@@ -15,7 +15,9 @@ import {
   type ToolCall,
   type ToolDef,
 } from "@/services/ai/client";
-import type { ProviderConfig } from "@/types";
+import { autoTitle, AUTO_NAMING_DELAY_MS } from "@/services/ai/autoTitle";
+import { useSettingsStore } from "./settingsStore";
+import type { ProviderConfig, Role } from "@/types";
 
 export interface StreamBatch {
   content: string;
@@ -200,4 +202,63 @@ export function decideCleanup(
   }
   if (!content.trim() && timedOut) return { kind: "timeout-error" };
   return { kind: "keep" };
+}
+
+/**
+ * 话题命名目标（画布对话节点 / AI 对话面板会话的差异由回调注入，命名管线共用一份）。
+ * 回调在延迟后与写回前被重取——命名期间的新消息纳入摘要、已命名/已删除则不写。
+ */
+export interface AutoNameTarget {
+  /** 重取当前消息列表（延迟后调用；目标已消失返回空数组）。 */
+  getMessages: () => Array<{ role: Role; displayContent?: string; content: string }>;
+  /** 是否已被命名（画布 = 节点 title 非空；面板 = 已登记成功命名）。 */
+  isNamed: () => boolean;
+  /** 写回标题（画布 = updateNodeData；面板 = 更新会话 + 登记 + 落盘）。 */
+  applyTitle: (title: string) => void;
+}
+
+export type AutoNamingResult = "ok" | "skipped" | "failed";
+
+/**
+ * 公共话题命名管线（画布/面板共用，两 store 的 autoNameConversation/autoNameSession 均收敛于此）：
+ * 解析命名模型（设置指定 → 仓库默认；关闭/未配置返回 skipped）→ 可选延迟（缺省 3s 防限流；
+ * 重新命名传 0 立即发出）→ 消息检查（user + assistant 各一）→ LLM 生成（超时 60s /
+ * 可选全量历史）→ 二次校验未命名再写回。
+ * 返回：ok = 成功写回；skipped = 无模型/无消息/已命名/被主动中止（调用方静默）；
+ * failed = LLM 请求失败（调用方提示可重试）。
+ * `ignoreToggle` = 重新命名：不受「话题自动命名」开关限制（用户显式请求）。
+ */
+export async function runAutoNaming(
+  target: AutoNameTarget,
+  opts?: { delayMs?: number; maxChars?: number; ignoreToggle?: boolean },
+): Promise<AutoNamingResult> {
+  const named = useSettingsStore.getState().resolveAutoNamingModel(opts?.ignoreToggle);
+  if (!named) return "skipped";
+  const delay = opts?.delayMs ?? AUTO_NAMING_DELAY_MS;
+  if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+  if (target.isNamed()) return "skipped";
+  const messages = target.getMessages();
+  // 至少 user + assistant 各一才有摘要意义（纯 user 未回复/abort 未产出——下轮再试）
+  if (
+    !messages.some((m) => m.role === "user") ||
+    !messages.some((m) => m.role === "assistant")
+  ) {
+    return "skipped";
+  }
+  const { provider, model } = named;
+  const dialogue = messages
+    .map((m) => `${m.role === "user" ? "用户" : "AI"}：${m.displayContent ?? m.content}`)
+    .join("\n");
+  // 命名不传 temperature：交给厂商 API 默认配置（与主对话一致）
+  const { aborted, title } = await autoTitle(
+    { baseUrl: provider.baseUrl, apiKey: provider.apiKey, model },
+    dialogue,
+    { maxChars: opts?.maxChars },
+  );
+  if (aborted) return "skipped";
+  if (!title) return "failed";
+  // 命名期间目标可能已命名/已删除 → 校验后再写，防并发覆盖
+  if (target.isNamed()) return "skipped";
+  target.applyTitle(title);
+  return "ok";
 }

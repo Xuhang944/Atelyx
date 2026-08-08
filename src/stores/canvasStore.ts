@@ -21,14 +21,14 @@ import {
   importAttachmentVault,
 } from "@/services/vault";
 import { toApiMessages, type ChatParams } from "@/services/ai/client";
-import { autoTitle, abortAutoTitle, AUTO_NAMING_DELAY_MS } from "@/services/ai/autoTitle";
+import { abortAutoTitle } from "@/services/ai/autoTitle";
 import { runSearch, resultsToText } from "@/services/search";
 import { pickFile } from "@/services/dialog";
 import { findFreeSpot, pickEdgeHandles } from "@/utils/layout";
 import { inferImageMime } from "@/utils/whiteboard";
 import { DEFAULT_CONVERSATION_WIDTH, DEFAULT_CONVERSATION_HEIGHT, DEFAULT_TEXT_NODE_WIDTH, DEFAULT_TEXT_NODE_HEIGHT } from "@/constants/canvas";
 import { WEB_SEARCH_TOOL } from "@/constants/tools";
-import { runStreamExchange, decideCleanup } from "./streaming";
+import { runStreamExchange, decideCleanup, runAutoNaming } from "./streaming";
 import { isAssetConsumed } from "@/utils/consumed";
 import { prefix, scanMentionHits } from "@/utils/text";
 import { sanitizeFilename, siblingPath } from "@/utils/filename";
@@ -331,44 +331,35 @@ function createSearchNode(conversationId: string, query: string, data: SearchRes
   schedulePersist();
 }
 
+/** 画布对话节点实时查找（命名管线回调共用：延迟后/写回前重取，已删除/切画布返回 undefined）。 */
+function findConversationNode(conversationId: string): Node | undefined {
+  const node = useCanvasStore.getState().nodes.find((n) => n.id === conversationId);
+  return node && node.type === "conversation" ? node : undefined;
+}
+
 /**
  * LLM 话题自动命名：一轮对话完成后为对话节点生成话题标题。
  * - 仅对尚无 title 的对话节点命名（首轮完成后一次，之后不覆盖）
- * - 模型解析与 send 一致：节点指定 → 仓库默认模型（反查所属供应商）
+ * - 统一走 streaming.ts 的公共命名管线（模型解析/延迟/超时与面板共用）
  * - fire-and-forget：无可用模型/命名失败降级保留占位，不阻塞画布操作
  */
 async function autoNameConversation(conversationId: string): Promise<void> {
-  const cfg = useSettingsStore.getState();
-  // 命名模型：设置页话题自动命名配置（指定模型 → 默认模型）；关闭/未配置模型则不命名（零延迟返回）
-  const named = cfg.resolveAutoNamingModel();
-  if (!named) return;
-  // 延迟发出（AUTO_NAMING_DELAY_MS）：避开与主对话请求背靠背发送（防触发端点速率限制）；
-  // 延迟后重取最新状态——延迟期间的新消息纳入命名摘要
-  await new Promise((r) => setTimeout(r, AUTO_NAMING_DELAY_MS));
-  const state = useCanvasStore.getState();
-  const node = state.nodes.find((n) => n.id === conversationId);
-  if (!node || node.type !== "conversation") return;
-  const data = node.data as Partial<ConversationData>;
-  if (data.title) return;
-  const list = state.messagesByConv[conversationId] ?? [];
-  // 至少 user + assistant 各一（含 [错误] 占位）才有摘要意义
-  if (!list.some((m) => m.role === "user") || !list.some((m) => m.role === "assistant")) return;
-  const { provider, model } = named;
-  const dialogue = list
-    .map((m) => `${m.role === "user" ? "用户" : "AI"}：${m.displayContent ?? m.content}`)
-    .join("\n");
-  // 命名不传 temperature：交给厂商 API 默认配置（与主对话一致）
-  const title = await autoTitle(
-    { baseUrl: provider.baseUrl, apiKey: provider.apiKey, model },
-    dialogue,
-  );
-  if (!title) return;
-  // 命名期间节点可能已删除/画布已切换 → 校验仍在且仍未命名再写
-  const latest = useCanvasStore.getState();
-  const latestNode = latest.nodes.find((n) => n.id === conversationId);
-  if (!latestNode || latestNode.type !== "conversation") return;
-  if ((latestNode.data as Partial<ConversationData>).title) return;
-  useCanvasStore.getState().updateNodeData(conversationId, { title });
+  await runAutoNaming({
+    getMessages: () => {
+      const node = findConversationNode(conversationId);
+      if (!node) return [];
+      return useCanvasStore.getState().messagesByConv[conversationId] ?? [];
+    },
+    isNamed: () => {
+      const node = findConversationNode(conversationId);
+      return !node || !!((node.data as Partial<ConversationData>).title);
+    },
+    applyTitle: (title) => {
+      const node = findConversationNode(conversationId);
+      if (!node) return;
+      useCanvasStore.getState().updateNodeData(conversationId, { title });
+    },
+  });
 }
 
 /**
@@ -671,6 +662,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     }
     // 中止旧画布进行中的流：abort 后 onDone 只清流式标志，不再向新画布写增量
     abortAllStreams();
+    // 中止旧画布进行中的命名请求（防其后台空转/误写；与面板 load 对称）
+    abortAutoTitle();
     set({ loading: true, error: null });
     try {
       // 外部白板格式（.canvas）走只读加载：映射为运行时节点 + 无向边，永不落盘
@@ -694,6 +687,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         streamingByConv: {},
         loading: false,
       });
+      // 恢复补命名：加载后对首个未命名对话节点重试（覆盖上次命名被中断/丢失的窗口；
+      // 仅补一个防并发请求轰炸模型端点）；无 title 无消息的节点由消息检查自然跳过
+      if (!isWhiteboard) {
+        const unnamed = get().nodes.find(
+          (n) => n.type === "conversation" && !((n.data as Partial<ConversationData>).title),
+        );
+        if (unnamed) void autoNameConversation(unnamed.id);
+      }
     } catch (e) {
       console.error("加载画布失败", e);
       set({ loading: false, error: "加载画布失败，请重试" });

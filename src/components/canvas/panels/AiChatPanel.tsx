@@ -77,6 +77,7 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
   const error = useChatPanelStore((s) => s.error);
   const send = useChatPanelStore((s) => s.send);
   const stop = useChatPanelStore((s) => s.stop);
+  const renameSession = useChatPanelStore((s) => s.renameSession);
   const newSession = useChatPanelStore((s) => s.newSession);
   const openSession = useChatPanelStore((s) => s.openSession);
   const deleteSession = useChatPanelStore((s) => s.deleteSession);
@@ -99,6 +100,16 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
   const [showHistory, setShowHistory] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showPromptPicker, setShowPromptPicker] = useState(false);
+  // 手动重新命名请求是否进行中（按钮旋转反馈 + 防重复点击）
+  const [renaming, setRenaming] = useState(false);
+  const handleRename = async () => {
+    setRenaming(true);
+    try {
+      await renameSession();
+    } finally {
+      setRenaming(false);
+    }
+  };
   // 输入框内的 @引用（拖入的笔记）：@标签 随 input 文本渲染，发送时按命中实例注入笔记全文
   const [mentions, setMentions] = useState<EditorChatMessageRef[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -275,13 +286,32 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
               </button>
             </span>
           ) : (
-            <span
-              className="truncate text-xs font-medium"
-              style={{ color: "var(--text-primary)" }}
-              title={activeTitle}
-            >
-              {activeTitle}
-            </span>
+            <>
+              <span
+                className="truncate text-xs font-medium"
+                style={{ color: "var(--text-primary)" }}
+                title={activeTitle}
+              >
+                {activeTitle}
+              </span>
+              {/* 手动重新命名：按全部会话记录请求 LLM 生成标题（新对话态/流式中禁用）；请求中旋转 + 防重复点击 */}
+              {active && !streaming && (
+                <button
+                  onClick={() => void handleRename()}
+                  disabled={renaming}
+                  title={renaming ? "正在生成标题…" : "重新命名（按全部会话记录生成标题）"}
+                  aria-label="重新命名"
+                  className="p-0.5 rounded hover:opacity-80 flex-shrink-0 disabled:opacity-60 disabled:cursor-default disabled:hover:opacity-60"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  {renaming ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <RefreshCw size={12} />
+                  )}
+                </button>
+              )}
+            </>
           )}
         </div>
         <div className="flex items-center gap-0.5 flex-shrink-0" data-tauri-drag-region="false">

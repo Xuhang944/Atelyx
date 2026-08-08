@@ -75,8 +75,8 @@ interface SettingsState {
   ) => ChatTargetResult;
   /** 搜索源是否已配置（tavily key 或 searxng URL 存在）——工具开关开着但未配置时发送提示并降级。 */
   isSearchConfigured: () => boolean;
-  /** 解析话题自动命名模型：设置页指定（autoNamingModel）→ 仓库默认模型（vaultConfig.model）；未配置返回 null。 */
-  resolveAutoNamingModel: () => { provider: ProviderConfig; model: string } | null;
+  /** 解析话题自动命名模型：设置页指定（autoNamingModel）→ 仓库默认模型（vaultConfig.model）；未配置返回 null。ignoreToggle = 重新命名场景，不受「话题自动命名」开关限制。 */
+  resolveAutoNamingModel: (ignoreToggle?: boolean) => { provider: ProviderConfig; model: string } | null;
   /** 新增 provider（基于预设或空白），返回新 id。 */
   addProvider: (preset?: (typeof PROVIDER_PRESETS)[number]) => Promise<string>;
   /** 拉取供应商可用模型 ID 列表（GET {baseUrl}/models；设置页「获取模型列表/测试连通性」共用）。失败抛错，由调用方降级展示。 */
@@ -284,11 +284,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }),
 
   // 话题自动命名模型解析：设置页指定（autoNamingModel）→ 仓库默认模型（vaultConfig.model）；
-  // 开关未配置视为开启（缺省 true），显式关闭返回 null（画布/面板命名共用，一次定义）。
-  resolveAutoNamingModel: () => {
+  // 开关未配置视为开启（缺省 true），显式关闭返回 null（画布/面板自动命名共用，一次定义）；
+  // ignoreToggle = 重新命名（用户显式请求，独立于自动命名开关）。
+  resolveAutoNamingModel: (ignoreToggle) => {
     const s = get();
     const vault = s.vaultConfig;
-    if (vault?.autoNamingEnabled === false) return null;
+    if (vault?.autoNamingEnabled === false && !ignoreToggle) return null;
     const named = vault?.autoNamingModel;
     const modelId = named?.model || vault?.model;
     if (!modelId) return null;

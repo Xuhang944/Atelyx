@@ -8,10 +8,10 @@ import {
   readNote,
 } from "@/services/vault";
 import { toApiMessages, type ChatParams } from "@/services/ai/client";
-import { autoTitle, abortAutoTitle, AUTO_NAMING_DELAY_MS } from "@/services/ai/autoTitle";
+import { abortAutoTitle } from "@/services/ai/autoTitle";
 import { runSearch } from "@/services/search";
 import { WEB_SEARCH_TOOL } from "@/constants/tools";
-import { runStreamExchange, decideCleanup } from "./streaming";
+import { runStreamExchange, decideCleanup, runAutoNaming } from "./streaming";
 import { prefix, scanMentionHits } from "@/utils/text";
 import { useSettingsStore } from "./settingsStore";
 import { useAppStore } from "./appStore";
@@ -77,6 +77,8 @@ interface ChatPanelState {
   send: (content: string, refs?: EditorChatMessageRef[]) => Promise<void>;
   /** 重新生成最后一条回复：移除最后 assistant、按 refs 重建最后一条 user 消息注入后重发（同画布 regenerate 语义）。 */
   regenerate: () => Promise<void>;
+  /** 手动重新命名当前会话（按全部会话记录请求命名，立即发出无防限流延迟；失败 error 提示）。 */
+  renameSession: () => Promise<void>;
   /** 回到此处：截断到指定 AI 回复（含），之后的消息移除，在此处继续对话。 */
   rollbackTo: (messageId: string) => void;
   /** 中止当前流式回复（空回复自动移除占位）。 */
@@ -154,49 +156,34 @@ function parseChatMessages(md: string, sessionId: string): EditorChatMessage[] {
 /** 已完成 LLM 自动命名的会话 id（一次会话只命名一次；load 切仓库时清空）。 */
 const autoNamedSessions = new Set<string>();
 
-/**
- * LLM 话题自动命名：一轮对话完成后为会话生成话题标题。
- * - 仅对未命名过的会话触发（autoNamedSessions 记录已成功命名的会话）
- * - 失败（含被 abortAutoTitle 中止）不登记——降级保留首条消息前缀，下轮对话完成时自动重试（同画布语义）
- * - 模型解析：设置页话题自动命名模型（留空 = 跟随默认模型）
- * - 延迟发出（AUTO_NAMING_DELAY_MS）：避开与主对话请求背靠背发送（防触发端点速率限制）；
- *   延迟后重取最新 state——延迟期间的新消息纳入命名摘要
- * - 命名只改索引 title（消息 .md 文件名 = 会话 id，不随标题变）
- * - fire-and-forget：关闭/无可用模型/命名失败降级保留占位标题，不阻塞对话
- */
-async function autoNameSession(sessionId: string): Promise<void> {
-  if (autoNamedSessions.has(sessionId)) return;
-  const cfg = useSettingsStore.getState();
-  // 命名模型：设置页话题自动命名配置（指定模型 → 默认模型）；关闭/未配置模型则不命名（零延迟返回）
-  const named = cfg.resolveAutoNamingModel();
-  if (!named) return;
-  await new Promise((r) => setTimeout(r, AUTO_NAMING_DELAY_MS));
-  const state = useChatPanelStore.getState();
-  const session = state.sessions.find((s) => s.id === sessionId);
-  if (!session) return;
-  // 至少 user + assistant 各一才有摘要意义（纯 user 未回复/abort 未产出——下轮再试）
-  if (
-    !session.messages.some((m) => m.role === "user") ||
-    !session.messages.some((m) => m.role === "assistant")
-  ) {
-    return;
-  }
-  const { provider, model } = named;
-  const dialogue = session.messages
-    .map((m) => `${m.role === "user" ? "用户" : "AI"}：${m.displayContent ?? m.content}`)
-    .join("\n");
-  // 命名不传 temperature：交给厂商 API 默认配置（与主对话一致）
-  const title = await autoTitle({ baseUrl: provider.baseUrl, apiKey: provider.apiKey, model }, dialogue);
-  if (!title) return;
+/** 命名成功写回：登记防重复命名 + 更新索引 title + 落盘（自动命名与重新命名共用）。 */
+function applySessionTitle(sessionId: string, title: string): void {
   const latest = useChatPanelStore.getState();
-  const s = latest.sessions.find((x) => x.id === sessionId);
-  if (!s) return;
+  if (!latest.sessions.some((x) => x.id === sessionId)) return;
   // 成功才登记：失败下轮重试；成功后消息 .md 文件名 = 会话 id，不随标题变——命名只改索引 title（随既有 debounce 写盘）
   autoNamedSessions.add(sessionId);
   useChatPanelStore.setState({
     sessions: latest.sessions.map((x) => (x.id === sessionId ? { ...x, title } : x)),
   });
   schedulePersist();
+}
+
+/**
+ * LLM 话题自动命名：一轮对话完成后为会话生成话题标题。
+ * - 统一走 streaming.ts 的公共命名管线（模型解析/延迟/超时与画布共用）
+ * - 失败（含被 abortAutoTitle 中止）不登记——降级保留首条消息前缀，下轮对话完成/进入仓库时自动重试
+ * - 命名只改索引 title（消息 .md 文件名 = 会话 id，不随标题变）
+ * - fire-and-forget：关闭/无可用模型/命名失败降级保留占位标题，不阻塞对话
+ */
+async function autoNameSession(sessionId: string): Promise<void> {
+  await runAutoNaming({
+    getMessages: () => {
+      const s = useChatPanelStore.getState().sessions.find((x) => x.id === sessionId);
+      return s?.messages ?? [];
+    },
+    isNamed: () => autoNamedSessions.has(sessionId),
+    applyTitle: (title) => applySessionTitle(sessionId, title),
+  });
 }
 
 /** debounce 500ms 写盘（读最新 state；`messageSessionId` = 本次改动涉及的会话，其消息 .md 需重写）。 */
@@ -478,6 +465,8 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     }
     dirtyMessageFiles.clear();
     autoNamedSessions.clear();
+    // 切仓库让路：中止旧仓库进行中的命名请求，防其后台空转/误写
+    abortAutoTitle();
     set({ pendingMentions: [] });
     try {
       const f = await readEditorChats();
@@ -532,6 +521,17 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
         error: null,
       });
       if (migratedV1) schedulePersist(); // 触发索引 v2 落盘
+      // 恢复补命名：对最近使用的未命名会话重试（覆盖上次命名被中断/丢失的窗口；仅补一个防请求轰炸）。
+      // 未命名判定 = title 仍为空/等于首条 user 消息前缀（命名成功会改变 title，下次 load 不再匹配）
+      const unnamed = [...sessions]
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .find((s) => {
+          if (autoNamedSessions.has(s.id)) return false;
+          const firstUser = s.messages.find((m) => m.role === "user");
+          if (!firstUser || !s.messages.some((m) => m.role === "assistant")) return false;
+          return !s.title || s.title === prefix(firstUser.displayContent ?? firstUser.content, 16);
+        });
+      if (unnamed) void autoNameSession(unnamed.id);
     } catch (e) {
       console.error("读取 AI 对话会话失败", e);
       if (useAppStore.getState().vaultId !== vaultId) return;
@@ -708,6 +708,36 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
       schedulePersist(session.id);
     }
     await runExchange({ ...session, messages: base }, { ...userMsg, content: rebuiltContent }, resolved.provider, resolved.model);
+  },
+
+  renameSession: async () => {
+    const s = get();
+    const id = s.activeSessionId;
+    if (!id || s.streaming || !s.sessions.some((x) => x.id === id)) return;
+    // 手动接管：中止在途的自动命名请求（防同一会话重复请求；延迟中未发出的由 isNamed 二次校验兜底跳过）
+    abortAutoTitle();
+    // 重新命名：全量会话记录（不截断）、立即请求（无 3s 防限流延迟——用户主动点击期待即时反馈）、
+    // 不受「话题自动命名」开关限制；成功后登记防自动命名重复覆盖
+    const result = await runAutoNaming(
+      {
+        getMessages: () => {
+          const cur = useChatPanelStore.getState().sessions.find((x) => x.id === id);
+          return cur?.messages ?? [];
+        },
+        isNamed: () => false,
+        applyTitle: (title) => applySessionTitle(id, title),
+      },
+      { delayMs: 0, maxChars: Infinity, ignoreToggle: true },
+    );
+    // 反馈：真失败（请求出错）可重试；未配置模型提示配置；跳过（无消息/被中止）静默
+    if (result !== "ok") {
+      const hasNamingConfig = !!useSettingsStore.getState().resolveAutoNamingModel(true);
+      if (!hasNamingConfig) {
+        set({ error: "话题命名不可用：未配置默认模型或话题命名模型" });
+      } else if (result === "failed") {
+        set({ error: "话题命名失败，请稍后重试" });
+      }
+    }
   },
 
   rollbackTo: (messageId) => {
