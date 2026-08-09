@@ -1,8 +1,8 @@
 /**
  * 多维表格编辑器（表格视图）。
  *
- * 布局：工具条（保存状态 / 冲突条 / 添加字段）→ 表格（列头 ⋮ 字段菜单、行 ⋮ 菜单、
- * 行首拖拽手柄插入排序、类型化单元格）→ 行尾「+ 新行」。
+ * 布局：工具条（保存状态 / 冲突条）→ 表格（列头 ⋮ 字段菜单、行 ⋮ 菜单、
+ * 行首拖拽手柄插入排序、表头末尾「+」列添加字段、类型化单元格）→ 行尾「+ 新行」。
  *
  * 交互要点：
  * - 行拖拽为 pointer 模拟（HTML5 DnD 在 WebView2 不可靠，与文件面板同策略）：
@@ -19,7 +19,7 @@ import { useTableStore } from "@/stores/tableStore";
 import { TableCell } from "@/components/table/TableCell";
 import { TableTimeline } from "@/components/table/TableTimeline";
 import { fieldDefaultWidth } from "@/utils/table";
-import { MAX_COL_WIDTH, MIN_COL_WIDTH, ROW_NUM_COL_WIDTH } from "@/constants/table";
+import { MAX_COL_WIDTH, MIN_COL_WIDTH, ROW_NUM_COL_WIDTH, ADD_FIELD_COL_WIDTH } from "@/constants/table";
 import type { FieldType, TableField } from "@/types";
 
 /** 保存状态文本（镜像画布窗口状态区）。 */
@@ -145,9 +145,9 @@ export function TableEditor() {
 
   /** 列宽：手动调整值优先，缺省按字段名自适应。 */
   const widthOf = (f: TableField): number => f.width ?? fieldDefaultWidth(f.name);
-  /** 表格总宽 = 行号列 + 各列宽之和：显式设给 table，拖宽一列只增总宽、
+  /** 表格总宽 = 行号列 + 各列宽 + 表头末尾「+」列：显式设给 table，拖宽一列只增总宽、
    *  其他列不挤压（border-collapse + table-fixed 无显式宽度时引擎会撑满容器并重分配）。 */
-  const totalWidth = ROW_NUM_COL_WIDTH + fields.reduce((acc, f) => acc + widthOf(f), 0);
+  const totalWidth = ROW_NUM_COL_WIDTH + fields.reduce((acc, f) => acc + widthOf(f), 0) + ADD_FIELD_COL_WIDTH;
 
   // ===== 底部横向滑动条：与表格横向滚动双向同步（常显；宽度 = 表格总宽 + 边框余量）=====
   const bottomScrollRef = useRef<HTMLDivElement>(null);
@@ -165,11 +165,11 @@ export function TableEditor() {
     }
   };
 
-  /** 插入位指示线（表格行之间渲染）。 */
+  /** 插入位指示线（表格行之间渲染；colSpan 含行号列 + 字段列 + 表头「+」列）。 */
   const insertIndicator = (i: number) =>
     dragInsertIndex === i && draggingRowId ? (
       <tr className="pointer-events-none">
-        <td colSpan={fields.length + 1} className="p-0" style={{ background: "var(--accent)", height: 2 }} />
+        <td colSpan={fields.length + 2} className="p-0" style={{ background: "var(--accent)", height: 2 }} />
       </tr>
     ) : null;
 
@@ -262,17 +262,6 @@ export function TableEditor() {
         >
           <FileOutput size={13} /> {exported ? "已导出" : "导出 xlsx"}
         </button>
-        <button
-          onClick={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            setAddFieldMenu({ x: rect.left, y: rect.bottom + 4 });
-          }}
-          className="flex items-center gap-1 px-2 py-1 rounded transition-colors"
-          style={{ background: "rgba(212,175,55,0.15)", color: "var(--accent)" }}
-          title="添加字段"
-        >
-          <Plus size={13} /> 添加字段
-        </button>
       </div>
 
       {/* 时间线视图：整块替换表格主体（保留工具条） */}
@@ -292,6 +281,7 @@ export function TableEditor() {
             {fields.map((f) => (
               <col key={f.id} style={{ width: widthOf(f) }} />
             ))}
+            <col style={{ width: ADD_FIELD_COL_WIDTH }} />
           </colgroup>
           <thead>
             <tr>
@@ -332,6 +322,24 @@ export function TableEditor() {
                   />
                 </th>
               ))}
+              {/* 表头末尾「+」列：添加字段入口（点击弹出名称 + 类型浮层） */}
+              <th
+                className="border-b border-r align-middle px-1.5 py-1 sticky top-0 z-10"
+                style={{ background: "var(--bg-secondary)", borderColor: "var(--border)" }}
+              >
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setAddFieldMenu({ x: rect.left, y: rect.bottom + 2 });
+                  }}
+                  className="w-6 h-6 flex items-center justify-center rounded hover:bg-[var(--hover)]"
+                  style={{ color: "var(--text-muted)" }}
+                  title="添加字段"
+                >
+                  <Plus size={14} />
+                </button>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -389,21 +397,24 @@ export function TableEditor() {
                       <TableCell field={f} row={row} />
                     </td>
                   ))}
+                  {/* 表头「+」列对应的空单元格：行尾横线延伸与表头对齐（border-r 与表头右缘对称） */}
+                  <td className="border-b border-r" style={{ borderColor: "var(--border)" }} />
                 </tr>
               </Fragment>
             ))}
             {insertIndicator(rows.length)}
           </tbody>
         </table>
-        {/* 行尾「+ 新行」：随表格滚动（末尾行的底下） */}
-        <div className="p-1.5 border-b" style={{ borderColor: "var(--border)" }}>
-          <button
-            onClick={addRow}
-            className="flex items-center gap-1 px-2 py-1 rounded text-xs hover:bg-[var(--hover)]"
-            style={{ color: "var(--text-muted)" }}
-          >
+        {/* 行尾「+ 新行」：整行可点击创建，底边线与表头对齐（宽度 = 表格总宽，随表格横向滚动） */}
+        <div
+          className="border-b cursor-pointer transition-colors hover:bg-[var(--hover)]"
+          style={{ borderColor: "var(--border)", width: totalWidth }}
+          onClick={addRow}
+          title="添加新行"
+        >
+          <div className="flex items-center gap-1 px-2 py-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
             <Plus size={13} /> 新行
-          </button>
+          </div>
         </div>
         </div>
 
@@ -471,7 +482,7 @@ function FieldMenu({
   const inputRef = useRef<HTMLInputElement>(null);
   const optionsRef = useRef<HTMLTextAreaElement>(null);
   const { ref: menuRef, pos } = useClampedMenuPosition(x, y, [mode, confirming]);
-  useDismissOnOutside(onClose);
+  useDismissOnOutside(onClose, menuRef);
 
   useEffect(() => {
     if (mode === "options") optionsRef.current?.focus();
@@ -650,7 +661,7 @@ function RowMenu({ rowId, x, y, onClose }: { rowId: string; x: number; y: number
   const moveRow = useTableStore((s) => s.moveRow);
   const from = rows.findIndex((r) => r.id === rowId);
   const { ref: menuRef, pos } = useClampedMenuPosition(x, y);
-  useDismissOnOutside(onClose);
+  useDismissOnOutside(onClose, menuRef);
 
   const itemClass =
     "w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)] inline-flex items-center gap-1.5";
@@ -698,7 +709,7 @@ function AddFieldMenu({ x, y, onClose }: { x: number; y: number; onClose: () => 
   const [type, setType] = useState<FieldType>("text");
   const inputRef = useRef<HTMLInputElement>(null);
   const { ref: menuRef, pos } = useClampedMenuPosition(x, y);
-  useDismissOnOutside(onClose);
+  useDismissOnOutside(onClose, menuRef);
 
   useEffect(() => {
     inputRef.current?.focus();

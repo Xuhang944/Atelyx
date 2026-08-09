@@ -36,3 +36,5 @@ export const MIN_COL_WIDTH = 120;
 export const MAX_COL_WIDTH = 360;
 /** 行号列固定宽度（px）。 */
 export const ROW_NUM_COL_WIDTH = 40;
+/** 表头末尾「+」添加字段列固定宽度（px）。 */
+export const ADD_FIELD_COL_WIDTH = 48;
