@@ -19,8 +19,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
 use crate::vault::{
-    create_folder as create_folder_impl, delete_folder as delete_folder_impl,
-    delete_vault_file, import_attachment as import_attachment_vault_impl, init_vault_dirs,
+    copy_folder as copy_folder_impl, create_folder as create_folder_impl,
+    delete_folder as delete_folder_impl, delete_vault_file,
+    import_attachment as import_attachment_vault_impl, init_vault_dirs,
     list_canvas_files, list_vault_tree as list_vault_tree_impl, read_canvas_file,
     read_file_bytes, read_note as read_note_file, read_vault_config as read_vault_config_file,
     rename_folder as rename_folder_impl, rename_note_file, safe_join, sanitize_filename,
@@ -272,6 +273,39 @@ pub fn delete_note(file: String, state: State<'_, VaultState>) -> Result<(), Str
 pub fn delete_attachment(file: String, state: State<'_, VaultState>) -> Result<(), String> {
     let root = state.root()?;
     delete_vault_file(&root, &file)
+}
+
+/// 复制仓库内文件为同目录副本（纯字节复制；新路径由前端 dedupe 防重名）。
+/// 不更新 .atlx 引用——副本是独立文件，`.atlx`/`.atb` 内部 title/id 由前端读写命令组合更新。
+#[tauri::command]
+pub fn copy_vault_file(
+    old_file: String,
+    new_file: String,
+    state: State<'_, VaultState>,
+) -> Result<(), String> {
+    let root = state.root()?;
+    let src = safe_join(&root, &old_file, false)?;
+    let dst = safe_join(&root, &new_file, true)?;
+    if !src.is_file() {
+        return Err(format!("源不是文件：{}", old_file));
+    }
+    // 目标已存在拒绝（防覆盖丢数据；前端 dedupe 已防重名，此处兜底并发/外部创建）
+    if dst.exists() {
+        return Err(format!("目标文件已存在：{}", new_file));
+    }
+    std::fs::copy(&src, &dst).map_err(|e| format!("复制文件失败：{e}"))?;
+    Ok(())
+}
+
+/// 复制文件夹为同父目录副本（递归复制全部内容；新路径由前端 dedupe 防重名）。
+#[tauri::command]
+pub fn copy_vault_folder(
+    old_dir: String,
+    new_dir: String,
+    state: State<'_, VaultState>,
+) -> Result<(), String> {
+    let root = state.root()?;
+    copy_folder_impl(&root, &old_dir, &new_dir)
 }
 
 /// 删除文件夹（相对仓库根路径）。force=false 空目录直接删，非空返回 needsConfirm 供前端弹窗；

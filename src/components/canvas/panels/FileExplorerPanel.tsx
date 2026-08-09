@@ -4,8 +4,8 @@
  * 工作区左栏，树状展示仓库内全部文件夹与文件（跳过隐藏 `.` 开头目录与排除文件夹，
  * 见 `.atelyx/config.json` 的 `excludeFolders`），支持展开折叠、排序下拉、
  * 文件夹行右键新建（画布 / 笔记 / 文件夹，inline 输入框 Enter 创建，落该文件夹；
- * 文件树空白处右键 = 落仓库根目录）+ 重命名 / 删除（空目录直接删，非空弹窗确认递归删）、
- * 文件行右键重命名 / 删除（菜单内确认）。
+ * 文件树空白处右键 = 落仓库根目录）+ 创建副本 / 重命名 / 删除（空目录直接删，非空弹窗确认递归删）、
+ * 文件行右键创建副本 / 重命名 / 删除（菜单内确认）。
  *
  * 交互：
  * - 单击 `.atlx` → 打开画布；单击 `.md` → 打开笔记编辑器；`.md`/附件拖到画布 → 建节点
@@ -21,6 +21,7 @@ import {
   ChevronRight,
   ChevronsDownUp,
   ChevronsUpDown,
+  Copy,
   FileText,
   Folder,
   FolderPlus,
@@ -175,11 +176,14 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
   const createNote = useVaultStore((s) => s.createNote);
   const renameNote = useVaultStore((s) => s.renameNote);
   const deleteNote = useVaultStore((s) => s.deleteNote);
+  const duplicateNote = useVaultStore((s) => s.duplicateNote);
   const renameAttachment = useVaultStore((s) => s.renameAttachment);
   const deleteAttachment = useVaultStore((s) => s.deleteAttachment);
+  const duplicateAttachment = useVaultStore((s) => s.duplicateAttachment);
   const createFolder = useVaultStore((s) => s.createFolder);
   const deleteFolder = useVaultStore((s) => s.deleteFolder);
   const renameFolder = useVaultStore((s) => s.renameFolder);
+  const duplicateFolder = useVaultStore((s) => s.duplicateFolder);
   const moveNote = useVaultStore((s) => s.moveNote);
   const moveAttachment = useVaultStore((s) => s.moveAttachment);
   const moveFolder = useVaultStore((s) => s.moveFolder);
@@ -193,10 +197,12 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
   const renameCanvas = useAppStore((s) => s.renameCanvas);
   const deleteCanvas = useAppStore((s) => s.deleteCanvas);
   const moveCanvas = useAppStore((s) => s.moveCanvas);
+  const duplicateCanvas = useAppStore((s) => s.duplicateCanvas);
   const createTable = useVaultStore((s) => s.createTable);
   const renameTable = useVaultStore((s) => s.renameTable);
   const deleteTable = useVaultStore((s) => s.deleteTable);
   const moveTable = useVaultStore((s) => s.moveTable);
+  const duplicateTable = useVaultStore((s) => s.duplicateTable);
 
   // 展开集合（初始空 = 默认全部折叠：进入仓库只显示顶层文件夹；点文件夹展开）。
   // 展开状态仓库级持久化（uiStateStore → .atelyx/ui-state.json），进入仓库自动恢复上次展开情况
@@ -438,6 +444,34 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
       setNotice("删除文件夹失败，请重试");
     }
   }, [deleteFolder]);
+
+  /** 复制文件/文件夹为同目录副本（同名自动加序号），按 kind 分派到 store。 */
+  const duplicateAction = useCallback(
+    async (t: MenuTarget) => {
+      try {
+        if (t.kind === "folder") {
+          const newDir = await duplicateFolder(t.dir);
+          setNotice(`已创建副本「${newDir.split("/").pop()}」`);
+        } else if (t.kind === "canvas") {
+          const title = await duplicateCanvas(t.row);
+          setNotice(`已创建副本「${title}」`);
+        } else if (t.kind === "note") {
+          const newFile = await duplicateNote(t.file);
+          setNotice(`已创建副本「${newFile.split("/").pop()}」`);
+        } else if (t.kind === "table") {
+          const newFile = await duplicateTable(t.file);
+          setNotice(`已创建副本「${newFile.split("/").pop()}」`);
+        } else {
+          const newFile = await duplicateAttachment(t.file);
+          setNotice(`已创建副本「${newFile.split("/").pop()}」`);
+        }
+      } catch (err) {
+        console.error("复制失败", err);
+        setNotice("复制失败，请重试");
+      }
+    },
+    [duplicateFolder, duplicateCanvas, duplicateNote, duplicateTable, duplicateAttachment],
+  );
 
   // 排序方式存仓库级配置（.atelyx/config.json），跨会话/跨仓库各自独立
   const vaultSort = useSettingsStore((s) => s.vaultConfig?.fileExplorerSort);
@@ -831,6 +865,10 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
               });
               setMenu(null);
             }}
+            onDuplicate={() => {
+              setMenu(null);
+              void duplicateAction({ kind: "folder", dir: folderTarget.dir });
+            }}
             onDelete={() => {
               setMenu(null);
               void handleDeleteFolder(folderTarget.dir);
@@ -853,6 +891,10 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
               else if (t.kind === "table") setEditing({ kind: "table", file: t.file, value: tableTitleFromName(t.name) });
               else if (t.kind === "attachment") setEditing({ kind: "attachment", file: t.file, value: t.name });
               setMenu(null);
+            }}
+            onDuplicate={() => {
+              setMenu(null);
+              void duplicateAction(t);
             }}
             onDelete={() => {
               if (t.kind === "canvas") void deleteCanvas(t.row).catch(() => setNotice("删除画布失败，请重试"));
@@ -891,21 +933,23 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
   );
 }
 
-/** 文件夹右键菜单：新建画布 / 新建笔记 / 新建表格 / 新建文件夹 + 重命名 / 删除（根目录仅新建）。 */
+/** 文件夹右键菜单：新建画布 / 新建笔记 / 新建表格 / 新建文件夹 + 创建副本 + 重命名 / 删除（根目录仅新建）。 */
 function FolderCreateMenu({
   x,
   y,
   canManage,
   onCreate,
+  onDuplicate,
   onRename,
   onDelete,
   onClose,
 }: {
   x: number;
   y: number;
-  /** 非根目录才有管理操作（重命名/删除）；树空白处右键 = 根目录，仅新建。 */
+  /** 非根目录才有创建副本/重命名/删除；树空白处右键 = 根目录，仅新建。 */
   canManage: boolean;
   onCreate: (type: "canvas" | "note" | "table" | "folder") => void;
+  onDuplicate: () => void;
   onRename: () => void;
   onDelete: () => void;
   onClose: () => void;
@@ -963,6 +1007,10 @@ function FolderCreateMenu({
       </button>
       {canManage && (
         <>
+          <hr className="my-1" style={{ borderColor: "var(--border)" }} />
+          <button className={itemClass} onClick={onDuplicate}>
+            <Copy size={14} /> 创建副本
+          </button>
           <hr className="my-1" style={{ borderColor: "var(--border)" }} />
           <button className={itemClass} onClick={onRename}>
             <Pencil size={14} /> 重命名

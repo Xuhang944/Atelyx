@@ -1,5 +1,5 @@
 /**
- * 文件面板行右键菜单：重命名 / 删除。
+ * 文件面板行右键菜单：创建副本 / 重命名 / 删除。
  *
  * 样式对齐 `NodeContextMenu`（fixed 定位、`--bg-secondary` 背景、w-44、z-50）。
  * 「删除」文字恒为红色；点击后**菜单内就地**切确认态（红色「确认删除」+「取消」），
@@ -8,7 +8,7 @@
  * 关闭：Esc / 点击菜单外（pointerdown，mousedown 会被树行 pointerdown 的 preventDefault 抑制派发）；
  * 菜单容器 stopPropagation，防按钮点击被 document 监听抢先关闭。
  */
-import { BookmarkMinus, BookmarkPlus, FileOutput, Pencil, Trash2 } from "lucide-react";
+import { BookmarkMinus, BookmarkPlus, Copy, FileOutput, Pencil, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useClampedMenuPosition } from "@/hooks/useClampedMenuPosition";
 
@@ -17,6 +17,8 @@ interface Props {
   y: number;
   /** 进入 inline 重命名（复用文件面板的编辑态）。 */
   onRename: () => void;
+  /** 创建同目录副本（同名自动加序号），执行完由父级关闭菜单。 */
+  onDuplicate: () => void | Promise<void>;
   /** 确认删除后执行（异步删除），执行完由父级关闭菜单。 */
   onDelete: () => void | Promise<void>;
   /** 注册/注销系统提示词（仅 `.md` 行提供；undefined = 非笔记不显示该项）。 */
@@ -28,7 +30,7 @@ interface Props {
   onClose: () => void;
 }
 
-export function FileContextMenu({ x, y, onRename, onDelete, onTogglePrompt, promptMarked, onConvert, onClose }: Props) {
+export function FileContextMenu({ x, y, onRename, onDuplicate, onDelete, onTogglePrompt, promptMarked, onConvert, onClose }: Props) {
   const [confirming, setConfirming] = useState(false);
   // 父级每次渲染传新箭头函数，用 ref 存最新回调避免 document 监听反复重挂
   const onCloseRef = useRef(onClose);
@@ -134,6 +136,21 @@ export function FileContextMenu({ x, y, onRename, onDelete, onTogglePrompt, prom
               <hr className="my-1" style={{ borderColor: "var(--border)" }} />
             </>
           )}
+          <button
+            onClick={() => {
+              onDuplicate();
+              onClose();
+            }}
+            className="w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
+            style={{ color: "var(--text-primary)" }}
+            title="在同目录创建副本（同名自动加序号）"
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <Copy size={14} />
+              创建副本
+            </span>
+          </button>
+          <hr className="my-1" style={{ borderColor: "var(--border)" }} />
           <button
             onClick={() => {
               onRename();

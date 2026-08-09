@@ -8,6 +8,7 @@
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
+use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 
 /// 兼容字段：旧配置可能含「画布/笔记/附件」三目录名（`.atelyx/config.json` 的 `dirNames`），
@@ -995,6 +996,75 @@ pub fn rename_folder(root: &Path, old_dir: &str, new_dir: &str) -> Result<(), St
         return Err(format!("目标目录已存在：{}", new_dir));
     }
     std::fs::rename(&old_path, &new_path).map_err(|e| e.to_string())
+}
+
+/// 复制整个目录到新相对路径（递归复制全部内容含隐藏文件；校验 + 防覆盖，与 rename_folder 对称）。
+/// 副本是独立目录，内部 .atlx 引用仍是相对路径、随目录整体复制，无需链接维护；
+/// 目录内画布/表格重新生成 id（防同 id 双文件歧义：画布标签按 id 去重、协作合并按 id 身份）。
+pub fn copy_folder(root: &Path, old_dir: &str, new_dir: &str) -> Result<(), String> {
+    if old_dir.is_empty() || new_dir.is_empty() {
+        return Err("非法路径：目录为空".to_string());
+    }
+    let old_path = safe_join(root, old_dir, false)?;
+    let new_path = safe_join(root, new_dir, true)?;
+    if !old_path.is_dir() {
+        return Err(format!("目录不存在：{}", old_dir));
+    }
+    // 目标已存在拒绝（防覆盖丢数据；前端 dedupe 已防重名，此处兜底并发/外部创建）
+    if new_path.exists() {
+        return Err(format!("目标目录已存在：{}", new_dir));
+    }
+    if let Err(e) = copy_dir_all(&old_path, &new_path) {
+        // 复制中途失败：清理残缺副本，防半成品目录残留在文件树
+        let _ = std::fs::remove_dir_all(&new_path);
+        return Err(format!("复制目录失败：{e}"));
+    }
+    if let Err(e) = regenerate_ids_in(&new_path) {
+        let _ = std::fs::remove_dir_all(&new_path);
+        return Err(format!("复制目录失败：{e}"));
+    }
+    Ok(())
+}
+
+/// 递归复制目录内容（含隐藏文件与子目录）。
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let target = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// 重写目录内全部 `.atlx`/`.atb` 的 id 为新值（title 保持原样：副本文件名与原件不同、
+/// 内部标题与各自文件名仍一致）。读失败的文件视为损坏跳过（与画布扫描同策略）。
+fn regenerate_ids_in(dir: &Path) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            regenerate_ids_in(&path)?;
+        } else {
+            let ext = path.extension().and_then(|s| s.to_str());
+            if ext == Some("atlx") {
+                if let Ok(mut canvas) = read_canvas_file(&path) {
+                    canvas.id = nanoid!();
+                    write_canvas_file(&path, &canvas)?;
+                }
+            } else if ext == Some("atb") {
+                if let Ok(mut table) = read_table_file(&path) {
+                    table.id = nanoid!();
+                    write_table_file(&path, &table)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 仓库显示名：优先取路径最后一段（文件夹名）；网络共享根（`\\server\share`，无更深子目录）

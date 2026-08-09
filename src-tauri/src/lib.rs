@@ -60,6 +60,8 @@ pub fn run() {
             commands::vault::rename_folder,
             commands::vault::delete_note,
             commands::vault::delete_attachment,
+            commands::vault::copy_vault_file,
+            commands::vault::copy_vault_folder,
             commands::vault::rename_attachment,
             commands::vault::read_attachment_data_url,
             commands::vault::import_attachment_vault,

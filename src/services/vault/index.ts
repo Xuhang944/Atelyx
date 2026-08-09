@@ -107,6 +107,19 @@ export async function deleteAttachment(file: string): Promise<void> {
 }
 
 /**
+ * 复制仓库内文件为同目录副本（纯字节复制；新路径须由调用方 dedupe 防重名）。
+ * `.atlx`/`.atb` 的 title/id 更新由调用方经读写命令组合，本命令不做内容特判。
+ */
+export async function copyVaultFile(oldFile: string, newFile: string): Promise<void> {
+  await invoke("copy_vault_file", { oldFile, newFile });
+}
+
+/** 复制文件夹为同父目录副本（递归复制全部内容；新路径须由调用方 dedupe 防重名）。 */
+export async function copyVaultFolder(oldDir: string, newDir: string): Promise<void> {
+  await invoke("copy_vault_folder", { oldDir, newDir });
+}
+
+/**
  * 重命名附件 + 扫描所有 .atlx 更新 media 节点 file 引用（链接维护，与 renameNote 对称）。
  * @param oldFile 相对仓库根路径，如 `附件/old.png`
  * @param newFile 相对仓库根路径，如 `附件/new.png`

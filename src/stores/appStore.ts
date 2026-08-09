@@ -5,6 +5,8 @@ import {
   deleteCanvasVault,
   renameCanvasVault,
   moveCanvasVault,
+  readCanvasVault,
+  writeCanvasVault,
   ensureDefaultVault,
   openVault,
   convertWhiteboardToAtlx,
@@ -118,6 +120,12 @@ interface AppState {
   renameCanvas: (row: CanvasFileRow, title: string) => Promise<string>;
   /** 移动画布文件到目标文件夹（保持文件名，目标同名自动加序号；同目录 no-op），返回实际 file。 */
   moveCanvas: (row: CanvasFileRow, targetDir: string) => Promise<string>;
+  /**
+   * 复制画布为同目录副本（基于磁盘当前内容；title 同名自动加序号 + id 重新生成，
+   * 副本保持「标题即文件名」规范），返回实际标题（调用方据此提示）。
+   * 副本不自动打开。
+   */
+  duplicateCanvas: (row: CanvasFileRow) => Promise<string>;
   /** 删除画布（按 file）。 */
   deleteCanvas: (row: CanvasFileRow) => Promise<void>;
   /**
@@ -411,6 +419,28 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (e) {
       // 不吞错误：调用方（FileExplorerPanel.handleMoveFile）据此提示「移动文件失败」
       console.error("移动画布失败", e);
+      throw e;
+    }
+  },
+  duplicateCanvas: async (row) => {
+    // 同名自动加序号（同目录），返回实际标题供 UI 提醒
+    const siblings = get()
+      .canvases.filter((c) => parentDir(c.file) === parentDir(row.file))
+      .map((c) => c.title);
+    const actual = dedupeFilename(row.title, siblings);
+    try {
+      // 读磁盘原文 → 重写 id/title → 写新文件（write 的落盘路径由 title 决定，与 siblingPath 一致）
+      const canvas = await readCanvasVault(row.file);
+      canvas.id = crypto.randomUUID();
+      canvas.title = actual;
+      await writeCanvasVault(canvas, siblingPath(row.file, `${sanitizeFilename(actual)}.atlx`));
+      markSelfSave();
+      await get().loadList();
+      // 文件树同步刷新（新增 .atlx 行）
+      await useVaultStore.getState().loadFiles();
+      return actual;
+    } catch (e) {
+      console.error("复制画布失败", e);
       throw e;
     }
   },

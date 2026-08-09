@@ -13,6 +13,8 @@
 import { create } from "zustand";
 import {
   createFolder as createFolderSvc,
+  copyVaultFile,
+  copyVaultFolder,
   deleteAttachment,
   deleteFolder as deleteFolderSvc,
   deleteNote,
@@ -28,7 +30,9 @@ import {
   createTableVault,
   deleteTableVault,
   moveTableVault,
+  readTableVault,
   renameTableVault,
+  writeTableVault,
 } from "@/services/table";
 import { markSelfSave, useCanvasStore } from "@/stores/canvasStore";
 import { useAppStore } from "@/stores/appStore";
@@ -285,6 +289,16 @@ function siblingDirNames(dir: string): string[] {
   return (node?.children ?? []).filter((c) => c.isDir).map((c) => c.name);
 }
 
+/** 复制文件为同目录副本（dedupe 防重名 + 刷新树），返回新相对路径。duplicateNote/duplicateAttachment 共用。 */
+async function applyFileDuplicate(file: string): Promise<string> {
+  const dir = parentDir(file);
+  const name = dedupeFilename(file.split("/").pop() ?? file, siblingFileNames(dir));
+  const newFile = dir ? `${dir}/${name}` : name;
+  await copyVaultFile(file, newFile);
+  await useVaultStore.getState().loadFiles();
+  return newFile;
+}
+
 interface VaultFileState {
   /** 全仓库文件树（递归，跳过隐藏/排除目录与 `.tmp`）。 */
   tree: FileTreeNode[];
@@ -313,6 +327,11 @@ interface VaultFileState {
   /** 删除 `.md`（不更新 .atlx 引用，断链由前端 TextNode 显示空正文降级）。 */
   deleteNote: (file: string) => Promise<void>;
   /**
+   * 复制 `.md` 为同目录副本（同名自动加序号，如 `笔记-2.md`），返回新相对路径。
+   * 副本是独立文件，不更新 .atlx 引用、不自动打开。
+   */
+  duplicateNote: (file: string) => Promise<string>;
+  /**
    * 重命名附件：新文件名含扩展名由调用方给。dedupe 防与同目录现有文件重名。
    * 服务端 `rename_attachment` 同步更新所有 .atlx 的 media 节点 file 引用。
    */
@@ -324,6 +343,8 @@ interface VaultFileState {
   moveAttachment: (oldFile: string, targetDir: string) => Promise<string>;
   /** 删除附件。 */
   deleteAttachment: (file: string) => Promise<void>;
+  /** 复制附件为同目录副本（同名自动加序号），返回新相对路径。 */
+  duplicateAttachment: (file: string) => Promise<string>;
   /**
    * 新建空 `.atb` 表格（自带「名称」文本字段；同名自动加序号），
    * 返回 { id, file, title }（title 可能被去重改名）。
@@ -339,6 +360,11 @@ interface VaultFileState {
   moveTable: (oldFile: string, targetDir: string) => Promise<string>;
   /** 删除 `.atb`（不更新 .atlx 引用，画布 table 节点断链降级）。 */
   deleteTable: (file: string) => Promise<void>;
+  /**
+   * 复制 `.atb` 为同目录副本：内部 title/id 随新文件名更新（标题即文件名），返回新相对路径。
+   * 副本无画布引用，不自动打开。
+   */
+  duplicateTable: (file: string) => Promise<string>;
   /** 新建文件夹（相对仓库根路径，如 `项目A/素材`，自动建父目录），返回相对路径。 */
   createFolder: (dir: string) => Promise<string>;
   /**
@@ -360,6 +386,11 @@ interface VaultFileState {
    * 引用/状态联动同 `renameFolder`（共用 `rename_folder` 服务）。
    */
   moveFolder: (oldDir: string, targetDir: string) => Promise<string>;
+  /**
+   * 复制文件夹为同父目录副本（递归复制全部内容，同名自动加序号），返回新相对路径。
+   * 副本是独立目录，内部相对路径引用随整体复制仍有效，无需链接维护。
+   */
+  duplicateFolder: (dir: string) => Promise<string>;
   /**
    * 画布内文本节点（无 file）右键「保存为笔记」：落根目录生成 `.md`（净化 + 同名去重）并写入正文，
    * 节点 data.file 置为生成路径转为笔记节点（后续编辑写回 `.md`）。已是笔记节点则 no-op。
@@ -439,6 +470,11 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     await get().loadFiles();
   },
 
+  duplicateNote: async (file) => {
+    // 同目录复制，同名自动加序号（-2、-3）；副本不自动打开、不更新引用
+    return applyFileDuplicate(file);
+  },
+
   renameAttachment: async (oldFile, newName) => {
     const oldDir = parentDir(oldFile);
     const existing = siblingFileNames(oldDir).filter(
@@ -466,6 +502,10 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
   deleteAttachment: async (file) => {
     await deleteAttachment(file);
     await get().loadFiles();
+  },
+
+  duplicateAttachment: async (file) => {
+    return applyFileDuplicate(file);
   },
 
   createTable: async (title, dir = "") => {
@@ -511,6 +551,21 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
       useUiStateStore.getState().closeTable();
     }
     await get().loadFiles();
+  },
+
+  duplicateTable: async (file) => {
+    // 读原表 → 重写 title/id 落同目录新文件（「标题即文件名」规范，写盘路径由 title 决定）
+    const table = await readTableVault(file);
+    const dir = parentDir(file);
+    const name = dedupeFilename(file.split("/").pop() ?? file, siblingFileNames(dir));
+    const newFile = dir ? `${dir}/${name}` : name;
+    const newTitle = name.replace(/\.atb$/i, "");
+    await writeTableVault(
+      { ...table, id: crypto.randomUUID(), title: newTitle },
+      newFile,
+    );
+    await get().loadFiles();
+    return newFile;
   },
 
   createFolder: async (dir) => {
@@ -562,6 +617,17 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     // 非法嵌套（移到自身/自身后代）静默 no-op：目录移进自己内部会让自己消失（各平台行为不一致）
     if (targetDir === oldDir || targetDir.startsWith(`${oldDir}/`)) return oldDir;
     await applyFolderFileChange(oldDir, newDir);
+    return newDir;
+  },
+
+  duplicateFolder: async (dir) => {
+    const parent = parentDir(dir);
+    const name = dedupeFilename(dir.split("/").pop() ?? dir, siblingDirNames(parent));
+    const newDir = parent ? `${parent}/${name}` : name;
+    await copyVaultFolder(dir, newDir);
+    await get().loadFiles();
+    // 目录内可能含 .atlx：画布列表同步刷新（否则文件面板画布区不显示副本画布）
+    await useAppStore.getState().loadList();
     return newDir;
   },
 
