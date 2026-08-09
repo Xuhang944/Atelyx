@@ -12,6 +12,7 @@ import { useState } from "react";
 import { NodeResizeControl, type NodeProps } from "@xyflow/react";
 import type { SearchResultData, SearchResultItem } from "@/types";
 import { useCanvasStore } from "@/stores/canvasStore";
+import { useAppStore } from "@/stores/appStore";
 import { ConnectionFrame } from "./ConnectionFrame";
 
 /** 单条结果行：点击标题展开/折叠摘要；checkbox 勾选（注入子集）。 */
@@ -25,6 +26,7 @@ function ResultRow({
   onToggleCheck: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const openUrl = useAppStore((s) => s.openUrl);
   return (
     <li className="text-xs">
       <div className="flex items-start gap-1.5">
@@ -37,9 +39,11 @@ function ResultRow({
         />
         <a
           href={item.url}
-          target="_blank"
-          rel="noreferrer"
-          onClick={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            void openUrl(item.url).catch((err) => console.error("打开链接失败", err));
+          }}
           className="flex-1 min-w-0 truncate hover:opacity-80 inline-flex items-center gap-1"
           style={{ color: "var(--accent)" }}
           title={item.url}

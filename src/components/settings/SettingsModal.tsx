@@ -14,8 +14,10 @@ import {
 import { useEffect, useState } from "react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
+import { useVaultStore } from "@/stores/vaultStore";
 import { ProviderSettingsSection } from "@/components/settings/ProviderSettingsSection";
 import { AboutSection } from "@/components/settings/AboutSection";
+import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
 import { modelNameAcrossProviders } from "@/utils/text";
 
@@ -56,6 +58,27 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<Tab>("general");
   /** 左侧 tab 栏折叠状态（折叠后仅显示图标）。 */
   const [tabsCollapsed, setTabsCollapsed] = useState(false);
+  /** 重建内部链接：确认弹窗 / 执行中 / 内联结果（编辑器 tab）。 */
+  const [rebuildConfirm, setRebuildConfirm] = useState(false);
+  const [rebuilding, setRebuilding] = useState(false);
+  const [rebuildState, setRebuildState] = useState<{ message: string; error?: string } | null>(
+    null
+  );
+  const runRebuild = () => {
+    setRebuildConfirm(false);
+    setRebuilding(true);
+    setRebuildState(null);
+    void useVaultStore
+      .getState()
+      .rebuildInternalLinks()
+      .then((r) =>
+        setRebuildState({
+          message: `已扫描 ${r.scanned} 个文件，更新 ${r.modified} 个文件、${r.links} 处链接`,
+        })
+      )
+      .catch((e) => setRebuildState({ message: "", error: `重建失败：${String(e)}` }))
+      .finally(() => setRebuilding(false));
+  };
   const theme = useSettingsStore((s) => s.theme);
   const toggleTheme = useSettingsStore((s) => s.toggleTheme);
   const setVaultModel = useSettingsStore((s) => s.setVaultModel);
@@ -677,11 +700,57 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                     title="宽松换行"
                   />
                 </div>
+
+                {/* 内部链接：一键重建为标准 Markdown 写法（批量改写，需确认） */}
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div
+                      className="text-sm font-medium"
+                      style={{ color: "var(--text-primary)" }}
+                    >
+                      内部链接
+                    </div>
+                    <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
+                      一键重建全仓库笔记的内部链接为标准 Markdown 写法「[名](基于仓库的路径)」；
+                      指向不存在笔记的链接转为空路径，点击可快捷新建。批量改写不可撤销。
+                    </p>
+                    {rebuilding ? (
+                      <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
+                        重建中…
+                      </p>
+                    ) : rebuildState ? (
+                      <p
+                        className="text-xs mt-1"
+                        style={{ color: rebuildState.error ? "#f87171" : "var(--text-muted)" }}
+                      >
+                        {rebuildState.error ?? rebuildState.message}
+                      </p>
+                    ) : null}
+                  </div>
+                  <button
+                    className="px-3 py-1.5 text-xs rounded border flex-shrink-0 hover:opacity-80 disabled:opacity-50"
+                    style={{ borderColor: "var(--border)", color: "var(--text-primary)" }}
+                    disabled={rebuilding}
+                    onClick={() => setRebuildConfirm(true)}
+                    title="批量改写仓库内全部 .md 的链接写法"
+                  >
+                    重建内部链接
+                  </button>
+                </div>
               </section>
             )}
           </div>
         </div>
       </div>
+      {rebuildConfirm && (
+        <ConfirmDialog
+          title="重建内部链接"
+          description="将批量改写仓库内全部 .md 笔记的链接写法，统一为标准 Markdown「[名](基于仓库的路径)」。此操作不可撤销，建议先确认重要笔记已保存。"
+          confirmText="开始重建"
+          onConfirm={runRebuild}
+          onCancel={() => setRebuildConfirm(false)}
+        />
+      )}
     </div>
   );
 }

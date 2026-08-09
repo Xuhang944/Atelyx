@@ -30,6 +30,8 @@ import {
   type TableFileData,
   type TextData,
   type TextFileData,
+  type BacklinkRow,
+  type RebuildLinksResult,
   type VaultConfig,
   type VaultInfo,
 } from "@/types";
@@ -79,6 +81,19 @@ export async function deleteCanvasVault(file: string): Promise<void> {
 /** 读 .md 笔记（按相对仓库根路径，如 `笔记/xxx.md`）。 */
 export async function readNote(file: string): Promise<string> {
   return invoke<string>("read_note", { file });
+}
+
+/** 查询反链（`[[笔记名]]` 或 `[label](基于仓库的路径)` 两种写法；Rust 侧索引缓存 + 指纹增量刷新）。 */
+export async function scanWikiBacklinks(
+  noteName: string,
+  noteFile: string,
+): Promise<BacklinkRow[]> {
+  return invoke<BacklinkRow[]>("scan_wiki_backlinks", { noteName, noteFile });
+}
+
+/** 一键重建内部链接：全仓库 .md 统一规范为 `[名](基于仓库的路径)`（Rust 侧字节级跨度改写 + 原子写）。 */
+export async function rebuildInternalLinks(): Promise<RebuildLinksResult> {
+  return invoke<RebuildLinksResult>("rebuild_internal_links");
 }
 
 /** 写 .md 笔记（原子写，自动建父目录）。 */

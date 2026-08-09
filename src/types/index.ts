@@ -60,6 +60,8 @@ export {
   type VaultConfig,
   type VaultInfo,
   type RecentVault,
+  type BacklinkRow,
+  type RebuildLinksResult,
   type GlobalConfig,
   type WhiteboardFile,
   type WhiteboardNode,

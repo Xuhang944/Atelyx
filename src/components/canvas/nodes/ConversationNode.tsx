@@ -4,6 +4,7 @@ import { NodeResizeControl, useReactFlow, type NodeProps } from "@xyflow/react";
 import { useShallow } from "zustand/react/shallow";
 import ReactMarkdown from "react-markdown";
 import { useCanvasStore } from "@/stores/canvasStore";
+import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useVaultStore } from "@/stores/vaultStore";
 import { useAutoScrollFollow } from "@/hooks/useAutoScrollFollow";
@@ -23,7 +24,9 @@ import {
   MARKDOWN_PLUGINS,
   REHYPE_PLUGINS,
   markdownComponents,
+  vaultPathNoteOf,
   wikiNoteFileCandidates,
+  wikiNoteFileOf,
 } from "@/utils/markdown";
 import type {
   ConversationData,
@@ -612,6 +615,25 @@ export function ConversationNode({ id, width, height }: NodeProps) {
     const nodeId = findWikiNodeId(value);
     if (nodeId) fitView({ nodes: [{ id: nodeId }], duration: 200, padding: 0.2 });
   }, [findWikiNodeId, fitView]);
+  const handleOpenWikiNote = useCallback((value: string) => {
+    const hit = wikiNoteFileOf(value, useVaultStore.getState().noteList);
+    if (hit) useAppStore.getState().openNote(hit.file, hit.title);
+  }, []);
+  const isVaultPathNote = useCallback(
+    (href: string) => vaultPathNoteOf(href, useVaultStore.getState().noteList) != null,
+    []
+  );
+  const handleOpenVaultPathNote = useCallback((href: string) => {
+    const hit = vaultPathNoteOf(href, useVaultStore.getState().noteList);
+    if (hit) useAppStore.getState().openNote(hit.file, hit.title);
+  }, []);
+  const handleCreateNote = useCallback((name: string) => {
+    void useVaultStore
+      .getState()
+      .createNote(name)
+      .then((file) => useAppStore.getState().openNote(file, name))
+      .catch((e) => console.error("创建笔记失败", e));
+  }, []);
 
   // ===== 渲染 =====
 
@@ -794,6 +816,10 @@ export function ConversationNode({ id, width, height }: NodeProps) {
                 onRollback={(messageId) => rollbackTo(id, messageId)}
                 onLocateRef={handleLocateRef}
                 onLocateWiki={handleLocateWiki}
+                onOpenWikiNote={handleOpenWikiNote}
+                isVaultPathNote={isVaultPathNote}
+                onOpenVaultPathNote={handleOpenVaultPathNote}
+                onCreateNote={handleCreateNote}
                 isWikiLocatable={isWikiLocatable}
                 isStreaming={isStreamingMsg}
               />
@@ -1061,6 +1087,10 @@ const MessageBubble = memo(function MessageBubble({
   onRollback,
   onLocateRef,
   onLocateWiki,
+  onOpenWikiNote,
+  isVaultPathNote,
+  onOpenVaultPathNote,
+  onCreateNote,
   isWikiLocatable,
   isStreaming,
 }: {
@@ -1073,6 +1103,10 @@ const MessageBubble = memo(function MessageBubble({
   onRollback: (messageId: string) => void;
   onLocateRef: (nodeId: string) => void;
   onLocateWiki: (value: string) => void;
+  onOpenWikiNote: (value: string) => void;
+  isVaultPathNote: (href: string) => boolean;
+  onOpenVaultPathNote: (href: string) => void;
+  onCreateNote: (name: string) => void;
   isWikiLocatable: (value: string) => boolean;
   /** 是否进行中的流式消息（思考块折叠态显示等待扫光动画）。 */
   isStreaming: boolean;
@@ -1187,6 +1221,11 @@ const MessageBubble = memo(function MessageBubble({
               components={markdownComponents({
                 isLocatable: isWikiLocatable,
                 onLocate: onLocateWiki,
+                onOpenNote: onOpenWikiNote,
+                isVaultPathNote,
+                onOpenVaultPathNote,
+                onCreateNote,
+                onOpenUrl: (url) => void useAppStore.getState().openUrl(url),
               })}
             >
               {message.content || (message.reasoningContent ? "" : "...")}

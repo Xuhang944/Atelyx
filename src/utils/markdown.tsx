@@ -6,7 +6,11 @@
  * - `==高亮==` → `<mark>`（micromark extension）
  * - `%%注释%%` → 渲染时隐藏（micromark extension + transform 删除占位节点）
  * - `[[笔记名]]` / `[[笔记名|别名]]` → 仓库内 wiki 链接；href 用相对锚点 `#/note/<name>`
- *   （sanitize 协议白名单无自定义协议，相对锚点天然放行），点击由组件层拦截并定位画布节点
+ *   （sanitize 协议白名单无自定义协议，相对锚点天然放行），点击由组件层拦截：画布可定位则定位节点，
+ *   否则打开目标笔记（onOpenNote 回调解文件名）
+ * - `[label](基于仓库的路径)` → 标准 Markdown 链接指向仓库内笔记（相对仓库根路径，命中即内部链接样式、
+ *   点击打开目标笔记；未命中/非 .md 不拦截，由组件层 isVaultPathNote/onOpenVaultPathNote 判定）；
+ *   `[名]()` 空路径 = 目标笔记不存在，点击快捷新建（onCreateNote 回调解 label 作新笔记名）
  * - `> [!note]` → Callout 引用块（transform 附加 className，GitHub 同款语法）
  * - `![alt|100x200]` → 图片尺寸语法（transform 转 img width/height 属性）
  * - 文件开头 YAML Frontmatter（`---` 块）→ 不渲染为正文（remark-frontmatter 识别为 yaml 节点后删除，
@@ -348,7 +352,7 @@ export const REHYPE_PLUGINS: PluggableList = [
 export const WIKI_HREF_PREFIX = "#/note/";
 
 /** `[[笔记名]]` → 候选文件名（无目录前缀：笔记任意文件夹存放，按文件名匹配全仓库同名笔记）。
- * 返回原样 + 净化后两种候选（文件名 = title 净化，）。 */
+ * 返回原样 + 净化后两种候选（文件名 = title 净化）。 */
 export function wikiNoteFileCandidates(value: string): string[] {
   const trimmed = value.trim();
   const candidates = [`${trimmed}.md`];
@@ -357,12 +361,72 @@ export function wikiNoteFileCandidates(value: string): string[] {
   return candidates;
 }
 
+/** `[[笔记名]]` → 按文件名匹配全仓库同名笔记，返回 `{file, title}`（title = 文件名去 .md）。 */
+export function wikiNoteFileOf(
+  value: string,
+  noteList: { name: string; file: string }[],
+): { file: string; title: string } | null {
+  for (const candidate of wikiNoteFileCandidates(value)) {
+    const hit = noteList.find((n) => n.name === candidate);
+    if (hit) return { file: hit.file, title: hit.name.replace(/\.md$/i, "") };
+  }
+  return null;
+}
+
+/** 链接 href 解码（用于匹配与展示）；非法百分号编码原样返回（不抛错、不拦截）。 */
+function decodeLinkHref(href: string): string {
+  try {
+    return decodeURIComponent(href);
+  } catch {
+    return href;
+  }
+}
+
+/** `[label](基于仓库的路径)` → 按仓库相对路径（或文件名兜底）匹配笔记，返回 `{file, title}`。
+ * percent 解码 + 反斜杠→`/` + 去 `./`/前导 `/`；含 `..` 段或未命中返回 null（防越出仓库、不拦截）。
+ * 大小写不敏感兜底（Windows 文件系统不区分大小写：`方案.MD` 与 `方案.md` 是同一文件）。 */
+export function vaultPathNoteOf(
+  href: string,
+  noteList: { name: string; file: string }[],
+): { file: string; title: string } | null {
+  let path = decodeLinkHref(href);
+  path = path.replace(/\\/g, "/");
+  while (path.startsWith("./")) path = path.slice(2);
+  while (path.startsWith("/")) path = path.slice(1);
+  if (!path) return null;
+  if (path.split("/").includes("..")) return null;
+  const basename = path.split("/").pop() ?? "";
+  const ci = (s: string) => s.toLowerCase();
+  const hit = noteList.find(
+    (n) =>
+      n.file === path ||
+      ci(n.file) === ci(path) ||
+      n.file === basename ||
+      ci(n.file) === ci(basename),
+  );
+  if (!hit) return null;
+  return { file: hit.file, title: hit.name.replace(/\.md$/i, "") };
+}
+
 export interface WikiLocateOptions {
   /** 渲染时判断链接是否可定位（画布上有引用该笔记的文本节点）。 */
   isLocatable: (value: string) => boolean;
   /** 点击可定位链接时调用（组件层负责 fitView）。 */
   onLocate: (value: string) => void;
+  /** 点击不可定位链接时调用（组件层解析文件名后打开目标笔记）。 */
+  onOpenNote: (value: string) => void;
+  /** 渲染时判断相对路径链接（无协议、非 wiki/外部链接）是否指向仓库内笔记（命中 = 内部链接样式）。 */
+  isVaultPathNote: (href: string) => boolean;
+  /** 点击仓库内笔记链接（`[label](基于仓库的路径)`）时调用（组件层打开目标笔记）。 */
+  onOpenVaultPathNote: (href: string) => void;
+  /** 点击空路径内部链接（`[名]()`，目标笔记不存在）时调用（组件层快捷新建该笔记）。 */
+  onCreateNote: (name: string) => void;
+  /** 外部链接（http/https/mailto/xmpp）点击时调用（组件层经 shell 打开系统浏览器，webview 不导航）。 */
+  onOpenUrl: (url: string) => void;
 }
+
+/** 拦截走系统浏览器的外部链接协议（与 MarkdownEditor LinkWidget 的过滤正则一致）。 */
+const EXTERNAL_LINK_RE = /^(https?:|mailto:|xmpp:)/i;
 
 /**
  * 代码块容器：右上角悬浮复制按钮（hover 显现）。
@@ -405,14 +469,74 @@ function CodeBlock({
 }
 
 /**
- * ReactMarkdown components 工厂：拦截 `#/note/` 锚点链接（wiki 链接）做定位交互，
- * 其余链接保持默认行为。className 由组件层附加（sanitize 之后），不受 schema 影响。
+ * ReactMarkdown components 工厂：按链接形态分流——`#/note/` wiki 锚点（画布定位/打开笔记）、
+ * 空路径 `[名]()`（快捷新建）、外部协议（系统浏览器）、仓库内路径（打开笔记）、其余保持默认。
+ * className 由组件层附加（sanitize 之后），不受 schema 影响。
  */
-export function markdownComponents({ isLocatable, onLocate }: WikiLocateOptions): Components {
+export function markdownComponents({
+  isLocatable,
+  onLocate,
+  onOpenNote,
+  isVaultPathNote,
+  onOpenVaultPathNote,
+  onCreateNote,
+  onOpenUrl,
+}: WikiLocateOptions): Components {
   return {
     pre: CodeBlock,
     a: ({ href, children, ...rest }) => {
       if (!href?.startsWith(WIKI_HREF_PREFIX)) {
+        if (href === "") {
+          // `[名]()` 空路径内部链接：目标笔记不存在，点击快捷新建（label 作新笔记名）
+          const name = typeof children === "string" ? children : "";
+          return (
+            <a
+              href={href}
+              {...rest}
+              className="internal-link internal-link-missing"
+              title={name ? `创建笔记「${name}」` : "内部链接（目标笔记不存在）"}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (name) onCreateNote(name);
+              }}
+            >
+              {children}
+            </a>
+          );
+        }
+        if (href && EXTERNAL_LINK_RE.test(href)) {
+          return (
+            <a
+              href={href}
+              {...rest}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onOpenUrl(href);
+              }}
+            >
+              {children}
+            </a>
+          );
+        }
+        if (href && isVaultPathNote(href)) {
+          return (
+            <a
+              href={href}
+              {...rest}
+              className="internal-link"
+              title={`打开笔记「${decodeLinkHref(href)}」`}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onOpenVaultPathNote(href);
+              }}
+            >
+              {children}
+            </a>
+          );
+        }
         return (
           <a href={href} {...rest}>
             {children}
@@ -426,11 +550,12 @@ export function markdownComponents({ isLocatable, onLocate }: WikiLocateOptions)
           href={href}
           {...rest}
           className={locatable ? "internal-link" : "internal-link internal-link-missing"}
-          title={locatable ? `定位笔记「${value}」` : `画布上没有引用「${value}」的文本节点`}
+          title={locatable ? `定位笔记「${value}」` : `打开笔记「${value}」`}
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
             if (locatable) onLocate(value);
+            else onOpenNote(value);
           }}
         >
           {children}

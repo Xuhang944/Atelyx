@@ -4,13 +4,16 @@ import { NodeResizeControl, useReactFlow, type NodeProps } from "@xyflow/react";
 import ReactMarkdown from "react-markdown";
 import type { TextData } from "@/types";
 import { useCanvasStore } from "@/stores/canvasStore";
+import { useAppStore } from "@/stores/appStore";
 import { useVaultStore } from "@/stores/vaultStore";
 import { DEFAULT_TEXT_NODE_HEIGHT, DEFAULT_TEXT_NODE_WIDTH } from "@/constants/canvas";
 import {
   MARKDOWN_PLUGINS,
   REHYPE_PLUGINS,
   markdownComponents,
+  vaultPathNoteOf,
   wikiNoteFileCandidates,
+  wikiNoteFileOf,
 } from "@/utils/markdown";
 import { ConnectionFrame } from "./ConnectionFrame";
 
@@ -83,6 +86,23 @@ export function TextNode({ id, data, width, height }: NodeProps) {
   const handleLocateWiki = (value: string) => {
     const nid = findWikiNodeId(value);
     if (nid) fitView({ nodes: [{ id: nid }], duration: 200, padding: 0.2 });
+  };
+  const handleOpenWikiNote = (value: string) => {
+    const hit = wikiNoteFileOf(value, useVaultStore.getState().noteList);
+    if (hit) useAppStore.getState().openNote(hit.file, hit.title);
+  };
+  const isVaultPathNote = (href: string) =>
+    vaultPathNoteOf(href, useVaultStore.getState().noteList) != null;
+  const handleOpenVaultPathNote = (href: string) => {
+    const hit = vaultPathNoteOf(href, useVaultStore.getState().noteList);
+    if (hit) useAppStore.getState().openNote(hit.file, hit.title);
+  };
+  const handleCreateNote = (name: string) => {
+    void useVaultStore
+      .getState()
+      .createNote(name)
+      .then((file) => useAppStore.getState().openNote(file, name))
+      .catch((e) => console.error("创建笔记失败", e));
   };
 
   return (
@@ -200,6 +220,11 @@ export function TextNode({ id, data, width, height }: NodeProps) {
             components={markdownComponents({
               isLocatable: isWikiLocatable,
               onLocate: handleLocateWiki,
+              onOpenNote: handleOpenWikiNote,
+              isVaultPathNote,
+              onOpenVaultPathNote: handleOpenVaultPathNote,
+              onCreateNote: handleCreateNote,
+              onOpenUrl: (url) => void useAppStore.getState().openUrl(url),
             })}
           >
             {bodyMd || "*（空）*"}

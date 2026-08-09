@@ -24,6 +24,8 @@ import {
   renameAttachment as renameAttachmentSvc,
   renameFolder as renameFolderSvc,
   renameNote as renameNoteSvc,
+  scanWikiBacklinks as scanWikiBacklinksSvc,
+  rebuildInternalLinks as rebuildInternalLinksSvc,
   writeNote,
 } from "@/services/vault";
 import {
@@ -39,7 +41,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import { dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename } from "@/utils/filename";
-import type { DeleteFolderResult, FileTreeNode, TextData } from "@/types";
+import type { BacklinkRow, DeleteFolderResult, FileTreeNode, RebuildLinksResult, TextData } from "@/types";
 
 /**
  * 文本节点 `.md` 文件名约定：`<sanitized-title>.md`（标题即文件名，无 id 后缀）。
@@ -398,6 +400,10 @@ interface VaultFileState {
   saveTextNodeAsNote: (nodeId: string) => Promise<void>;
   /** 读笔记正文（无画布笔记编辑器用；组件不直调 service，走本 store）。 */
   readNoteContent: (file: string) => Promise<string>;
+  /** 查询反链（`[[笔记名]]` 或 `[label](基于仓库的路径)`；Rust 索引缓存，组件不直调 service，走本 store）。 */
+  scanWikiBacklinks: (noteName: string, noteFile: string) => Promise<BacklinkRow[]>;
+  /** 一键重建内部链接（设置 → 编辑器入口；Rust 字节级跨度改写，组件不直调 service，走本 store）。 */
+  rebuildInternalLinks: () => Promise<RebuildLinksResult>;
   /** 读附件为 dataURL（仅图片扩展名；失败抛错由调用方降级）。组件不直调 service，走本 store。 */
   readAttachmentDataUrl: (file: string) => Promise<string>;
   /** 写回笔记正文并刷新文件树（mtime 变化即时反映到面板）。 */
@@ -652,6 +658,8 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
   },
 
   readNoteContent: async (file) => readNote(file),
+  scanWikiBacklinks: (noteName, noteFile) => scanWikiBacklinksSvc(noteName, noteFile),
+  rebuildInternalLinks: () => rebuildInternalLinksSvc(),
   readAttachmentDataUrl: (file) => readAttachmentDataUrlSvc(file),
 
   saveNoteContent: async (file, content) => {

@@ -222,6 +222,22 @@ export interface RecentVault {
   lastOpenedAt: number;
 }
 
+/** 反链行：引用方笔记的相对仓库根路径 + 标题（scan_wiki_backlinks 返回）。 */
+export interface BacklinkRow {
+  file: string;
+  title: string;
+}
+
+/** 重建内部链接的结果统计（rebuild_internal_links 返回）。 */
+export interface RebuildLinksResult {
+  /** 扫描的 .md 文件数 */
+  scanned: number;
+  /** 实际写回修改的文件数 */
+  modified: number;
+  /** 改写的链接处数 */
+  links: number;
+}
+
 export type SearchProvider = "tavily" | "searxng";
 
 /** 仓库级搜索源配置（.atelyx/config.json 的 VaultConfig.search）。

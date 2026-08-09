@@ -39,6 +39,8 @@ import {
   MARKDOWN_PLUGINS,
   REHYPE_PLUGINS,
   markdownComponents,
+  vaultPathNoteOf,
+  wikiNoteFileOf,
 } from "@/utils/markdown";
 import {
   modelDisplayName,
@@ -733,7 +735,28 @@ const ChatMessageBubble = memo(function ChatMessageBubble({
             <ReactMarkdown
               remarkPlugins={MARKDOWN_PLUGINS}
               rehypePlugins={REHYPE_PLUGINS}
-              components={markdownComponents({ isLocatable: () => false, onLocate: () => {} })}
+              components={markdownComponents({
+                isLocatable: () => false,
+                onLocate: () => {},
+                onOpenNote: (value) => {
+                  const hit = wikiNoteFileOf(value, useVaultStore.getState().noteList);
+                  if (hit) useAppStore.getState().openNote(hit.file, hit.title);
+                },
+                isVaultPathNote: (href) =>
+                  vaultPathNoteOf(href, useVaultStore.getState().noteList) != null,
+                onOpenVaultPathNote: (href) => {
+                  const hit = vaultPathNoteOf(href, useVaultStore.getState().noteList);
+                  if (hit) useAppStore.getState().openNote(hit.file, hit.title);
+                },
+                onCreateNote: (name) => {
+                  void useVaultStore
+                    .getState()
+                    .createNote(name)
+                    .then((file) => useAppStore.getState().openNote(file, name))
+                    .catch((e) => console.error("创建笔记失败", e));
+                },
+                onOpenUrl: (url) => void useAppStore.getState().openUrl(url),
+              })}
             >
               {isUser ? cleanText : message.content}
             </ReactMarkdown>

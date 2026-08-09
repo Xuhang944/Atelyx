@@ -12,11 +12,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { useVaultStore, lastFolderRenameTarget, lastNoteRenameTarget } from "@/stores/vaultStore";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useAppStore } from "@/stores/appStore";
+import type { BacklinkRow } from "@/types";
 import {
   MARKDOWN_PLUGINS,
   REHYPE_PLUGINS,
   markdownComponents,
   remarkSoftLineBreak,
+  vaultPathNoteOf,
+  wikiNoteFileOf,
 } from "@/utils/markdown";
 import { parseFrontmatter, stringifyFrontmatter } from "@/utils/frontmatter";
 import { NotePropertiesView } from "@/components/editor/NotePropertiesView";
@@ -27,6 +31,8 @@ type SaveState = "idle" | "saving" | "saved" | "error";
 export function NoteEditor({ file }: { file: string }) {
   const readNoteContent = useVaultStore((s) => s.readNoteContent);
   const saveNoteContent = useVaultStore((s) => s.saveNoteContent);
+  /** 全仓库笔记列表：内部链接（`[[名]]`/`[名](路径)`）点击时解析目标文件用。 */
+  const noteList = useVaultStore((s) => s.noteList);
   // 外部修改感知：watcher note 事件 bump 序号（vaultStore.markNoteExternallyEdited），据此重读磁盘
   const externalEditSeq = useVaultStore((s) => s.externalNoteEdits[file] ?? 0);
   const [content, setContent] = useState("");
@@ -256,6 +262,46 @@ export function NoteEditor({ file }: { file: string }) {
     }
   };
 
+  /** `[[wiki 链接]]` 点击（本编辑器不做画布定位）：打开目标笔记（笔记面积显示，与文件面板打开同款）。 */
+  const handleOpenWikiNote = (value: string) => {
+    const hit = wikiNoteFileOf(value, noteList);
+    if (hit) useAppStore.getState().openNote(hit.file, hit.title);
+  };
+  /** `[label](基于仓库的路径)` 点击：命中仓库内笔记则打开。 */
+  const handleOpenVaultPathNote = (href: string) => {
+    const hit = vaultPathNoteOf(href, noteList);
+    if (hit) useAppStore.getState().openNote(hit.file, hit.title);
+  };
+  /** `[名]()` 空路径内部链接点击：快捷新建该笔记并打开（createNote 自带净化 + 防重名）。 */
+  const handleCreateNote = (name: string) => {
+    void useVaultStore
+      .getState()
+      .createNote(name)
+      .then((file) => useAppStore.getState().openNote(file, name))
+      .catch((e) => console.error("创建笔记失败", e));
+  };
+
+  /** 反链：全仓库 .md 中引用本文档的笔记（自身排除）；索引缓存 + 指纹增量刷新，扫描开销毫秒级。
+   * 只在「切换打开的笔记」时扫描——不随仓库文件变化重扫（根除全量风暴），磁盘为真相自愈。
+   * 扫描失败静默降级留空，不阻塞编辑。 */
+  const noteName = file.split("/").pop()?.replace(/\.md$/i, "") ?? "";
+  const [backlinks, setBacklinks] = useState<BacklinkRow[]>([]);
+  useEffect(() => {
+    if (!noteName) return;
+    let cancelled = false;
+    setBacklinks([]);
+    void useVaultStore
+      .getState()
+      .scanWikiBacklinks(noteName, file)
+      .then((rows) => {
+        if (!cancelled) setBacklinks(rows.filter((r) => r.file !== file));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [file, noteName]);
+
   /** 「添加笔记属性」= 一键插入 frontmatter 格式模板（`---\n---\n` 包裹区），用户自行填写；
    * 已有 frontmatter 或格式错误时不重复插入。CRLF 文件用 \r\n 模板，防换行混用。 */
   const addFrontmatterTemplate = () => {
@@ -434,7 +480,15 @@ export function NoteEditor({ file }: { file: string }) {
           <ReactMarkdown
             remarkPlugins={previewPlugins}
             rehypePlugins={REHYPE_PLUGINS}
-            components={markdownComponents({ isLocatable: () => false, onLocate: () => {} })}
+            components={markdownComponents({
+              isLocatable: () => false,
+              onLocate: () => {},
+              onOpenNote: handleOpenWikiNote,
+              isVaultPathNote: (href) => vaultPathNoteOf(href, noteList) != null,
+              onOpenVaultPathNote: handleOpenVaultPathNote,
+              onCreateNote: handleCreateNote,
+              onOpenUrl: (url) => void useAppStore.getState().openUrl(url),
+            })}
           >
             {content}
           </ReactMarkdown>
@@ -462,6 +516,36 @@ export function NoteEditor({ file }: { file: string }) {
           />
         </div>
       )}
+
+      {/* 反向链接区（编辑器内容区下方，独立于属性区）：引用本文档的笔记列表，点击打开引用方；
+          空 = 无引用时也显示该区（空态提示） */}
+      <div
+        className="flex-shrink-0 px-3 py-2 select-none"
+        style={{ borderTop: "1px solid var(--border)" }}
+      >
+        <div className="text-xs mb-1" style={{ color: "var(--text-muted)" }}>
+          反向链接{backlinks.length > 0 ? `（${backlinks.length}）` : ""}
+        </div>
+        {backlinks.length > 0 ? (
+          <div className="flex flex-col gap-0.5 max-h-40 overflow-auto">
+            {backlinks.map((b) => (
+              <button
+                key={b.file}
+                className="flex items-center gap-1 text-xs text-left truncate hover:opacity-80"
+                style={{ color: "var(--accent)" }}
+                onClick={() => useAppStore.getState().openNote(b.file, b.title)}
+                title={`打开「${b.title}」`}
+              >
+                <span className="truncate">{b.title}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="text-xs" style={{ color: "var(--text-muted)" }}>
+            暂无引用
+          </div>
+        )}
+      </div>
 
       {/* 底部状态条：字数统计 */}
       <div
