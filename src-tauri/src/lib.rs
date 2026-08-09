@@ -48,9 +48,6 @@ pub fn run() {
             commands::vault::read_chat_messages,
             commands::vault::write_chat_messages,
             commands::vault::delete_chat_messages,
-            // 仓库级 UI 使用状态（.atelyx/ui-state.json：文件面板展开 + 上次打开文件）
-            commands::vault::read_ui_state,
-            commands::vault::write_ui_state,
             commands::vault::ensure_default_vault,
             commands::vault::create_canvas_vault,
             // 仓库文件管理（全仓库文件树 + 建文件夹 + 删改 + 附件 dataURL + 链接维护）
@@ -77,6 +74,9 @@ pub fn run() {
             // 全局配置（global.json，最近仓库列表等）
             commands::global::read_global_config,
             commands::global::write_global_config,
+            // 应用级 UI 使用状态（app_data_dir/ui-state.json：工作区布局 + 上次打开文件 + 展开）
+            commands::global::read_app_ui_state,
+            commands::global::write_app_ui_state,
             // API key 安全存储（OS keychain，见 commands/keychain.rs）
             commands::keychain::set_api_key,
             commands::keychain::get_api_key,

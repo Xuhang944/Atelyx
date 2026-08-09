@@ -13,8 +13,8 @@ import { useEffect, useRef, type RefObject } from "react";
 
 export function useDismissOnOutside(
   onClose: () => void,
-  menuRef?: RefObject<HTMLDivElement | null>,
-) {
+  menuRef?: RefObject<HTMLDivElement>,
+): RefObject<HTMLDivElement> {
   const ownRef = useRef<HTMLDivElement>(null);
   const ref = menuRef ?? ownRef;
   const closeRef = useRef(onClose);

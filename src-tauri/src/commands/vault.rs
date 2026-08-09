@@ -29,8 +29,7 @@ use crate::vault::{
     read_editor_chats_file, read_prompt_notes_file, write_prompt_notes_file,
     write_editor_chats_file, read_chat_messages_file, write_chat_messages_file,
     delete_chat_messages_file, CanvasFile, CanvasFileRow, DeleteFolderResult, EditorChatsFile,
-    FileTreeNode, VaultConfig, VaultState, CANVAS_SCHEMA, read_ui_state_file, write_ui_state_file,
-    VaultUiState,
+    FileTreeNode, VaultConfig, VaultState, CANVAS_SCHEMA,
 };
 use crate::watcher;
 
@@ -483,20 +482,6 @@ pub fn write_chat_messages(
 pub fn delete_chat_messages(state: State<'_, VaultState>, file: String) -> Result<(), String> {
     let root = state.root()?;
     delete_chat_messages_file(&root, &file)
-}
-
-/// 读仓库级 UI 使用状态（.atelyx/ui-state.json，不存在/损坏返回默认：展开空、无上次打开文件）。
-#[tauri::command]
-pub fn read_ui_state(state: State<'_, VaultState>) -> Result<VaultUiState, String> {
-    let root = state.root()?;
-    read_ui_state_file(&root)
-}
-
-/// 写仓库级 UI 使用状态（原子写 .atelyx/ui-state.json）。
-#[tauri::command]
-pub fn write_ui_state(state: VaultUiState, vault: State<'_, VaultState>) -> Result<(), String> {
-    let root = vault.root()?;
-    write_ui_state_file(&root, &state)
 }
 
 /// 确保默认仓库已打开（首启 bootstrap：无最近仓库时建默认仓库并打开）。

@@ -30,8 +30,6 @@ function applyWindowShape(): Promise<void> {
 }
 export default function App() {
   const view = useAppStore((s) => s.view);
-  const currentCanvasId = useAppStore((s) => s.currentCanvasId);
-  const currentCanvasFile = useAppStore((s) => s.currentCanvasFile);
   const init = useAppStore((s) => s.init);
   const loadSettings = useSettingsStore((s) => s.load);
   const theme = useSettingsStore((s) => s.theme);
@@ -122,7 +120,7 @@ export default function App() {
         {booting ? (
           <LoadingScreen />
         ) : view === "workspace" ? (
-          <ProjectWorkspacePage canvasId={currentCanvasId} canvasFile={currentCanvasFile} />
+          <ProjectWorkspacePage />
         ) : (
           <VaultSelectPage />
         )}

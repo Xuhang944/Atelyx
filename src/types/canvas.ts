@@ -237,15 +237,14 @@ export interface GlobalSearchConfig {
 }
 
 /**
- * 全局配置（app_data_dir/global.json）——**最近仓库列表 + 本设备 ID + 自动更新开关**（应用级使用数据）。
+ * 全局配置（app_data_dir/global.json）——**最近仓库列表 + 自动更新开关**（应用级配置）。
  * AI 供应商 / 搜索源已仓库化（`.atelyx/config.json` 的 `VaultConfig.providers/search`）；
+ * 应用级 UI 使用状态（布局/上次打开文件/展开）走 `app_data_dir/ui-state.json`；
  * 不含 API key（key 仅存 keychain，条目按仓库隔离，见安全红线）。
  */
 export interface GlobalConfig {
   /** 最近打开的仓库列表（按最近打开倒序，前端维护顺序） */
   recentVaults: RecentVault[];
-  /** 本设备唯一 ID（随机 UUID，首次运行生成后固定；按设备隔离仓库内 UI 状态用）。 */
-  deviceId?: string;
   /** 自动检查更新（应用级）：开启后每次启动应用静默检查新版本并自动安装。缺省 = false（关闭）。 */
   autoUpdate?: boolean;
 }

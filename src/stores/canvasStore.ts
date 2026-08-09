@@ -150,6 +150,10 @@ interface CanvasState {
   confirmConnect: (conversationId: string, nodeId: string) => void;
   /** 清空某对话的待确认队列（菜单消费后）。 */
   clearPendingConfirm: (conversationId: string) => void;
+  /** 属性面板选中的节点 id（单击节点设置、单击空白清空；跨面积共享，null = 未选中）。 */
+  selectedNodeId: string | null;
+  /** 设置属性面板选中节点（null = 清空选中）。 */
+  selectNode: (nodeId: string | null) => void;
   /** 更新节点 data（模型切换等内容变更，自动落库）。 */
   updateNodeData: (nodeId: string, patch: Record<string, unknown>) => void;
   /** Rust 侧改过当前画布磁盘 .atlx 后同步乐观锁基准（重命名笔记/附件/画布），防下次保存被误判「已被外部修改」。 */
@@ -664,6 +668,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   pendingMentionsByConv: {},
   pendingConfirmByConv: {},
   error: null,
+  selectedNodeId: null,
   loading: false,
   saving: false,
   dirty: false,
@@ -682,7 +687,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     abortAllStreams();
     // 中止旧画布进行中的命名请求（防其后台空转/误写；与面板 load 对称）
     abortAutoTitle();
-    set({ loading: true, error: null });
+    set({ loading: true, error: null, selectedNodeId: null });
     try {
       // 外部白板格式（.canvas）走只读加载：映射为运行时节点 + 无向边，永不落盘
       const isWhiteboard = file.toLowerCase().endsWith(".canvas");
@@ -1167,6 +1172,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     return inputs;
   },
   clearError: () => set({ error: null }),
+  selectNode: (nodeId) => {
+    set({ selectedNodeId: nodeId });
+  },
   setEdgeLinkMode: (edgeId, linkMode) => {
     // 只读白板禁编辑；样式切换只改边数据，随画布 debounce 落盘（不入 undo 栈）
     if (get().readOnly) return;
@@ -1532,6 +1540,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       pendingMentionsByConv: {},
       pendingConfirmByConv: {},
       error: null,
+      selectedNodeId: null,
       saving: false,
       dirty: false,
       conflictPending: false,

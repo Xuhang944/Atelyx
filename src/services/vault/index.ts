@@ -32,7 +32,6 @@ import {
   type TextFileData,
   type VaultConfig,
   type VaultInfo,
-  type VaultUiState,
 } from "@/types";
 
 /** 打开仓库：设当前仓库根 + 初始化目录结构。 */
@@ -181,16 +180,6 @@ export async function writeChatMessages(file: string, content: string): Promise<
 /** 删会话消息正文 .md（幂等）。 */
 export async function deleteChatMessages(file: string): Promise<void> {
   await invoke("delete_chat_messages", { file });
-}
-
-/** 读仓库级 UI 使用状态（.atelyx/ui-state.json，不存在/损坏返回默认：展开空、无上次打开文件）。 */
-export async function readVaultUiState(): Promise<VaultUiState> {
-  return invoke<VaultUiState>("read_ui_state");
-}
-
-/** 写仓库级 UI 使用状态（原子写 .atelyx/ui-state.json：文件面板展开 + 上次打开文件）。 */
-export async function writeVaultUiState(state: VaultUiState): Promise<void> {
-  await invoke("write_ui_state", { state });
 }
 
 /** 确保默认仓库已打开（首启 bootstrap：无最近仓库时建默认仓库并打开）。 */

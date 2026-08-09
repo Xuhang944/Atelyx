@@ -66,7 +66,18 @@ export {
   type WhiteboardEdge,
 } from "./canvas";
 
-export { UI_STATE_SCHEMA, type DeviceUiState, type LastActiveWindow, type VaultUiState } from "./uiState";
+export { UI_STATE_SCHEMA, type AppUiState } from "./uiState";
+
+export {
+  VIEW_KINDS,
+  createDefaultLayout,
+  type ViewKind,
+  type SplitDirection,
+  type AreaNode,
+  type SplitNode,
+  type LayoutNode,
+  type WorkspaceLayout,
+} from "./workspaceLayout";
 
 export type {
   FieldType,

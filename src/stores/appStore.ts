@@ -20,6 +20,7 @@ import {
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useVaultStore } from "@/stores/vaultStore";
 import { useChatPanelStore } from "@/stores/chatPanelStore";
+import { useTableStore } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import { markSelfSave, useCanvasStore } from "@/stores/canvasStore";
 import { dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename, siblingPath } from "@/utils/filename";
@@ -63,8 +64,14 @@ interface AppState {
   currentCanvasId: string | null;
   /** 当前画布磁盘路径（相对仓库根；打开/保存/重命名/删除按此路径）。 */
   currentCanvasFile: string | null;
-  /** 已打开画布标签（顺序 = tab 栏顺序） */
-  openTabs: string[];
+  /** 当前打开的笔记文件（相对仓库根；与画布/表格并存，各一个）。 */
+  currentNoteFile: string | null;
+  /** 当前打开笔记的显示标题（去 .md 后缀；打开文件时携带）。 */
+  currentNoteTitle: string;
+  /** 当前打开的表格文件（相对仓库根；与画布/笔记并存，各一个）。 */
+  currentTableFile: string | null;
+  /** 当前打开表格的显示标题（去 .atb 后缀）。 */
+  currentTableTitle: string;
   canvases: CanvasFileRow[];
   /** 自动检查更新（应用级，存 global.json；缺省 false = 关闭，关闭时完全不联网检查）。 */
   autoUpdate: boolean;
@@ -110,10 +117,21 @@ interface AppState {
   applyWorkspaceWindow: () => Promise<void>;
 
   loadList: () => Promise<void>;
-  /** 打开画布（树行携带 id + file）。 */
+  /** 打开画布（树行携带 id + file）：设置全局文件状态并记录「上次打开」（uiState）。 */
   openCanvas: (row: CanvasFileRow) => void;
-  /** 关闭当前画布文件（窗口标签保留为占位槽）：仅清 currentCanvasId，openTabs 保留便于重新打开。 */
-  closeCanvasFile: () => void;
+  /** 打开笔记（文件面板/搜索/属性定位等入口）：设置全局文件状态并记录「上次打开」。 */
+  openNote: (file: string, title: string) => void;
+  /** 关闭笔记窗口：清当前笔记文件状态。 */
+  closeNote: () => void;
+  /** 打开表格：设置全局文件状态并记录「上次打开」；已打开的表格不重复加载。 */
+  openTable: (file: string, title: string) => void;
+  /** 关闭表格窗口：先落盘再清内存态（防 debounce 窗口内丢改动）。 */
+  closeTable: () => void;
+  /**
+   * 表格文件已被删除/外部移动（从列表消失）时的静默关闭：**不 flush**
+   * （防写回重建已删文件），只清内存态与保存定时器。
+   */
+  closeTableSilent: () => void;
   /** 新建画布到 dir（相对仓库根，空 = 根目录），返回 { id, file, title }（title 可能被同名去重）。 */
   createCanvas: (title?: string, dir?: string) => Promise<{ id: string | null; file: string | null; title: string }>;
   /** 重命名画布（同目录改文件名，按当前 file），返回实际标题。 */
@@ -151,7 +169,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   recentVaults: [],
   currentCanvasId: null,
   currentCanvasFile: null,
-  openTabs: [],
+  currentNoteFile: null,
+  currentNoteTitle: "",
+  currentTableFile: null,
+  currentTableTitle: "",
   canvases: [],
   autoUpdate: false,
   updateStatus: "idle",
@@ -189,9 +210,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       recentVaults: recents,
       view: "vaultSelect",
-      openTabs: [],
       autoUpdate: autoUpdate,
     });
+    // 应用级 UI 使用状态（布局/展开/上次文件）启动加载一次，之后跨仓库共享
+    void useUiStateStore.getState().load();
     return autoEnterRoot;
   },
 
@@ -245,8 +267,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       // 若 fire-and-forget 直接放行，写盘可能晚于 open_vault 执行、把旧会话写进新仓库（跨仓库污染）；
       // 传当前仓库 vaultId 做归属校验 + 脏检测：无改动（如外部删除会话文件）则不写回
       await useChatPanelStore.getState().flush(get().vaultId);
-      // 同理落盘旧仓库的 UI 使用状态（展开/上次打开文件），防切仓库后旧内存态串写
-      await useUiStateStore.getState().flush();
       const info = await openVault(root);
       const now = Math.floor(Date.now() / 1000);
       const recents = bumpRecentVault(get().recentVaults, info, now);
@@ -266,18 +286,21 @@ export const useAppStore = create<AppState>((set, get) => ({
         canvases: [],
         currentCanvasId: null,
         currentCanvasFile: null,
-        openTabs: [],
+        currentNoteFile: null,
+        currentNoteTitle: "",
+        currentTableFile: null,
+        currentTableTitle: "",
       });
       // 加载仓库级配置覆盖（.atelyx/config.json），需在发消息前完成
       await useSettingsStore.getState().loadVaultConfig();
       // 切换仓库：清空旧画布运行时状态（防残留 saveTimer 跨仓库写盘/旧消息残留）
       useCanvasStore.getState().resetCanvasState();
-      // 文件树/画布列表/UI 状态/AI 会话后台填充：不阻塞工作区显示（启动提速，渐进加载）
+      // 文件树/画布列表/AI 会话后台填充：不阻塞工作区显示（启动提速，渐进加载）；
+      // UI 使用状态（布局/展开/上次文件）为应用级，启动时已加载，切仓库不重载
       void (async () => {
         try {
           await get().loadList();
           await useVaultStore.getState().loadFiles();
-          await useUiStateStore.getState().load();
           await useChatPanelStore.getState().load(info.id);
         } catch (e) {
           console.error("加载仓库数据失败", e);
@@ -301,11 +324,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   backToVaultSelect: () => {
-    // 回启动页前落盘当前仓库 UI 状态并**等待写盘完成**，随后 clear 清内存态：
-    // 防 debounce 窗口内的旧 timer 在 vaultId 清空后仍触发、把状态写进下一个打开的仓库
-    void useUiStateStore.getState().flush().finally(() => {
-      useUiStateStore.getState().clear();
-    });
+    // 回启动页：AI 会话落盘防 debounce 丢改动（应用级 UI 状态跨仓库/跨会话保留，无需清理）
+    void useChatPanelStore.getState().flush(get().vaultId);
     useSettingsStore.getState().clearVaultConfig();
     set({
       view: "vaultSelect",
@@ -315,7 +335,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       canvases: [],
       currentCanvasId: null,
       currentCanvasFile: null,
-      openTabs: [],
+      currentNoteFile: null,
+      currentNoteTitle: "",
+      currentTableFile: null,
+      currentTableTitle: "",
     });
   },
 
@@ -343,13 +366,38 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
   openCanvas: (row) => {
-    const { openTabs } = get();
-    // 标签：首次打开追加（已存在不重复）
-    const tabs = openTabs.includes(row.id) ? openTabs : [...openTabs, row.id];
-    set({ currentCanvasId: row.id, currentCanvasFile: row.file, openTabs: tabs });
+    set({ currentCanvasId: row.id, currentCanvasFile: row.file });
+    // 记录「上次打开」供下次进入仓库恢复（画布窗口已无标签概念，打开即唯一文件状态）
+    useUiStateStore.getState().recordOpenCanvas(row.file);
   },
-  closeCanvasFile: () => {
-    set({ currentCanvasId: null, currentCanvasFile: null });
+  openNote: (file, title) => {
+    set({ currentNoteFile: file, currentNoteTitle: title });
+    useUiStateStore.getState().recordOpenNote(file);
+  },
+  closeNote: () => {
+    set({ currentNoteFile: null, currentNoteTitle: "" });
+    useUiStateStore.getState().closeNote();
+  },
+  openTable: (file, title) => {
+    set({ currentTableFile: file, currentTableTitle: title });
+    useUiStateStore.getState().recordOpenTable(file);
+    if (useTableStore.getState().tableFile !== file) {
+      void useTableStore.getState().load(file);
+    }
+  },
+  closeTable: () => {
+    set({ currentTableFile: null, currentTableTitle: "" });
+    useUiStateStore.getState().closeTable();
+    // 先落盘（防 debounce 窗口内丢改动）再清内存态；清空后不可写回
+    void useTableStore.getState().flush().finally(() => {
+      useTableStore.getState().clear();
+    });
+  },
+  closeTableSilent: () => {
+    set({ currentTableFile: null, currentTableTitle: "" });
+    useUiStateStore.getState().closeTable();
+    // 文件已删：flush 会写回重建，只清内存态与保存定时器
+    useTableStore.getState().clear();
   },
   createCanvas: async (title = "未命名画布", dir = "") => {
     // 同名自动加序号（标题即文件名，保证同目录不重名），返回实际标题供 UI 提醒
@@ -448,8 +496,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       await deleteCanvasVault(row.file);
       markSelfSave();
-      const { currentCanvasId, currentCanvasFile, openTabs } = get();
-      const tabs = openTabs.filter((t) => t !== row.id);
+      const { currentCanvasId, currentCanvasFile } = get();
       // 删除的是当前画布：清空 canvasStore（含未落盘 saveTimer / 进行中的流），
       // 否则残留 timer 会重写已删文件、watcher 事件匹配旧 id 产生误导 reload
       if (row.id === currentCanvasId) {
@@ -460,7 +507,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         useUiStateStore.getState().closeCanvas();
       }
       set({
-        openTabs: tabs,
         currentCanvasId: row.id === currentCanvasId ? null : currentCanvasId,
         currentCanvasFile: row.id === currentCanvasId ? null : currentCanvasFile,
       });
@@ -472,18 +518,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
   closeCanvasIfInDir: (dir) => {
-    const { canvases, currentCanvasId, openTabs } = get();
+    const { canvases, currentCanvasId } = get();
     const affectedIds = canvases
       .filter((c) => c.file.startsWith(`${dir}/`))
       .map((c) => c.id);
     if (affectedIds.length > 0 && currentCanvasId && affectedIds.includes(currentCanvasId)) {
       useCanvasStore.getState().resetCanvasState();
       useUiStateStore.getState().closeCanvas();
-      set({
-        openTabs: openTabs.filter((t) => !affectedIds.includes(t)),
-        currentCanvasId: null,
-        currentCanvasFile: null,
-      });
+      set({ currentCanvasId: null, currentCanvasFile: null });
     }
     return affectedIds.length > 0;
   },
@@ -492,6 +534,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!file || !file.startsWith(`${oldDir}/`)) return;
     set({ currentCanvasFile: remapDirPrefix(file, oldDir, newDir) });
   },
+  /**
+   * 把外部白板文件（.canvas）转换为同目录 .atlx 画布（原文件保留，单向转换），
+   * 成功后刷新画布列表与文件树并直接打开新画布。失败返回 null（画布错误条提示）。
+   */
   convertWhiteboard: async (file) => {
     const title = file.split("/").pop()?.replace(/\.canvas$/i, "") ?? "白板";
     // 同名自动加序号（同目录现有 .atlx 标题）
@@ -501,12 +547,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const row = await convertWhiteboardToAtlx(file, title, siblings);
       markSelfSave();
-      // 转换生成了新 .atlx：刷新两个数据源（画布列表 + 文件树）
+      // 转换生成了新 .atlx：刷新两个数据源（画布列表 + 文件树），成功后打开新画布
       await get().loadList();
       await useVaultStore.getState().loadFiles();
+      get().openCanvas(row);
       return row;
     } catch (e) {
       console.error("转换为画布失败", e);
+      useCanvasStore.setState({ error: "转换为画布失败，请重试" });
       return null;
     }
   },

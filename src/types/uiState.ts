@@ -1,53 +1,34 @@
 /**
- * 仓库级 UI 使用状态（`.atelyx/ui-state.json`，schema `atelyx-ui-state/v1`）。
+ * 应用级 UI 使用状态（`app_data_dir/ui-state.json`，schema `atelyx-ui-state/v1`）。
  *
- * 与仓库级配置（`.atelyx/config.json`）分离：config.json 只保存「用户设置」
- * （主题/AI 供应商/排序等），本文件保存「使用数据」（文件面板展开情况、
- * 上次打开的文件）——高频展开/折叠的写入抖动不进配置，损坏也只影响恢复。
+ * 工作区布局（布局列表 + 激活布局 + 聚焦面积）+ 上次打开的文件 + 文件面板展开，
+ * 全部**应用级**：app_data_dir 本机独有、不随仓库同步，跨仓库共享——
+ * 布局/展开/上次文件是个人使用偏好，与仓库无关（各仓库 `.atelyx/ui-state.json`
+ * 的按设备分桶模型已废弃）。
  *
- * **按设备分桶**：仓库可能随 Git/云盘多设备同步，状态存 `perDevice`（key = 本设备 ID，
- * 见 `GlobalConfig.deviceId`），各设备读写自己的桶，互不覆盖。旧平铺字段
- * （`fileExplorerExpanded`/`lastCanvasFile`/`lastNoteFile`/`lastActiveWindow`）
- * 仅兼容读取迁移——本设备首次写入后不再落盘。
- *
- * 该文件位于 `.atelyx` 隐藏目录内，watcher 天然过滤、无自写回环
- * （与 `prompt-notes.json` / `editor-chats.json` 同策略）。
+ * 与全局配置（global.json）分离：global.json 只保存低频配置（最近仓库列表 +
+ * 自动更新开关），本文件保存高频「使用数据」——写入抖动不进配置，损坏只影响恢复。
  */
+import type { WorkspaceLayout } from "@/types/workspaceLayout";
 
-/** `ui-state.json` 文件 schema 版本（Rust 侧 `vault.rs` 有同名常量，两端须保持一致）。 */
+/** `ui-state.json` 文件 schema 版本（Rust 侧 `commands/global.rs` 有同名常量，两端须保持一致）。 */
 export const UI_STATE_SCHEMA = "atelyx-ui-state/v1" as const;
 
-/** 上次退出时的窗口布局（三窗口并存：画布 + 笔记 + 表格各一个）。 */
-export type LastActiveWindow = "canvas" | "note" | "table";
-
-/** 单设备的仓库级 UI 使用状态（`VaultUiState.perDevice` 的一个条目）。 */
-export interface DeviceUiState {
-  /** 文件面板展开的文件夹相对路径列表（缺省 = 全部折叠）。 */
-  fileExplorerExpanded: string[];
-  /** 上次打开的画布文件（相对仓库根路径；关闭/删除后清空）。 */
-  lastCanvasFile?: string;
-  /** 上次打开的笔记文件（相对仓库根路径；关闭/删除后清空）。 */
-  lastNoteFile?: string;
-  /** 上次打开的表格文件（相对仓库根路径；关闭/删除后清空）。 */
-  lastTableFile?: string;
-  /** 上次激活的窗口（画布 / 笔记 / 表格；缺省 = 画布槽）。 */
-  lastActiveWindow?: LastActiveWindow;
-}
-
-/** 仓库级 UI 使用状态（`.atelyx/ui-state.json` 磁盘格式）。 */
-export interface VaultUiState {
+/** 应用级 UI 使用状态（`app_data_dir/ui-state.json` 磁盘格式，扁平无分桶）。 */
+export interface AppUiState {
   schema: typeof UI_STATE_SCHEMA;
-  /** 各设备的 UI 状态（key = 设备 ID；缺省 = 该设备无条目，回退旧平铺字段）。 */
-  perDevice?: Record<string, DeviceUiState>;
-  // 旧平铺字段：仅兼容读取迁移（本设备首次写入后不再落盘），新写入只写 perDevice。
-  /** 文件面板展开的文件夹相对路径列表（旧格式，见 perDevice）。 */
-  fileExplorerExpanded?: string[];
-  /** 上次打开的画布文件（旧格式，见 perDevice）。 */
+  /** 文件面板展开的文件夹相对路径列表（缺省 = 全部折叠；跨仓库按路径共享）。 */
+  fileExplorerExpanded: string[];
+  /** 上次打开的画布文件（相对仓库根路径；恢复时按当前仓库列表查找命中才打开）。 */
   lastCanvasFile?: string;
-  /** 上次打开的笔记文件（旧格式，见 perDevice）。 */
+  /** 上次打开的笔记文件（相对仓库根路径）。 */
   lastNoteFile?: string;
-  /** 上次打开的表格文件（旧格式，见 perDevice）。 */
+  /** 上次打开的表格文件（相对仓库根路径）。 */
   lastTableFile?: string;
-  /** 上次激活的窗口（旧格式，见 perDevice）。 */
-  lastActiveWindow?: LastActiveWindow;
+  /** 工作区布局列表（缺省 = 无条目时回退默认布局）。 */
+  workspaceLayouts?: WorkspaceLayout[];
+  /** 激活布局 id（缺省 = 布局列表第一个）。 */
+  activeLayoutId?: string;
+  /** 聚焦面积 id（画布快捷键门控；缺省 = 布局第一个面积）。 */
+  focusedAreaId?: string;
 }

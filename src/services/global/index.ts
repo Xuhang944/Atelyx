@@ -2,11 +2,12 @@
  * 全局配置 service。
  *
  * 读写 `app_data_dir/global.json`，对应 Rust `commands/global.rs`。
- * 承载：最近打开仓库列表 + 本设备 ID（主题等仓库级配置已移入各仓库）。
+ * 承载：最近打开仓库列表 + 自动更新开关（主题等仓库级配置已移入各仓库；
+ * 应用级 UI 使用状态走 `services/uiState` 的 `app_data_dir/ui-state.json`）。
  * recentVaults 的去重/排序/截断逻辑在此层维护（Rust 只做整文件读写）。
  *
  * **写入走 `updateGlobalConfig`（read-modify-write + 串行化）**，勿直接 `writeGlobalConfig`：
- * global.json 现由 appStore（recentVaults）、settingsStore（ai/theme）与 deviceId 共同写入，
+ * global.json 现由 appStore（recentVaults）与自动更新开关共同写入，
  * 直接整体写会覆盖对方字段。`updateGlobalConfig` 只 patch 顶层字段，且通过模块级
  * promise 链串行化，避免并发 read-modify-write 丢更新。
  */
@@ -18,33 +19,6 @@ const MAX_RECENT_VAULTS = 10;
 /** 读全局配置（文件不存在返回空配置）。 */
 export async function readGlobalConfig(): Promise<GlobalConfig> {
   return invoke<GlobalConfig>("read_global_config");
-}
-
-// 模块级缓存：缓存 in-flight promise，并发调用共享同一次生成（首启并发调用各生成一个
-// UUID 会让其中一个桶作废）；失败不缓存，下次调用重新尝试
-let cachedDeviceId: Promise<string> | null = null;
-
-/**
- * 本设备唯一 ID：首次调用生成随机 UUID 落盘 global.json（app_data_dir，不随仓库同步），
- * 之后固定返回。仓库内 `.atelyx/ui-state.json` 按它分桶隔离各设备状态
- * （见 `types/uiState.ts` 的 `perDevice`）。
- */
-export function getDeviceId(): Promise<string> {
-  if (!cachedDeviceId) {
-    cachedDeviceId = (async () => {
-      try {
-        const cfg = await readGlobalConfig();
-        if (cfg.deviceId) return cfg.deviceId;
-        const deviceId = crypto.randomUUID();
-        await updateGlobalConfig({ deviceId });
-        return deviceId;
-      } catch (e) {
-        cachedDeviceId = null;
-        throw e;
-      }
-    })();
-  }
-  return cachedDeviceId;
 }
 
 /**

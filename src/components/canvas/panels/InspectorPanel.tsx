@@ -98,11 +98,12 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function InspectorPanel({ nodeId }: { nodeId: string | null }) {
+export function InspectorPanel() {
   // 窄化订阅：节点引用（未变时稳定）+ 入边源/出边目标数组。
   // 注意用 useShallow 返回「数组」（元素是稳定节点引用，浅比较逐元素有效）；
   // 不能返回含新建数组字段的对象——useShallow 按字段 Object.is 比较会判定不等、
   // 缓存永远失效，触发 React「getSnapshot should be cached」+ 无限重渲染。
+  const nodeId = useCanvasStore((s) => s.selectedNodeId);
   const node = useCanvasStore((s) => (nodeId ? s.nodes.find((x) => x.id === nodeId) : undefined));
   const sources = useCanvasStore(
     useShallow((s) => {
