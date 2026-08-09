@@ -5,6 +5,7 @@
 //! 本模块只做文件 I/O + 路径校验，不耦合业务语义（text 节点 bodyMd
 //! 的剥离/填充在 services/vault 层组合）。
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
@@ -22,7 +23,11 @@ pub struct DirNames {
 }
 
 /// 当前仓库会话状态，由 lib.rs app.manage 注入，命令通过 State<VaultState> 读取。
-pub struct VaultState(pub Mutex<Option<VaultSession>>);
+pub struct VaultState {
+    pub session: Mutex<Option<VaultSession>>,
+    /// 反链索引缓存：纯内存、磁盘为真相（每次查询按指纹 diff 自愈）；切换仓库时随 set 清空，查询时懒构建。
+    pub wiki: Mutex<Option<WikiIndex>>,
+}
 
 /// 一次仓库会话：根路径 + 该仓库生效的文件面板配置（open_vault/ensure_default_vault 时从配置解析）。
 pub struct VaultSession {
@@ -35,14 +40,17 @@ pub struct VaultSession {
 
 impl Default for VaultState {
     fn default() -> Self {
-        Self(Mutex::new(None))
+        Self {
+            session: Mutex::new(None),
+            wiki: Mutex::new(None),
+        }
     }
 }
 
 impl VaultState {
     /// 取当前仓库根路径，未打开仓库时返回错误。
     pub fn root(&self) -> Result<PathBuf, String> {
-        self.0
+        self.session
             .lock()
             .map_err(|e| e.to_string())?
             .as_ref()
@@ -52,7 +60,7 @@ impl VaultState {
 
     /// 取当前仓库生效的排除文件夹列表（缺省 = 空），未打开仓库时返回错误。
     pub fn exclude_folders(&self) -> Result<Vec<String>, String> {
-        self.0
+        self.session
             .lock()
             .map_err(|e| e.to_string())?
             .as_ref()
@@ -62,7 +70,7 @@ impl VaultState {
 
     /// 取当前仓库生效的附件导入文件夹（None = 仓库根目录），未打开仓库时返回错误。
     pub fn attachment_folder(&self) -> Result<Option<String>, String> {
-        self.0
+        self.session
             .lock()
             .map_err(|e| e.to_string())?
             .as_ref()
@@ -72,6 +80,7 @@ impl VaultState {
 
     /// 设置当前仓库会话（canonicalize 消除 `..`/符号链接，保证 safe_join 校验与 watcher 语义一致；
     /// 用 dunce 去除 Windows `\\?\` 长路径前缀，保证存/回传给前端的路径格式统一）。
+    /// 同时清空反链索引缓存：不同仓库的索引不混用（查询时懒重建）。
     /// 返回 Result：Mutex poisoned 时向上传播而非静默丢弃（与 root() 策略一致）。
     pub fn set(
         &self,
@@ -80,12 +89,15 @@ impl VaultState {
         attachment_folder: Option<String>,
     ) -> Result<(), String> {
         let canonical = dunce::canonicalize(&root).unwrap_or_else(|_| root.clone());
-        let mut guard = self.0.lock().map_err(|e| e.to_string())?;
+        let mut guard = self.session.lock().map_err(|e| e.to_string())?;
         *guard = Some(VaultSession {
             root: canonical,
             exclude_folders,
             attachment_folder,
         });
+        if let Ok(mut wiki) = self.wiki.lock() {
+            *wiki = None;
+        }
         Ok(())
     }
 }
@@ -1013,3 +1025,750 @@ pub const CANVAS_SCHEMA: &str = "atelyx-canvas/v1";
 
 /// `.atb` schema 版本号（对应前端 `types/table.ts` 的 `TABLE_SCHEMA`）。
 pub const TABLE_SCHEMA: &str = "atelyx-table/v1";
+
+// ===== 反链索引（纯内存缓存，磁盘为真相）=====
+//
+// 设计要点（为多人实时协作预留的红线）：
+// - 索引只读派生、绝不落盘仓库（不产生同步冲突文件），永远可从磁盘全量重建（幂等）；
+// - 每次查询按 (mtime, size) 指纹 diff 增量刷新：只重读变化/新增的 .md，缺失条目剔除——
+//   外部编辑/重命名/删除/文件夹移动全部自愈，无需独立的失效管道（事件驱动索引会漏事件、丢 debounce）；
+// - 构建/刷新集中在 refresh_wiki_index 一个函数，未来协作层「内存文档即真相」时只换刷新触发源。
+//
+// 提取两种链接写法：`[[target]]`/`[[target|别名]]` 与 `[label](path)`（图片 `![..](..)` 不算反链）。
+
+/// 反链行：引用方笔记的相对仓库根路径 + 标题（scan_wiki_backlinks 返回，对应前端 types/canvas.ts）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacklinkRow {
+    pub file: String,
+    pub title: String,
+}
+
+/// 单条提取结果：name 与 path 二选一（`[[..]]` 为 name 形式，`[..](..)` 为 path 形式）。
+struct WikiRef {
+    name: Option<String>,
+    path: Option<String>,
+}
+
+/// 文件指纹：mtime 毫秒 + 大小（本机本地语义；同步/检出后 mtime 变化 → 自然触发重读自愈）。
+#[derive(PartialEq)]
+struct FileStamp {
+    mtime_ms: u128,
+    size: u64,
+}
+
+/// 反链索引：rel 路径 → 指纹 + 已提取引用（倒排查询时遍历，纯内存迭代无 I/O，无需预建倒排表）。
+#[derive(Default)]
+pub struct WikiIndex {
+    files: HashMap<String, FileStamp>,
+    refs: HashMap<String, Vec<WikiRef>>,
+}
+
+/// 增量刷新索引：stat 遍历（快），只重读指纹变化的文件；消失文件从索引剔除。
+pub fn refresh_wiki_index(
+    root: &Path,
+    exclude: &[String],
+    index: &mut WikiIndex,
+) -> Result<(), String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    walk_md_in(root, "", exclude, &mut |rel, path| {
+        seen.insert(rel.to_string());
+        let Some(stamp) = file_stamp(path) else {
+            return Ok(());
+        };
+        if index.files.get(rel).map(|old| *old == stamp).unwrap_or(false) {
+            return Ok(());
+        }
+        // 不可读文件（非 UTF-8/权限）跳过，不中断整仓索引——与其他扫描路径行为一致
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return Ok(());
+        };
+        index.files.insert(rel.to_string(), stamp);
+        index.refs.insert(rel.to_string(), extract_refs(&content));
+        Ok(())
+    })?;
+    index.files.retain(|rel, _| seen.contains(rel));
+    index.refs.retain(|rel, _| seen.contains(rel));
+    Ok(())
+}
+
+/// 查询反链：`[[name]]` 按笔记名精确匹配；`[label](path)` 按归一化后的完整路径或文件名（basename）匹配
+/// （大小写不敏感兜底：Windows 文件系统不区分大小写）。
+pub fn query_wiki_backlinks(index: &WikiIndex, note_name: &str, note_file: &str) -> Vec<BacklinkRow> {
+    let target_basename = note_file.rsplit('/').next().unwrap_or(note_file);
+    let mut rows: Vec<BacklinkRow> = Vec::new();
+    for (rel, refs) in &index.refs {
+        let hit = refs.iter().any(|r| {
+            if let Some(name) = &r.name {
+                name == note_name
+            } else if let Some(path) = &r.path {
+                if path == note_file || path.eq_ignore_ascii_case(note_file) {
+                    return true;
+                }
+                let base = path.rsplit('/').next().unwrap_or(path.as_str());
+                base == target_basename || base.eq_ignore_ascii_case(target_basename)
+            } else {
+                false
+            }
+        });
+        if hit {
+            let title = rel
+                .rsplit('/')
+                .next()
+                .unwrap_or(rel)
+                .trim_end_matches(".md")
+                .to_string();
+            rows.push(BacklinkRow {
+                file: rel.clone(),
+                title,
+            });
+        }
+    }
+    rows
+}
+
+/// 递归遍历仓库 .md（与文件树同过滤：跳过隐藏目录与用户排除文件夹）。
+pub(crate) fn walk_md_in(
+    root: &Path,
+    rel: &str,
+    exclude: &[String],
+    f: &mut dyn FnMut(&str, &Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let dir = if rel.is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(rel)
+    };
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = match entry.file_name().to_str() {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        if name.starts_with('.') || exclude.iter().any(|e| e.as_str() == name) {
+            continue;
+        }
+        let child_rel = if rel.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel}/{name}")
+        };
+        let path = entry.path();
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            walk_md_in(root, &child_rel, exclude, f)?;
+        } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
+            f(&child_rel, &path)?;
+        }
+    }
+    Ok(())
+}
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime_ms = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    Some(FileStamp {
+        mtime_ms,
+        size: meta.len(),
+    })
+}
+
+/// 提取引用：`[[target]]` / `[[target|别名]]` + `[label](path)`（回溯 `[` 检查前导 `!` 排除图片）。
+fn extract_refs(content: &str) -> Vec<WikiRef> {
+    let mut refs = Vec::new();
+    let mut rest = content;
+    while let Some(start) = rest.find("[[") {
+        let after = &rest[start + 2..];
+        match after.find("]]") {
+            Some(end) => {
+                let target = &after[..end];
+                let name = target.split('|').next().unwrap_or(target).trim();
+                if !name.is_empty() {
+                    refs.push(WikiRef {
+                        name: Some(name.to_string()),
+                        path: None,
+                    });
+                }
+                rest = &after[end + 2..];
+            }
+            None => break,
+        }
+    }
+    let mut rest = content;
+    while let Some(rel) = rest.find("](") {
+        let before = &rest[..rel];
+        let after = &rest[rel + 2..];
+        let close = after.find(')').unwrap_or(after.len());
+        let path = &after[..close];
+        // 无前导 `[`（正文裸写 `](`）不是链接；回溯 `[` 检查前导 `!` 排除图片
+        let Some(open) = before.rfind('[') else {
+            rest = &after[close..];
+            continue;
+        };
+        let is_image = open > 0 && before.as_bytes()[open - 1] == b'!';
+        if !is_image {
+            if let Some(normalized) = normalize_link_path(path) {
+                refs.push(WikiRef {
+                    name: None,
+                    path: Some(normalized),
+                });
+            }
+        }
+        rest = &after[close..];
+    }
+    refs
+}
+
+/// 归一化链接路径：percent 解码、反斜杠→`/`、去 `./` 与前导 `/`；含 `..` 段返回 None（防越出仓库）。
+fn normalize_link_path(raw: &str) -> Option<String> {
+    let mut s = percent_decode(raw);
+    s = s.replace('\\', "/");
+    while let Some(stripped) = s.strip_prefix("./") {
+        s = stripped.to_string();
+    }
+    while let Some(stripped) = s.strip_prefix('/') {
+        s = stripped.to_string();
+    }
+    if s.is_empty() {
+        return None;
+    }
+    for seg in s.split('/') {
+        if seg == ".." {
+            return None;
+        }
+    }
+    Some(s)
+}
+
+/// 简易 percent 解码（%XX）；非法序列原样保留（匹配不上自然不命中，不报错）。
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                out.push(hi * 16 + lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+// ===== 内部链接跨度改写（重建工具 + 重命名/移动维护共用）=====
+//
+// 原则：字节级替换——只改写链接跨度，其余内容（含换行/空格/顺序）原样保留（文本即真相，不做
+// AST 往返序列化，防整文档格式被重排）。改写范围规则：
+// - 跳过 frontmatter（仅文档开头 `---` 块）、围栏代码块（``` / ~~~）、行内代码（反引号 run）、图片链接 `![..](..)`；
+// - 链接跨度：`[[名]]` / `[[名|别名]]`（wiki 形式）与 `[label](path)`（标准形式）。
+
+/// 若 `i` 处位于行首（i == 0 或前一字符为换行）。
+fn at_line_start(content: &str, i: usize) -> bool {
+    i == 0 || content.as_bytes()[i - 1] == b'\n'
+}
+
+/// `i` 处若为围栏行首（``` 或 ~~~，≥3 个同字符），返回围栏长度。
+fn fence_len_at(content: &str, i: usize) -> Option<usize> {
+    let ch = content[i..].chars().next()?;
+    if ch != '`' && ch != '~' {
+        return None;
+    }
+    let n = content[i..].chars().take_while(|&c| c == ch).count();
+    if n >= 3 {
+        Some(n)
+    } else {
+        None
+    }
+}
+
+/// 在 `rest`（围栏开启后的剩余内容）中找行首同字符闭合围栏（≥ open_len，前导空格 ≤3），
+/// 返回闭合围栏所在行的结束字节位置（含行尾换行）。
+fn fence_close_end(rest: &str, open_char: char, open_len: usize) -> Option<usize> {
+    let mut pos = 0usize;
+    for line in rest.split_inclusive('\n') {
+        let start = pos;
+        pos += line.len();
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        let lead = trimmed.chars().take_while(|&c| c == ' ').count();
+        if lead <= 3 {
+            let body = &trimmed[lead..];
+            let n = body.chars().take_while(|&c| c == open_char).count();
+            if n >= open_len {
+                return Some(start + line.len());
+            }
+        }
+    }
+    None
+}
+
+/// 文档开头 frontmatter 结束位置（`---\n ... ---\n` 闭合行之后）；无闭合返回 None。
+fn frontmatter_end(content: &str) -> Option<usize> {
+    let first_nl = content.find('\n')?;
+    let mut pos = first_nl + 1;
+    for line in content[first_nl + 1..].split_inclusive('\n') {
+        let start = pos;
+        pos += line.len();
+        if line.trim_end_matches(['\n', '\r']) == "---" {
+            return Some(start + line.len());
+        }
+    }
+    None
+}
+
+/// 反引号 run 长度（i 处起连续反引号数）。
+fn backtick_run_at(content: &str, i: usize) -> usize {
+    content[i..].bytes().take_while(|&b| b == b'`').count()
+}
+
+/// 从 `from` 起找 ≥n 个连续反引号的闭合位置（run 之后）；无闭合返回 None。
+fn backtick_close(content: &str, from: usize, n: usize) -> Option<usize> {
+    let bytes = content.as_bytes();
+    let mut i = from;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            let run = backtick_run_at(content, i);
+            if run >= n {
+                return Some(i + run);
+            }
+            i += run;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// 链接跨度改写引擎：跳过 frontmatter/围栏代码/缩进代码/原始 HTML/行内代码/图片链接，
+/// 对每个链接跨度调用 `apply`（返回原样 = 不改）。仅用于字节级替换场景（重建/维护），不用于解析。
+pub(crate) fn rewrite_link_spans(content: &str, apply: &mut dyn FnMut(&str) -> String) -> String {
+    let mut out = String::with_capacity(content.len());
+    let len = content.len();
+    let mut i = 0;
+    // 文档开头 frontmatter：整体跳过（YAML 里出现 `[[`/`](` 是数据不是链接）
+    if content.starts_with("---\n") || content.starts_with("---\r\n") {
+        if let Some(end) = frontmatter_end(content) {
+            out.push_str(&content[..end]);
+            i = end;
+        }
+    }
+    while i < len {
+        // 块级跳过（CommonMark 语义，防链接语法在代码/HTML 中被改写）：
+        // - 缩进代码块（≥4 空格缩进行）；
+        // - 原始 HTML：行首 `<`（标签块以空行结束；`<!--` 注释可跨行至 `-->`）
+        if at_line_start(content, i) {
+            let rest = &content[i..];
+            let lead = rest.bytes().take_while(|&b| b == b' ').count();
+            if lead >= 4 {
+                let end = rest.find('\n').map_or(len, |p| i + p + 1);
+                out.push_str(&content[i..end]);
+                i = end;
+                continue;
+            }
+            let after = &rest[lead..];
+            let html_start = after.starts_with("<!--")
+                || after.starts_with("<?")
+                || after.starts_with("<!")
+                || after.starts_with("</")
+                || (after.starts_with('<')
+                    && after.len() > 1
+                    && after.as_bytes()[1].is_ascii_alphabetic());
+            if html_start {
+                if after.starts_with("<!--") {
+                    // HTML 注释：可跨行，跳至 `-->`（未闭合则余下整体跳过）
+                    let from = i + lead + 4;
+                    let end = content[from..].find("-->").map_or(len, |p| from + p + 3);
+                    out.push_str(&content[i..end]);
+                    i = end;
+                } else {
+                    // 标签块：以空行结束，逐行跳过
+                    let mut cursor = i;
+                    loop {
+                        match content[cursor..].find('\n') {
+                            Some(p) => {
+                                let line_end = cursor + p;
+                                if content[cursor..line_end].trim().is_empty() {
+                                    cursor = line_end;
+                                    break;
+                                }
+                                cursor = line_end + 1;
+                            }
+                            None => {
+                                cursor = len;
+                                break;
+                            }
+                        }
+                    }
+                    out.push_str(&content[i..cursor]);
+                    i = cursor;
+                }
+                continue;
+            }
+        }
+        // 围栏代码块：行首 ``` / ~~~，跳至行首同字符闭合围栏
+        if at_line_start(content, i) {
+            if let Some(open_len) = fence_len_at(content, i) {
+                let open_char = content[i..].chars().next().unwrap();
+                if let Some(close) = fence_close_end(&content[i + open_len..], open_char, open_len) {
+                    let end = i + open_len + close;
+                    out.push_str(&content[i..end]);
+                    i = end;
+                    continue;
+                }
+            }
+        }
+        // 行内代码：反引号 run，跳至等长（或更长）run 闭合
+        if content.as_bytes()[i] == b'`' {
+            let n = backtick_run_at(content, i);
+            if let Some(close) = backtick_close(content, i + n, n) {
+                out.push_str(&content[i..close]);
+                i = close;
+                continue;
+            }
+        }
+        // wiki 链接 `[[..]]`：前导非 `!`（`![[a]]` 为嵌入语法，不按链接改写，防转成图片语法）
+        if content[i..].starts_with("[[") && (i == 0 || content.as_bytes()[i - 1] != b'!') {
+            if let Some(end_rel) = content[i + 2..].find("]]") {
+                let end = i + 2 + end_rel + 2;
+                out.push_str(&apply(&content[i..end]));
+                i = end;
+                continue;
+            }
+        }
+        // `[label](path)`：前导非 `!`（图片链接不处理）
+        if content.as_bytes()[i] == b'[' && (i == 0 || content.as_bytes()[i - 1] != b'!') {
+            if let Some(rel) = content[i + 1..].find(']') {
+                let after_label = i + 1 + rel + 1;
+                if content.as_bytes().get(after_label) == Some(&b'(') {
+                    if let Some(rel2) = content[after_label + 1..].find(')') {
+                        let end = after_label + 1 + rel2 + 1;
+                        out.push_str(&apply(&content[i..end]));
+                        i = end;
+                        continue;
+                    }
+                }
+            }
+        }
+        let ch_len = content[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+        out.push_str(&content[i..i + ch_len]);
+        i += ch_len;
+    }
+    out
+}
+
+/// 取标准链接跨度 `[label](path)` 的 path 部分（wiki 形式 `[[..]]` 返回 None）。
+pub(crate) fn markdown_link_path(span: &str) -> Option<&str> {
+    if span.starts_with("[[") {
+        return None;
+    }
+    let open = span.find("](")?;
+    Some(&span[open + 2..span.len() - 1])
+}
+
+/// 收集需更新 markdown 内部链接的笔记（不写盘；事务模式与 collect_canvas_updates 同构）。
+/// `apply`：对每个链接跨度返回替换结果（原样 = 不改）。返回 `(相对路径, 新内容)` 列表。
+pub(crate) fn collect_md_link_updates(
+    root: &Path,
+    exclude: &[String],
+    apply: &mut dyn FnMut(&str) -> String,
+) -> Result<Vec<(String, String)>, String> {
+    let mut updates: Vec<(String, String)> = vec![];
+    walk_md_in(root, "", exclude, &mut |rel, path| {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => return Ok(()), // 不可读跳过，不阻塞其余
+        };
+        let next = rewrite_link_spans(&content, apply);
+        if next != content {
+            updates.push((rel.to_string(), next));
+        }
+        Ok(())
+    })?;
+    Ok(updates)
+}
+
+/// 写回收集的 .md 更新（复用 write_note 原子写 + 路径校验）。
+pub(crate) fn flush_md_updates(root: &Path, updates: &[(String, String)]) -> Result<(), String> {
+    for (rel, content) in updates {
+        write_note(root, rel, content)?;
+    }
+    Ok(())
+}
+
+/// 解析内部链接目标（笔记名或相对路径）→ 规范相对路径。
+/// - 候选构造：`name` 已是 `.md` 路径（`[x](路径.md)` 形式）→ 原样作候选；否则按笔记名补 `.md` + 净化变体；
+/// - 匹配顺序：精确路径 → 文件名命中 → **同名歧义取「路径最短（根目录优先）+ 字典序」确定性兜底**
+///   （对齐前端 noteList 首个命中的可打开语义，防同名链接失效）；
+/// - 全部分支后做大小写不敏感兜底：Windows 文件系统不区分大小写，`方案.MD` 与 `方案.md` 是同一文件。
+pub(crate) fn resolve_link_target(
+    name: &str,
+    exact: &HashSet<String>,
+    by_basename: &HashMap<String, Vec<String>>,
+) -> Option<String> {
+    let mut candidates: Vec<String> = if name.to_ascii_lowercase().ends_with(".md") {
+        vec![name.to_string()]
+    } else {
+        vec![format!("{name}.md")]
+    };
+    if !name.to_ascii_lowercase().ends_with(".md") {
+        let sanitized = sanitize_filename(name);
+        if !sanitized.is_empty() && sanitized != name {
+            candidates.push(format!("{sanitized}.md"));
+        }
+    }
+    let pick = |rels: &Vec<String>| -> Option<String> {
+        rels.iter()
+            .min_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)))
+            .cloned()
+    };
+    for cand in &candidates {
+        if exact.contains(cand) {
+            return Some(cand.clone());
+        }
+        if let Some(rels) = by_basename.get(cand) {
+            if let Some(best) = pick(rels) {
+                return Some(best);
+            }
+        }
+    }
+    for cand in &candidates {
+        if let Some(hit) = exact.iter().find(|s| s.eq_ignore_ascii_case(cand)) {
+            return Some(hit.clone());
+        }
+        if let Some((_, rels)) = by_basename.iter().find(|(k, _)| k.eq_ignore_ascii_case(cand)) {
+            if let Some(best) = pick(rels) {
+                return Some(best);
+            }
+        }
+    }
+    None
+}
+
+/// 一次性重建内部链接（设置 → 编辑器「重建内部链接」入口）：
+/// - `[[名]]` / `[[名|别名]]` → `[名](规范相对路径)` / `[别名](规范相对路径)`；
+/// - `[label](路径.md)` 命中仓库内 .md → 规范为 `[label](规范相对路径)`（解码 + 归一化）；
+/// - `[名]()` 空路径 → 按 label 当笔记名解析，命中则补全为规范路径，仍不存在则保持空路径；
+/// - 目标笔记不存在 → `[名]()`（空路径，点击可快捷新建）；
+/// - 外部链接 / 非 .md 相对路径 / 图片链接 / 代码块内 → 一律不动（保守不猜）。
+/// `resolve`：笔记名或路径 → 命中时的规范相对路径（None = 未命中）。返回 (新内容, 实际改写处数)。
+pub(crate) fn rewrite_internal_links(
+    content: &str,
+    resolve: &dyn Fn(&str) -> Option<String>,
+) -> (String, usize) {
+    let mut count = 0usize;
+    let out = rewrite_link_spans(content, &mut |span: &str| {
+        let replaced: String;
+        let is_wiki = span.starts_with("[[");
+        let (label, target): (&str, Option<String>) = if is_wiki {
+            let inner = &span[2..span.len() - 2];
+            let (name, alias) = match inner.split_once('|') {
+                Some((n, a)) => (n.trim(), a.trim()),
+                None => (inner.trim(), ""),
+            };
+            let label = if alias.is_empty() { name } else { alias };
+            (label, resolve(name))
+        } else {
+            let Some(path) = markdown_link_path(span) else {
+                return span.to_string();
+            };
+            let label = &span[1..span.find("](").unwrap_or(1)];
+            if path.is_empty() {
+                // `[名]()`：按 label 当笔记名解析，命中则补全路径；仍不存在则保持空路径（点击快捷新建）
+                if let Some(target) = resolve(label) {
+                    count += 1;
+                    return format!("[{label}]({target})");
+                }
+                return span.to_string();
+            }
+            let norm = normalize_link_path(path);
+            if norm.is_none() {
+                return span.to_string();
+            }
+            let resolved = resolve(norm.as_deref().unwrap());
+            // 未命中但仍是 .md 形状（大小写不敏感，Windows 文件系统语义）→ 空路径（可快捷新建）；非 .md（附件等）不动
+            if resolved.is_none() && !norm.as_deref().unwrap().to_ascii_lowercase().ends_with(".md")
+            {
+                return span.to_string();
+            }
+            (label, resolved)
+        };
+        replaced = match target {
+            Some(p) => format!("[{label}]({p})"),
+            None => format!("[{label}]()"),
+        };
+        if replaced != span {
+            count += 1;
+        }
+        replaced
+    });
+    (out, count)
+}
+
+#[cfg(test)]
+mod link_rewrite_tests {
+    use super::*;
+
+    /// 按命令层同款逻辑构造解析器（exact + by_basename → resolve_link_target）。
+    fn resolver<'a>(files: &'a [&'a str]) -> impl Fn(&str) -> Option<String> + 'a {
+        let exact: HashSet<String> = files.iter().map(|s| s.to_string()).collect();
+        let mut by_basename: HashMap<String, Vec<String>> = HashMap::new();
+        for rel in files {
+            let base = rel.rsplit('/').next().unwrap_or(rel).to_string();
+            by_basename.entry(base).or_default().push(rel.to_string());
+        }
+        move |name: &str| resolve_link_target(name, &exact, &by_basename)
+    }
+
+    #[test]
+    fn wiki_link_root_note() {
+        let resolve = resolver(&["note-a.md"]);
+        let (out, n) = rewrite_internal_links("见 [[note-a]]", &resolve);
+        assert_eq!(out, "见 [note-a](note-a.md)");
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn wiki_link_subfolder_unique() {
+        let resolve = resolver(&["notes/note-b.md"]);
+        let (out, n) = rewrite_internal_links("见 [[note-b]]", &resolve);
+        assert_eq!(out, "见 [note-b](notes/note-b.md)");
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn wiki_link_alias_form() {
+        let resolve = resolver(&["notes/note-b.md"]);
+        let (out, n) = rewrite_internal_links("见 [[note-b|alias-b]]", &resolve);
+        assert_eq!(out, "见 [alias-b](notes/note-b.md)");
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn path_link_exact_and_basename() {
+        let resolve = resolver(&["notes/note-b.md"]);
+        // 完整路径链接：已是规范形式，不做追加 .md 的候选处理，保持原样
+        let (out, n) = rewrite_internal_links("[note-b](notes/note-b.md)", &resolve);
+        assert_eq!(out, "[note-b](notes/note-b.md)");
+        assert_eq!(n, 0);
+        // 文件名形式链接：按 basename 命中并规范为完整路径
+        let (out2, n2) = rewrite_internal_links("[note-b](note-b.md)", &resolve);
+        assert_eq!(out2, "[note-b](notes/note-b.md)");
+        assert_eq!(n2, 1);
+    }
+
+    #[test]
+    fn path_link_encoded_normalized() {
+        let resolve = resolver(&["topic a.md"]);
+        let (out, n) = rewrite_internal_links("[doc](topic%20a.md)", &resolve);
+        assert_eq!(out, "[doc](topic a.md)");
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn wiki_link_duplicate_basename_keeps_resolvable() {
+        // 回归：同名多文件不得转空路径——根目录优先（路径最短），确定性兜底
+        let resolve = resolver(&["note-b.md", "notes/note-b.md"]);
+        let (out, n) = rewrite_internal_links("见 [[note-b]]", &resolve);
+        assert_eq!(out, "见 [note-b](note-b.md)");
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn missing_note_becomes_empty() {
+        let resolve = resolver(&[]);
+        let (out, n) = rewrite_internal_links("见 [[missing-note]]", &resolve);
+        assert_eq!(out, "见 [missing-note]()");
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn empty_link_recovered_by_label() {
+        // `[名]()` 空路径链接按 label 解析命中 → 补全为规范路径
+        let resolve = resolver(&["notes/note-b.md"]);
+        let (out, n) = rewrite_internal_links("见 [note-b]()", &resolve);
+        assert_eq!(out, "见 [note-b](notes/note-b.md)");
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn empty_link_kept_when_note_missing() {
+        let resolve = resolver(&[]);
+        let (out, n) = rewrite_internal_links("见 [note-b]()", &resolve);
+        assert_eq!(out, "见 [note-b]()");
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn skips_code_block_inline_code_image_external() {
+        let resolve = resolver(&["note-b.md"]);
+        let content =
+            "```\n[[note-b]]\n```\n\n`[[note-b]]`\n\n![img](note-b.md)\n\n[ext](https://example.com)\n\n[[note-b]]";
+        let (out, n) = rewrite_internal_links(content, &resolve);
+        assert_eq!(
+            out,
+            "```\n[[note-b]]\n```\n\n`[[note-b]]`\n\n![img](note-b.md)\n\n[ext](https://example.com)\n\n[note-b](note-b.md)"
+        );
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn embed_notation_skipped() {
+        // `![[a]]` 是嵌入语法（前导 !），不按链接改写——防转成图片语法 `![a](a.md)`
+        let resolve = resolver(&["note-b.md"]);
+        let (out, n) = rewrite_internal_links("![[note-b]]", &resolve);
+        assert_eq!(out, "![[note-b]]");
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn skips_indented_code_and_raw_html() {
+        let resolve = resolver(&["note-b.md"]);
+        let content =
+            "    [[note-b]]\n    [x](note-b.md)\n\n<div>\n[[note-b]]\n</div>\n\n<!--\n[[note-b]]\n-->\n\n见 [[note-b]]";
+        let (out, n) = rewrite_internal_links(content, &resolve);
+        assert_eq!(
+            out,
+            "    [[note-b]]\n    [x](note-b.md)\n\n<div>\n[[note-b]]\n</div>\n\n<!--\n[[note-b]]\n-->\n\n见 [note-b](note-b.md)"
+        );
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn case_insensitive_resolution() {
+        // Windows 文件系统不区分大小写：`note-b.MD` 与 `note-b.md` 是同一文件
+        let resolve = resolver(&["notes/note-b.md"]);
+        let (out, n) = rewrite_internal_links("[x](note-b.MD)", &resolve);
+        assert_eq!(out, "[x](notes/note-b.md)");
+        assert_eq!(n, 1);
+        let (out2, n2) = rewrite_internal_links("[[note-b]]", &resolve);
+        assert_eq!(out2, "[note-b](notes/note-b.md)");
+        assert_eq!(n2, 1);
+    }
+
+    #[test]
+    fn frontmatter_skipped() {
+        let resolve = resolver(&["note-b.md"]);
+        let content = "---\ntags: [[note-b]]\n---\n\n见 [[note-b]]";
+        let (out, _) = rewrite_internal_links(content, &resolve);
+        assert_eq!(out, "---\ntags: [[note-b]]\n---\n\n见 [note-b](note-b.md)");
+    }
+}

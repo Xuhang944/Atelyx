@@ -19,17 +19,19 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
 use crate::vault::{
-    copy_folder as copy_folder_impl, create_folder as create_folder_impl,
-    delete_folder as delete_folder_impl, delete_vault_file,
-    import_attachment as import_attachment_vault_impl, init_vault_dirs,
-    list_canvas_files, list_vault_tree as list_vault_tree_impl, read_canvas_file,
-    read_file_bytes, read_note as read_note_file, read_vault_config as read_vault_config_file,
-    rename_folder as rename_folder_impl, rename_note_file, safe_join, sanitize_filename,
-    write_canvas_file, write_note as write_note_file, write_vault_config as write_vault_config_file,
+    collect_md_link_updates, copy_folder as copy_folder_impl, create_folder as create_folder_impl,
+    delete_folder as delete_folder_impl, delete_vault_file, flush_md_updates,
+    import_attachment as import_attachment_vault_impl, init_vault_dirs, list_canvas_files,
+    list_vault_tree as list_vault_tree_impl, markdown_link_path, read_canvas_file, read_file_bytes,
+    read_note as read_note_file, read_vault_config as read_vault_config_file, refresh_wiki_index,
+    rename_folder as rename_folder_impl, rename_note_file, resolve_link_target,
+    rewrite_internal_links, safe_join, sanitize_filename, walk_md_in, write_canvas_file,
+    write_note as write_note_file, write_vault_config as write_vault_config_file,
     read_editor_chats_file, read_prompt_notes_file, write_prompt_notes_file,
     write_editor_chats_file, read_chat_messages_file, write_chat_messages_file,
-    delete_chat_messages_file, CanvasFile, CanvasFileRow, DeleteFolderResult, EditorChatsFile,
-    FileTreeNode, VaultConfig, VaultState, CANVAS_SCHEMA,
+    delete_chat_messages_file, BacklinkRow, CanvasFile, CanvasFileRow, DeleteFolderResult,
+    EditorChatsFile, FileTreeNode, VaultConfig, VaultState, WikiIndex, CANVAS_SCHEMA,
+    query_wiki_backlinks,
 };
 use crate::watcher;
 
@@ -71,10 +73,26 @@ pub fn open_vault(
     }
     // 先启监听再切 state：watcher 失败降级为警告（仓库仍可打开，实时同步降级为手动刷新）——
     // 大仓库递归监听可能超 OS watch 上限（Linux inotify max_user_watches），不阻塞打开
+    // （warm_app/warm_exclude 在移动前克隆：反链索引后台预热用）
+    let warm_app = app.clone();
+    let warm_exclude = exclude_folders.clone();
     if let Err(e) = watcher::start(app, root.clone(), exclude_folders.clone()) {
         eprintln!("文件监听启动失败（仓库仍可打开，实时同步降级）：{e}");
     }
     state.set(root.clone(), exclude_folders, attachment_folder)?;
+    // 反链索引后台预热：把唯一一次全量扫描（读全部 .md 提取引用）塞进「进入仓库」阶段，不阻塞打开；
+    // 失败静默——首次反链查询会懒构建兜底（预热与查询竞争时以先建为准，索引幂等可重建）
+    let warm_root = root.clone();
+    std::thread::spawn(move || {
+        if let Some(st) = warm_app.try_state::<VaultState>() {
+            if let Ok(mut guard) = st.wiki.lock() {
+                if guard.is_none() {
+                    *guard = Some(WikiIndex::default());
+                    let _ = refresh_wiki_index(&warm_root, &warm_exclude, guard.as_mut().unwrap());
+                }
+            }
+        }
+    });
     Ok(vault_info_from(root, vault_id))
 }
 
@@ -203,6 +221,87 @@ pub fn read_note(file: String, state: State<'_, VaultState>) -> Result<String, S
     read_note_file(&root, &file)
 }
 
+/// 查询反链（`[[note_name]]` 或 `[label](基于仓库的路径)` 两种写法；索引缓存 + 指纹增量刷新）。
+/// 只扫 .md 不扫 .atlx；与文件树同过滤（跳过隐藏/排除目录，`.atelyx/对话历史` 会话正文不算反链）。
+/// 索引懒构建 + 后台预热（open_vault），切仓库随 set 清空——纯内存缓存，磁盘为真相（外部编辑自愈）。
+#[tauri::command]
+pub fn scan_wiki_backlinks(
+    note_name: String,
+    note_file: String,
+    state: State<'_, VaultState>,
+) -> Result<Vec<BacklinkRow>, String> {
+    let root = state.root()?;
+    let exclude = state.exclude_folders()?;
+    let mut guard = state.wiki.lock().map_err(|e| e.to_string())?;
+    if guard.is_none() {
+        *guard = Some(WikiIndex::default());
+    }
+    refresh_wiki_index(&root, &exclude, guard.as_mut().unwrap())?;
+    Ok(query_wiki_backlinks(guard.as_ref().unwrap(), &note_name, &note_file))
+}
+
+/// 重建内部链接的结果统计。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RebuildLinksResult {
+    /// 扫描的 .md 文件数
+    pub scanned: u32,
+    /// 实际写回修改的文件数
+    pub modified: u32,
+    /// 改写的链接处数
+    pub links: u32,
+}
+
+/// 一键重建内部链接（设置 → 编辑器）：全仓库 .md 统一规范为标准 Markdown 写法
+/// `[名](基于仓库的规范路径)`；目标笔记不存在 → `[名]()`（点击可快捷新建）。
+/// 只改写链接跨度（跳过 frontmatter/代码块/行内代码/图片链接/外部链接/非 .md 相对路径），
+/// 其余内容字节级原样保留；只写有变化的文件（原子写）。单文件失败跳过不阻塞其余。
+#[tauri::command]
+pub fn rebuild_internal_links(
+    state: State<'_, VaultState>,
+) -> Result<RebuildLinksResult, String> {
+    let root = state.root()?;
+    let exclude = state.exclude_folders()?;
+    // 收集全部 .md 相对路径 + 构建解析表（精确路径 + 文件名索引；同名歧义 = 不解析）
+    let mut files: Vec<String> = vec![];
+    walk_md_in(&root, "", &exclude, &mut |rel, _path| {
+        files.push(rel.to_string());
+        Ok(())
+    })?;
+    let exact: std::collections::HashSet<String> = files.iter().cloned().collect();
+    let mut by_basename: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for rel in &files {
+        let base = rel.rsplit('/').next().unwrap_or(rel).to_string();
+        by_basename.entry(base).or_default().push(rel.clone());
+    }
+    let resolve =
+        |name: &str| resolve_link_target(name, &exact, &by_basename);
+    let mut modified = 0u32;
+    let mut links = 0u32;
+    for rel in &files {
+        let path = safe_join(&root, rel, false)?;
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue, // 不可读跳过
+        };
+        let (next, n) = rewrite_internal_links(&content, &resolve);
+        if n > 0 {
+            links += n as u32;
+            if let Err(e) = write_note_file(&root, rel, &next) {
+                eprintln!("重建内部链接写回失败（跳过该文件）：{rel}: {e}");
+                continue;
+            }
+            modified += 1;
+        }
+    }
+    Ok(RebuildLinksResult {
+        scanned: files.len() as u32,
+        modified,
+        links,
+    })
+}
+
 /// 读外部白板文件（`.canvas` JSON 原文，只读查看/转换为画布用）。
 /// 复用通用文本读（safe_join 校验）；不提供写命令——白板格式保持只读，不被本应用改写。
 #[tauri::command]
@@ -225,9 +324,10 @@ pub fn write_note(
     write_note_file(&root, &file, &content)
 }
 
-/// 重命名 .md 笔记 + 扫描所有 .atlx 更新 text 节点 file 引用（链接维护）。
-/// 预扫描 → 改名 → 统一写回：任一 .atlx 写回失败时回滚重命名（避免「已改名但引用未更新、
+/// 重命名 .md 笔记 + 扫描所有 .atlx 更新 text 节点 file 引用 + 扫描所有 .md 更新内部链接（链接维护）。
+/// 预扫描 → 改名 → 统一写回：任一写回失败时回滚重命名（避免「已改名但引用未更新、
 /// 重试报源文件不存在」的半完成态）。
+/// .md 链接维护只认规范路径形态（`[x](旧路径)`）——编码等非规范形态由「重建内部链接」归一后纳入维护。
 #[tauri::command]
 pub fn rename_note(
     old_file: String,
@@ -235,12 +335,38 @@ pub fn rename_note(
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
     let root = state.root()?;
+    let exclude = state.exclude_folders()?;
     let pending = collect_note_ref_updates(&root, &old_file, &new_file)?;
+    let pending_md = collect_md_link_updates(&root, &exclude, &mut |span: &str| {
+        let Some(path) = markdown_link_path(span) else {
+            return span.to_string();
+        };
+        if path != old_file {
+            return span.to_string();
+        }
+        let label_end = span.find("](").unwrap_or(span.len() - 1);
+        format!("{}]({new_file})", &span[..label_end])
+    })?;
+    // 收集发生在重命名前：被重命名笔记自身的旧路径自引用条目，写回目标必须是新路径（防旧路径重建文件）
+    let pending_md: Vec<(String, String)> = pending_md
+        .into_iter()
+        .map(|(rel, content)| {
+            if rel == old_file {
+                (new_file.clone(), content)
+            } else {
+                (rel, content)
+            }
+        })
+        .collect();
     rename_note_file(&root, &old_file, &new_file)?;
     if let Err(e) = flush_canvas_updates(&pending) {
         // 尽力回滚：恢复源文件原名（部分画布引用可能已写回，错误信息如实说明）
         let _ = rename_note_file(&root, &new_file, &old_file);
         return Err(format!("更新画布引用失败，重命名已回滚（请重试）：{e}"));
+    }
+    if let Err(e) = flush_md_updates(&root, &pending_md) {
+        let _ = rename_note_file(&root, &new_file, &old_file);
+        return Err(format!("更新笔记内部链接失败，重命名已回滚（请重试）：{e}"));
     }
     Ok(())
 }
@@ -320,7 +446,8 @@ pub fn delete_folder(
 }
 
 /// 重命名文件夹：移动整个目录 + 扫描所有 .atlx 更新位于该目录下文件的引用
-/// （text `file` / media `file` / conversation `systemPromptFile` 按 `old_dir/` 前缀替换）。
+/// （text `file` / media `file` / conversation `systemPromptFile` 按 `old_dir/` 前缀替换）
+/// + 扫描所有 .md 更新内部链接（`](old_dir/` 前缀替换为 `](new_dir/`，链接维护）。
 /// 事务模式与 rename_note 对称：先移动目录（旧路径已不存在），再扫描新树收集引用更新并统一写回；
 /// 扫描或写回失败时回滚目录移动（部分画布引用可能已写回，错误信息如实说明）。
 #[tauri::command]
@@ -330,6 +457,7 @@ pub fn rename_folder(
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
     let root = state.root()?;
+    let exclude = state.exclude_folders()?;
     rename_folder_impl(&root, &old_dir, &new_dir)?;
     let pending = match collect_canvas_updates(&root, &mut |canvas| {
         remap_dir_refs_in_canvas(canvas, &old_dir, &new_dir)
@@ -341,10 +469,32 @@ pub fn rename_folder(
             return Err(format!("扫描画布引用失败，重命名已回滚（请重试）：{e}"));
         }
     };
+    let old_prefix = format!("{old_dir}/");
+    let new_prefix = format!("{new_dir}/");
+    let pending_md = match collect_md_link_updates(&root, &exclude, &mut |span: &str| {
+        let Some(path) = markdown_link_path(span) else {
+            return span.to_string();
+        };
+        let Some(rest) = path.strip_prefix(&old_prefix) else {
+            return span.to_string();
+        };
+        let label_end = span.find("](").unwrap_or(span.len() - 1);
+        format!("{}]({new_prefix}{rest})", &span[..label_end])
+    }) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = rename_folder_impl(&root, &new_dir, &old_dir);
+            return Err(format!("扫描笔记内部链接失败，重命名已回滚（请重试）：{e}"));
+        }
+    };
     if let Err(e) = flush_canvas_updates(&pending) {
         // 尽力回滚：目录移回旧名（部分画布引用可能已写回，错误信息如实说明）
         let _ = rename_folder_impl(&root, &new_dir, &old_dir);
         return Err(format!("更新画布引用失败，重命名已回滚（请重试）：{e}"));
+    }
+    if let Err(e) = flush_md_updates(&root, &pending_md) {
+        let _ = rename_folder_impl(&root, &new_dir, &old_dir);
+        return Err(format!("更新笔记内部链接失败，重命名已回滚（请重试）：{e}"));
     }
     Ok(())
 }
