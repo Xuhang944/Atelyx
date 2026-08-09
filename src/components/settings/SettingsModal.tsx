@@ -16,6 +16,7 @@ import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
 import { ProviderSettingsSection } from "@/components/settings/ProviderSettingsSection";
 import { AboutSection } from "@/components/settings/AboutSection";
+import { DropdownSelect } from "@/components/common/DropdownSelect";
 import { modelNameAcrossProviders } from "@/utils/text";
 
 type Tab =
@@ -340,24 +341,17 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                       界面字体
                     </div>
                   </div>
-                  <select
+                  <DropdownSelect
                     value={vaultConfig?.fontFamily ?? ""}
-                    onChange={(e) =>
-                      void setVaultFontFamily(e.target.value || undefined)
-                    }
-                    className="text-sm rounded px-2 py-1 outline-none max-w-[220px]"
+                    onChange={(v) => void setVaultFontFamily(v || undefined)}
+                    options={FONT_OPTIONS}
+                    className="text-sm rounded px-2 py-1 max-w-[220px]"
                     style={{
                       color: "var(--text-secondary)",
                       background: "var(--input-bg)",
                       border: "1px solid var(--input-border)",
                     }}
-                  >
-                    {FONT_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
+                  />
                 </div>
 
                 {/* 自动恢复上次打开的文件（仓库级）：进入仓库时恢复上次打开的画布/笔记窗口 */}
@@ -481,23 +475,23 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                       未指定时的默认模型；留空 = 未指定（对话需手动选择模型）
                     </div>
                   </div>
-                  <select
+                  <DropdownSelect
                     value={vaultConfig?.model ?? ""}
-                    onChange={(e) => setVaultModel(e.target.value || null)}
-                    className="text-sm rounded px-2 py-1 outline-none w-[200px] flex-shrink-0"
+                    onChange={(v) => setVaultModel(v || null)}
+                    options={[
+                      { value: "", label: "不指定" },
+                      ...modelChoices.map((m) => ({
+                        value: m,
+                        label: modelNameAcrossProviders(config.providers, m),
+                      })),
+                    ]}
+                    className="text-sm rounded px-2 py-1 w-[200px] flex-shrink-0"
                     style={{
                       color: "var(--text-secondary)",
                       background: "var(--input-bg)",
                       border: "1px solid var(--input-border)",
                     }}
-                  >
-                    <option value="">不指定</option>
-                    {modelChoices.map((m) => (
-                      <option key={m} value={m}>
-                        {modelNameAcrossProviders(config.providers, m)}
-                      </option>
-                    ))}
-                  </select>
+                  />
                 </div>
 
                 {/* 话题自动命名：开关 + 模型选择（留空 = 跟随默认模型；话题命名一般用小模型） */}
@@ -523,11 +517,11 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                     </div>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
-                    <select
+                    <DropdownSelect
                       value={autoNamingModelValue}
                       disabled={!autoNamingEnabled}
-                      onChange={(e) => {
-                        const m = e.target.value;
+                      onChange={(v) => {
+                        const m = v;
                         if (!m) {
                           void setAutoNamingModel(null);
                           return;
@@ -538,20 +532,20 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                         );
                         void setAutoNamingModel(p ? { providerId: p.id, model: m } : null);
                       }}
-                      className="text-sm rounded px-2 py-1 outline-none w-[200px] flex-shrink-0"
+                      options={[
+                        { value: "", label: "跟随默认模型" },
+                        ...autoNamingChoices.map((m) => ({
+                          value: m,
+                          label: modelNameAcrossProviders(config.providers, m),
+                        })),
+                      ]}
+                      className="text-sm rounded px-2 py-1 w-[200px] flex-shrink-0"
                       style={{
                         color: "var(--text-secondary)",
                         background: "var(--input-bg)",
                         border: "1px solid var(--input-border)",
                       }}
-                    >
-                      <option value="">跟随默认模型</option>
-                      {autoNamingChoices.map((m) => (
-                        <option key={m} value={m}>
-                          {modelNameAcrossProviders(config.providers, m)}
-                        </option>
-                      ))}
-                    </select>
+                    />
                     <input
                       type="checkbox"
                       checked={autoNamingEnabled}
@@ -584,17 +578,19 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                       输入时的 AI 建议；未实现
                     </div>
                   </div>
-                  <select
+                  <DropdownSelect
                     disabled
-                    className="text-sm rounded px-2 py-1 outline-none w-[200px] flex-shrink-0"
+                    value=""
+                    onChange={() => undefined}
+                    options={[]}
+                    placeholder="未实现"
+                    className="text-sm rounded px-2 py-1 w-[200px] flex-shrink-0"
                     style={{
                       color: "var(--text-secondary)",
                       background: "var(--input-bg)",
                       border: "1px solid var(--input-border)",
                     }}
-                  >
-                    <option>未实现</option>
-                  </select>
+                  />
                 </div>
               </section>
             ) : tab === "search" ? (
@@ -718,23 +714,24 @@ function SearchConfigSection() {
           <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
             搜索服务
           </span>
-          <select
+          <DropdownSelect
             value={searchConfig.provider}
-            onChange={(e) =>
+            onChange={(v) =>
               void setSearchConfig({
-                provider: e.target.value as "tavily" | "searxng",
+                provider: v as "tavily" | "searxng",
               })
             }
-            className="text-sm rounded px-2 py-1 outline-none"
+            options={[
+              { value: "tavily", label: "Tavily API" },
+              { value: "searxng", label: "SearXNG 自建实例" },
+            ]}
+            className="text-sm rounded px-2 py-1"
             style={{
               color: "var(--text-primary)",
               background: "var(--input-bg)",
               border: "1px solid var(--input-border)",
             }}
-          >
-            <option value="tavily">Tavily API</option>
-            <option value="searxng">SearXNG 自建实例</option>
-          </select>
+          />
         </div>
         {searchConfig.provider === "tavily" ? (
           <div className="flex items-center justify-between gap-3">

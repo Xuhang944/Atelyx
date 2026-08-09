@@ -13,6 +13,7 @@ import { ChevronLeft, ChevronRight, ImagePlus, Plus, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTableStore } from "@/stores/tableStore";
 import { ImageLightbox } from "@/components/table/ImageLightbox";
+import { DropdownSelect } from "@/components/common/DropdownSelect";
 import type { TableField, TableRow } from "@/types";
 
 interface Props {
@@ -28,19 +29,14 @@ export function TableCell({ field, row }: Props) {
   if (field.type === "singleSelect") {
     const options = field.options ?? [];
     return (
-      <select
+      <DropdownSelect
         value={typeof value === "string" ? value : ""}
-        onChange={(e) => updateCell(row.id, field.id, e.target.value || undefined)}
-        className="w-full h-8 bg-transparent outline-none text-xs cursor-pointer rounded px-1.5"
+        onChange={(v) => updateCell(row.id, field.id, v || undefined)}
+        options={[{ value: "", label: "未选择" }, ...options.map((o) => ({ value: o, label: o }))]}
+        className="w-full h-8 px-1.5 text-xs"
         style={{ color: value ? "var(--text-primary)" : "var(--text-muted)" }}
-      >
-        <option value="" />
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
-      </select>
+        title={typeof value === "string" && value ? value : "未选择"}
+      />
     );
   }
   // number / duration：数字输入

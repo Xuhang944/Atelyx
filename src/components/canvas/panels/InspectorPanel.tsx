@@ -13,6 +13,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useVaultStore } from "@/stores/vaultStore";
+import { DropdownSelect } from "@/components/common/DropdownSelect";
 import { mentionTextOf, prefix } from "@/utils/text";
 import type { ConversationData, MediaData, Message, TableData, TextData } from "@/types";
 
@@ -261,26 +262,26 @@ export function InspectorPanel() {
                 暂无提示词笔记（在文件面板右键笔记 → 注册为提示词）
               </p>
             ) : (
-              <select
+              <DropdownSelect
                 value={sysPromptFile ?? ""}
-                onChange={(e) =>
-                  updateNodeData(node.id, { systemPromptFile: e.target.value || undefined })
+                onChange={(v) =>
+                  updateNodeData(node.id, { systemPromptFile: v || undefined })
                 }
-                className="w-full text-xs rounded px-1.5 py-1 outline-none focus:ring-1 focus:ring-[var(--accent)]"
+                options={[
+                  { value: "", label: "不使用" },
+                  ...promptNotes.map((n) => ({
+                    value: n.file,
+                    label: n.name.replace(/\.md$/i, ""),
+                  })),
+                ]}
+                className="w-full text-xs rounded px-1.5 py-1"
                 style={{
                   color: "var(--text-secondary)",
                   background: "var(--input-bg)",
                   border: "1px solid var(--input-border)",
                 }}
                 title="发送时实时读笔记正文作为首条 system 消息注入"
-              >
-                <option value="">不使用</option>
-                {promptNotes.map((n) => (
-                  <option key={n.file} value={n.file}>
-                    {n.name.replace(/\.md$/i, "")}
-                  </option>
-                ))}
-              </select>
+              />
             )}
           </section>
           </>

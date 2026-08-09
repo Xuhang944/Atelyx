@@ -37,6 +37,7 @@ import { ConversationAtPicker } from "./ConversationAtPicker";
 import { ConversationAttachmentTray } from "./ConversationAttachmentTray";
 import { ConnectionFrame } from "./ConnectionFrame";
 import { ThinkingBlock } from "@/components/common/ThinkingBlock";
+import { DropdownSelect } from "@/components/common/DropdownSelect";
 
 /** 模块级空数组，避免 selector 每次返回新引用导致 React 无限循环。 */
 const EMPTY_MESSAGES: never[] = [];
@@ -99,6 +100,7 @@ export function ConversationNode({ id, width, height }: NodeProps) {
     p.models.map((m) => ({
       key: `${p.id}::${m.id}`,
       label: modelDisplayName(p, m.id),
+      group: p.name,
       providerId: p.id,
       model: m.id,
     })),
@@ -701,31 +703,27 @@ export function ConversationNode({ id, width, height }: NodeProps) {
             <Globe size={13} className="flex-shrink-0" />
           </button>
           {/* 系统提示词：选择已标记的提示词笔记，发送时注入 system 消息（留空 = 不注入），样式与模型选择一致 */}
-          <select
+          <DropdownSelect
             value={sysPromptFile ?? ""}
-            onChange={(e) => {
-              const v = e.target.value;
-              updateNodeData(id, { systemPromptFile: v || undefined });
-            }}
-            className="nodrag text-xs rounded px-1 py-0.5 outline-none focus:ring-1 focus:ring-[var(--accent)] w-24"
+            onChange={(v) => updateNodeData(id, { systemPromptFile: v || undefined })}
+            options={[
+              { value: "", label: "提示词" },
+              ...promptNotes.map((n) => ({
+                value: n.file,
+                label: n.name.replace(/\.md$/i, ""),
+              })),
+            ]}
+            className="nodrag text-xs rounded px-1 py-0.5 w-24"
             style={{
               color: "var(--text-secondary)",
               background: "var(--input-bg)",
               border: "1px solid var(--input-border)",
             }}
             title="选择系统提示词（右键笔记注册，留空 = 不注入）"
-          >
-            <option value="">提示词</option>
-            {promptNotes.map((n) => (
-              <option key={n.file} value={n.file}>
-                {n.name.replace(/\.md$/i, "")}
-              </option>
-            ))}
-          </select>
-          <select
+          />
+          <DropdownSelect
             value={comboOptions.some((o) => o.key === currentComboKey) ? currentComboKey : ""}
-            onChange={(e) => {
-              const v = e.target.value;
+            onChange={(v) => {
               if (!v) {
                 // 留空 = 全部跟随仓库默认（清空节点级指定）
                 updateNodeData(id, { providerId: "", model: "" });
@@ -734,28 +732,23 @@ export function ConversationNode({ id, width, height }: NodeProps) {
               const combo = comboOptions.find((o) => o.key === v);
               if (combo) updateNodeData(id, { providerId: combo.providerId, model: combo.model });
             }}
-            className="nodrag text-xs rounded px-1 py-0.5 outline-none focus:ring-1 focus:ring-[var(--accent)] w-24"
+            options={[
+              { value: "", label: defaultModelDisplay ?? "模型" },
+              // 按供应商分组（组头 = 供应商名），模型显示昵称/原名
+              ...comboOptions.map((o) => ({
+                value: o.key,
+                label: o.label,
+                group: o.group,
+              })),
+            ]}
+            className="nodrag text-xs rounded px-1 py-0.5 w-24"
             style={{
               color: "var(--text-secondary)",
               background: "var(--input-bg)",
               border: "1px solid var(--input-border)",
             }}
             title="选择供应商与模型（留空 = 跟随默认）"
-          >
-            <option value="">{defaultModelDisplay ?? "模型"}</option>
-            {/* 按供应商分组（optgroup 组头 = 供应商名），模型显示昵称/原名 */}
-            {providers.map((p) =>
-              p.models.length ? (
-                <optgroup key={p.id} label={p.name}>
-                  {p.models.map((m) => (
-                    <option key={`${p.id}::${m.id}`} value={`${p.id}::${m.id}`}>
-                      {modelDisplayName(p, m.id)}
-                    </option>
-                  ))}
-                </optgroup>
-              ) : null
-            )}
-          </select>
+          />
         </div>
       </header>
 

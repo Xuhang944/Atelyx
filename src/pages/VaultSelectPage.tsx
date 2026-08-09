@@ -2,6 +2,7 @@ import { EllipsisVertical, Folder, FolderOpen } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useAppStore } from "@/stores/appStore";
 import { TitleBarControls } from "@/components/common/TitleBarControls";
+import { DropdownSelect } from "@/components/common/DropdownSelect";
 // 应用图标（与 src-tauri/icons/icon.svg 同源，启动页 Logo 展示）
 import appIcon from "@/assets/icon.svg";
 
@@ -107,20 +108,15 @@ export function VaultSelectPage() {
           Atelyx
         </span>
         {/* 语言（当前仅「简体中文」，无 i18n 逻辑） */}
-        <select
+        <DropdownSelect
+          value="zh"
+          onChange={() => undefined}
+          options={[{ value: "zh", label: "简体中文" }]}
+          className="ml-3 rounded-md px-2 py-1 text-xs transition-colors hover:bg-white/5"
+          style={{ color: C.textMuted }}
           aria-label="语言"
-          defaultValue="zh"
-          className="appearance-none cursor-pointer ml-3 rounded-md px-2 pr-[18px] py-1 text-xs bg-no-repeat transition-colors hover:bg-white/5"
-          style={{
-            color: C.textMuted,
-            backgroundImage:
-              "url(\"data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='rgba(255,255,255,0.4)'/%3E%3C/svg%3E\")",
-            backgroundPosition: "right 6px center",
-          }}
           data-tauri-drag-region="false"
-        >
-          <option value="zh">简体中文</option>
-        </select>
+        />
         <div className="ml-auto h-full">
           <TitleBarControls
             onMinimize={() => void minimizeWindow()}
