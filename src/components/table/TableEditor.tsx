@@ -2,7 +2,8 @@
  * 多维表格编辑器（表格视图）。
  *
  * 布局：工具条（保存状态 / 冲突条）→ 表格（列头 ⋮ 字段菜单、行 ⋮ 菜单、
- * 行首拖拽手柄插入排序、表头末尾「+」列添加字段、类型化单元格）→ 行尾「+ 新行」。
+ * 行首拖拽手柄插入排序、表头末尾「+」列添加字段、类型化单元格）→ 行尾「+ 新行」→
+ * 底部横向滑动条 → 状态栏（空占位）。
  *
  * 交互要点：
  * - 行拖拽为 pointer 模拟（HTML5 DnD 在 WebView2 不可靠，与文件面板同策略）：
@@ -418,15 +419,23 @@ export function TableEditor() {
         </div>
         </div>
 
-        {/* 底部横向滑动条：与表格横向滚动双向同步（常显，防视图切换后消失） */}
+        {/* 底部横向滑动条：与表格横向滚动双向同步（常显，防视图切换后消失）。
+            高度 = border 1px + 轨道 6px + 内容余量 1px——轨道紧贴横隔线且内容高度 ≥ 1px，
+            否则 Chromium 水平滚动条内容区为 0 时 scrollWidth 塌陷、滚动失效 */}
         <div
           ref={bottomScrollRef}
           onScroll={onBottomScroll}
           className="overflow-x-auto flex-shrink-0 border-t"
-          style={{ borderColor: "var(--border)", height: 14 }}
+          style={{ borderColor: "var(--border)", height: 8 }}
         >
-          <div style={{ width: totalWidth + 8, height: 1 }} />
+          <div style={{ width: totalWidth + 8, height: "100%" }} />
         </div>
+
+        {/* 状态栏（空占位） */}
+        <div
+          className="flex-shrink-0 border-t px-3 h-6 flex items-center"
+          style={{ borderColor: "var(--border)", color: "var(--text-muted)" }}
+        />
         </>
       )}
 
