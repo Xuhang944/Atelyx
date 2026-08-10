@@ -1,7 +1,7 @@
 /**
  * 多维表格（.atb）相关常量。
  */
-import type { FieldType } from "@/types/table";
+import type { CalcType, FieldType } from "@/types/table";
 
 /** `.atb` 文件 schema 版本号（Rust 侧 `vault.rs` 有同名常量，两端须保持一致）。 */
 export const TABLE_SCHEMA = "atelyx-table/v1" as const;
@@ -16,6 +16,24 @@ export const FIELD_TYPE_LABELS: Record<FieldType, string> = {
   duration: "时长（秒）",
   singleSelect: "单选",
   image: "图片",
+};
+
+/** 状态栏自动计算类型显示名。 */
+export const CALC_TYPE_LABELS: Record<CalcType, string> = {
+  sum: "求和",
+  avg: "平均",
+  max: "最大",
+  min: "最小",
+  count: "计数",
+};
+
+/** 各字段类型可用的自动计算（数字类统计，其余计数非空值）。 */
+export const CALC_TYPES_BY_FIELD: Record<FieldType, CalcType[]> = {
+  number: ["sum", "avg", "max", "min", "count"],
+  duration: ["sum", "avg", "max", "min", "count"],
+  text: ["count"],
+  singleSelect: ["count"],
+  image: ["count"],
 };
 
 /** 时间线卡片宽度：每秒时长对应的 px。 */

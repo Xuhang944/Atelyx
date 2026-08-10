@@ -83,6 +83,7 @@ export {
 
 export type {
   FieldType,
+  CalcType,
   CellValue,
   TableField,
   TableRow,

@@ -405,6 +405,10 @@ pub struct TableField {
     /// 用户拖拽调整后的列宽（px；缺省 = 前端按字段名自适应）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<f64>,
+    /// 状态栏列自动计算类型（sum/avg/max/min/count；缺省 = 无计算）。
+    /// 必须在此显式声明，否则 serde 反序列化会丢弃前端传来的该字段，写盘丢失。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calc_type: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

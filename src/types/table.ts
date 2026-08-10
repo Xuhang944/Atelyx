@@ -9,6 +9,9 @@ import type { TABLE_SCHEMA } from "@/constants/table";
 /** 字段类型（file 类型二期预留——渲染遇未知类型一律降级为只读文本，前向兼容）。 */
 export type FieldType = "text" | "number" | "duration" | "singleSelect" | "image";
 
+/** 状态栏列自动计算类型。 */
+export type CalcType = "sum" | "avg" | "max" | "min" | "count";
+
 /** 单元格值：text/singleSelect = string；number/duration = number（秒）；image = dataURL 数组（多图）。 */
 export type CellValue = string | number | string[];
 
@@ -20,6 +23,8 @@ export interface TableField {
   options?: string[];
   /** 用户拖拽调整后的列宽（px）；缺省 = 按字段名称字数自适应。 */
   width?: number;
+  /** 状态栏自动计算类型（缺省 = 无计算；随 .atb 持久化）。 */
+  calcType?: CalcType;
 }
 
 export interface TableRow {

@@ -44,6 +44,7 @@ pub fn create_table_vault(
             field_type: "text".to_string(),
             options: None,
             width: None,
+            calc_type: None,
         }],
         rows: vec![],
         created_at: now,

@@ -1,8 +1,12 @@
 /**
- * 表格内容 → 注入文本快照（表格节点摘要展示 / 注入对话上下文共用）。
+ * 表格工具纯函数：列宽自适应、内容快照注入、AI 填行解析、状态栏列自动计算。
  *
- * 行限 `MAX_TABLE_INJECT_ROWS`（防超长上下文）；image 值 → `[图 N 张]`；
- * 多行文本压成单行空格（保持注入文本紧凑）；超出行数截断标注。
+ * - `fieldDefaultWidth`：列宽按字段名自适应（CJK 双宽，钳制 [MIN_COL_WIDTH, MAX_COL_WIDTH]）。
+ * - `tableToSnapshotText`：表格 → 注入文本快照（行限 `MAX_TABLE_INJECT_ROWS`；image → `[图 N 张]`；
+ *   多行文本压单行空格；超行数截断标注）。
+ * - `parseFillRows`：LLM 填行输出 → 行数据（剥 code fence → 截 `[`..`]` → JSON.parse，字段按名称
+ *   匹配 + 类型强转兜底，image 不产出；失败返回空数组由调用方报错重试）。
+ * - `computeColumnCalc`：按字段 calcType 统计全列，返回显示文本（数字统计 / 非空计数）。
  */
 import { MAX_TABLE_INJECT_ROWS, MAX_COL_WIDTH, MIN_COL_WIDTH } from "@/constants/table";
 import type { CellValue, TableField, TableFile, TableRow } from "@/types";
@@ -85,4 +89,41 @@ export function parseFillRows(raw: string, fields: TableField[]): TableRow[] {
     rows.push({ id: crypto.randomUUID(), values });
   }
   return rows;
+}
+
+/** 单元格是否为「非空值」（count 计算口径；image 按数组非空，text/singleSelect 按非空串）。 */
+function isNonEmptyValue(v: CellValue): boolean {
+  if (typeof v === "number") return true;
+  if (Array.isArray(v)) return v.length > 0;
+  return v.trim() !== "";
+}
+
+/** 数值显示：整数原样，小数保留两位去尾 0。 */
+function formatCalcNumber(n: number): string {
+  return Number.isInteger(n) ? String(n) : String(Math.round(n * 100) / 100);
+}
+
+/**
+ * 状态栏列自动计算：按字段 calcType 对全列取值统计，返回显示文本（未设 calcType 返回 null）。
+ * sum/count 无数据时为 0；avg/max/min 无数据时为「—」（避免误导性平均值）。
+ */
+export function computeColumnCalc(field: TableField, rows: TableRow[]): string | null {
+  const type = field.calcType;
+  if (!type) return null;
+  const values = rows
+    .map((r) => r.values[field.id])
+    .filter((v): v is CellValue => v !== undefined && v !== null);
+  if (type === "count") return formatCalcNumber(values.filter(isNonEmptyValue).length);
+  const nums = values.filter((v): v is number => typeof v === "number");
+  switch (type) {
+    case "sum":
+      return formatCalcNumber(nums.reduce((acc, n) => acc + n, 0));
+    case "avg":
+      return nums.length > 0 ? formatCalcNumber(nums.reduce((a, b) => a + b, 0) / nums.length) : "—";
+    case "max":
+      return nums.length > 0 ? formatCalcNumber(Math.max(...nums)) : "—";
+    case "min":
+      return nums.length > 0 ? formatCalcNumber(Math.min(...nums)) : "—";
+  }
+  return null;
 }

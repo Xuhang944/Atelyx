@@ -7,7 +7,7 @@
  * title 变更走 `vaultStore.renameTable`（Rust 改文件名 + 同步画布引用），本 store 不直接改 title。
  */
 import { create } from "zustand";
-import { TABLE_SCHEMA } from "@/constants/table";
+import { CALC_TYPES_BY_FIELD, TABLE_SCHEMA } from "@/constants/table";
 import {
   exportTableXlsx,
   readExternalImageDataUrl,
@@ -19,7 +19,7 @@ import { pickFile, saveFile } from "@/services/dialog";
 import { markSelfSave } from "@/stores/canvasStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { parseFillRows } from "@/utils/table";
-import type { CellValue, FieldType, Message, TableField, TableRow } from "@/types";
+import type { CalcType, CellValue, FieldType, Message, TableField, TableRow } from "@/types";
 
 /** AI 填行 system 提示词：字段定义内联 + 严格 JSON 数组输出约束。 */
 const FILL_ROWS_SYSTEM_PROMPT = `你是表格数据填充助手。根据字段定义与用户提供的对话内容，生成表格行数据。
@@ -91,6 +91,8 @@ interface TableStoreState {
   setFieldOptions: (fieldId: string, options: string[]) => void;
   /** 拖拽调整列宽（px，随 .atb 持久化；缺省 = 按字段名自适应）。 */
   setFieldWidth: (fieldId: string, width: number) => void;
+  /** 设置状态栏列自动计算类型（缺省 = 无计算）。 */
+  setCalcType: (fieldId: string, calcType: CalcType | undefined) => void;
   removeField: (fieldId: string) => void;
   addRow: () => void;
   duplicateRow: (rowId: string) => void;
@@ -359,7 +361,13 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
 
   retypeField: (fieldId, type) => {
     set((s) => ({
-      fields: s.fields.map((f) => (f.id === fieldId ? { ...f, type } : f)),
+      fields: s.fields.map((f) => {
+        if (f.id !== fieldId) return f;
+        // 改类型后原 calcType 可能不适用（如数字列求和 → 文本列），残留会产生误导统计，一并清除
+        const calcType =
+          f.calcType && CALC_TYPES_BY_FIELD[type].includes(f.calcType) ? f.calcType : undefined;
+        return { ...f, type, calcType };
+      }),
     }));
     schedulePersist();
   },
@@ -374,6 +382,13 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   setFieldWidth: (fieldId, width) => {
     set((s) => ({
       fields: s.fields.map((f) => (f.id === fieldId ? { ...f, width } : f)),
+    }));
+    schedulePersist();
+  },
+
+  setCalcType: (fieldId, calcType) => {
+    set((s) => ({
+      fields: s.fields.map((f) => (f.id === fieldId ? { ...f, calcType } : f)),
     }));
     schedulePersist();
   },

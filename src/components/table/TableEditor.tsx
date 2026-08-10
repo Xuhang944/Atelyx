@@ -3,23 +3,25 @@
  *
  * 布局：工具条（保存状态 / 冲突条）→ 表格（列头 ⋮ 字段菜单、行 ⋮ 菜单、
  * 行首拖拽手柄插入排序、表头末尾「+」列添加字段、类型化单元格）→ 行尾「+ 新行」→
- * 底部横向滑动条 → 状态栏（空占位）。
+ * 底部横向滑动条 → 状态栏（列自动计算，整格点击选类型 + 实时结果）。
  *
  * 交互要点：
  * - 行拖拽为 pointer 模拟（HTML5 DnD 在 WebView2 不可靠，与文件面板同策略）：
  *   行首手柄按下 → 位移超 5px 激活 → 按行元素中点计算插入位（金色插入线指示）→ 松手 moveRow。
  * - 字段菜单：重命名 / 改类型 / 单选选项管理 / 左·右插入字段 / 删除字段（就地确认）。
+ * - 状态栏：每列整格 hover 高亮可点击（未设置留空），弹出计算类型菜单（固定向上弹出，
+ *   底边贴点击位置不遮住点击处）；已设置列居中显示「类型 + 结果」。
  * - 保存状态/冲突提示镜像画布窗口（冲突条「重新加载（丢弃本地）/ 保留本地并保存」）。
  */
-import { Check, Columns3, FileOutput, GripVertical, MoreHorizontal, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Check, Columns3, FileOutput, GripVertical, MoreHorizontal, Pencil, Plus, Sigma, Trash2, X } from "lucide-react";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useClampedMenuPosition } from "@/hooks/useClampedMenuPosition";
 import { useDismissOnOutside } from "@/hooks/useDismissOnOutside";
-import { FIELD_TYPE_LABELS } from "@/constants/table";
+import { CALC_TYPE_LABELS, CALC_TYPES_BY_FIELD, FIELD_TYPE_LABELS } from "@/constants/table";
 import { useTableStore } from "@/stores/tableStore";
 import { TableCell } from "@/components/table/TableCell";
 import { TableTimeline } from "@/components/table/TableTimeline";
-import { fieldDefaultWidth } from "@/utils/table";
+import { computeColumnCalc, fieldDefaultWidth } from "@/utils/table";
 import { MAX_COL_WIDTH, MIN_COL_WIDTH, ROW_NUM_COL_WIDTH, ADD_FIELD_COL_WIDTH } from "@/constants/table";
 import type { FieldType, TableField } from "@/types";
 
@@ -47,10 +49,11 @@ export function TableEditor() {
     return () => clearTimeout(t);
   }, [exported]);
 
-  // 字段菜单 / 行菜单 / 添加字段浮层
+  // 字段菜单 / 行菜单 / 添加字段浮层 / 状态栏计算菜单
   const [fieldMenu, setFieldMenu] = useState<{ fieldId: string; x: number; y: number } | null>(null);
   const [rowMenu, setRowMenu] = useState<{ rowId: string; x: number; y: number } | null>(null);
   const [addFieldMenu, setAddFieldMenu] = useState<{ x: number; y: number } | null>(null);
+  const [statMenu, setStatMenu] = useState<{ fieldId: string; x: number; y: number } | null>(null);
 
   // ===== 行拖拽插入排序（pointer 模拟）=====
   const dragRef = useRef<{ rowId: string; startX: number; startY: number; active: boolean } | null>(null);
@@ -150,8 +153,9 @@ export function TableEditor() {
    *  其他列不挤压（border-collapse + table-fixed 无显式宽度时引擎会撑满容器并重分配）。 */
   const totalWidth = ROW_NUM_COL_WIDTH + fields.reduce((acc, f) => acc + widthOf(f), 0) + ADD_FIELD_COL_WIDTH;
 
-  // ===== 底部横向滑动条：与表格横向滚动双向同步（常显；宽度 = 表格总宽 + 边框余量）=====
+  // ===== 底部横向滑动条 + 状态栏：与表格横向滚动双向同步（常显；宽度 = 表格总宽 + 边框余量）=====
   const bottomScrollRef = useRef<HTMLDivElement>(null);
+  const statBarRef = useRef<HTMLDivElement>(null);
   const syncScroll = (from: HTMLElement, to: HTMLElement) => {
     if (from.scrollLeft !== to.scrollLeft) to.scrollLeft = from.scrollLeft;
   };
@@ -159,10 +163,18 @@ export function TableEditor() {
     if (rowsElRef.current && bottomScrollRef.current) {
       syncScroll(rowsElRef.current, bottomScrollRef.current);
     }
+    if (rowsElRef.current && statBarRef.current) {
+      syncScroll(rowsElRef.current, statBarRef.current);
+    }
   };
   const onBottomScroll = () => {
     if (bottomScrollRef.current && rowsElRef.current) {
       syncScroll(bottomScrollRef.current, rowsElRef.current);
+    }
+  };
+  const onStatBarScroll = () => {
+    if (statBarRef.current && rowsElRef.current) {
+      syncScroll(statBarRef.current, rowsElRef.current);
     }
   };
 
@@ -431,11 +443,47 @@ export function TableEditor() {
           <div style={{ width: totalWidth + 8, height: "100%" }} />
         </div>
 
-        {/* 状态栏（空占位） */}
+        {/* 状态栏：列自动计算（整格点击选择计算类型，hover 高亮，内容居中，横向滚动与表格同步） */}
         <div
-          className="flex-shrink-0 border-t px-3 h-6 flex items-center"
-          style={{ borderColor: "var(--border)", color: "var(--text-muted)" }}
-        />
+          ref={statBarRef}
+          onScroll={onStatBarScroll}
+          className="flex-shrink-0 border-t overflow-x-auto no-horizontal-scrollbar h-8"
+          style={{ borderColor: "var(--border)" }}
+        >
+          {/* h-full：容器 h-8 固定高，内部 flex 无此会塌陷为内容高（items-stretch 只管它的子项），内容贴顶留白 */}
+          <div className="flex h-full items-stretch" style={{ width: totalWidth }}>
+            <div
+              className="flex-shrink-0 flex items-center justify-center border-r"
+              style={{ width: ROW_NUM_COL_WIDTH, color: "var(--text-muted)", borderColor: "var(--border)" }}
+              title="列自动计算"
+            >
+              <Sigma size={13} />
+            </div>
+            {fields.map((f) => {
+              const result = computeColumnCalc(f, rows);
+              return (
+                <div
+                  key={f.id}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setStatMenu({ fieldId: f.id, x: rect.left, y: rect.top });
+                  }}
+                  className="flex-shrink-0 flex items-center justify-center px-1.5 border-r cursor-pointer transition-colors hover:bg-[var(--hover)]"
+                  style={{ width: widthOf(f), borderColor: "var(--border)" }}
+                  title={f.calcType ? `${CALC_TYPE_LABELS[f.calcType]}：${result ?? "—"}` : "选择计算类型"}
+                >
+                  {result !== null && (
+                    <span className="truncate text-xs" style={{ color: "var(--text-primary)" }} title={result}>
+                      {f.calcType ? `${CALC_TYPE_LABELS[f.calcType]} ${result}` : result}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+            <div className="flex-shrink-0" style={{ width: ADD_FIELD_COL_WIDTH }} />
+          </div>
+        </div>
         </>
       )}
 
@@ -460,6 +508,15 @@ export function TableEditor() {
       {/* 添加字段浮层 */}
       {addFieldMenu && (
         <AddFieldMenu x={addFieldMenu.x} y={addFieldMenu.y} onClose={() => setAddFieldMenu(null)} />
+      )}
+      {/* 状态栏计算类型菜单 */}
+      {statMenu && (
+        <StatMenu
+          field={fields.find((f) => f.id === statMenu.fieldId)}
+          x={statMenu.x}
+          y={statMenu.y}
+          onClose={() => setStatMenu(null)}
+        />
       )}
     </div>
   );
@@ -771,6 +828,74 @@ function AddFieldMenu({ x, y, onClose }: { x: number; y: number; onClose: () => 
           添加
         </button>
       </div>
+    </div>
+  );
+}
+
+/** 状态栏计算类型菜单：无 + 字段类型可用计算（当前项 accent + Check）。
+ *  固定向上弹出（bottom 定位，底边贴点击位置上方不遮住点击处），左边缘对齐点击单元格，右缘视口钳制。 */
+function StatMenu({
+  field,
+  x,
+  y,
+  onClose,
+}: {
+  field: TableField | undefined;
+  x: number;
+  y: number;
+  onClose: () => void;
+}) {
+  const setCalcType = useTableStore((s) => s.setCalcType);
+  const menuRef = useDismissOnOutside(onClose);
+
+  if (!field) return null;
+
+  // 左边缘对齐点击单元格，右缘不溢出视口（w-24 = 96px + 4px 边距）
+  const left = Math.max(4, Math.min(x, window.innerWidth - 96 - 4));
+  // 菜单估算高 ~200px（最多 6 项）：上方空间不足（状态栏贴近窗口顶）时贴视口顶展开，保证选项可达
+  const bottom = Math.min(window.innerHeight - y + 4, window.innerHeight - 4 - 200);
+
+  const itemClass =
+    "w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)] inline-flex items-center justify-between";
+
+  return (
+    <div
+      ref={menuRef}
+      className="fixed border rounded shadow-lg py-1 z-50 w-24"
+      style={{
+        left,
+        bottom,
+        background: "var(--bg-secondary)",
+        borderColor: "var(--border)",
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      <button
+        className={itemClass}
+        style={{ color: field.calcType ? "var(--text-primary)" : "var(--accent)" }}
+        onClick={() => {
+          setCalcType(field.id, undefined);
+          onClose();
+        }}
+      >
+        <span>无</span>
+        {!field.calcType && <Check size={12} />}
+      </button>
+      {CALC_TYPES_BY_FIELD[field.type]?.map((t) => (
+        <button
+          key={t}
+          className={itemClass}
+          style={{ color: field.calcType === t ? "var(--accent)" : "var(--text-primary)" }}
+          onClick={() => {
+            setCalcType(field.id, t);
+            onClose();
+          }}
+        >
+          <span>{CALC_TYPE_LABELS[t]}</span>
+          {field.calcType === t && <Check size={12} />}
+        </button>
+      ))}
     </div>
   );
 }
