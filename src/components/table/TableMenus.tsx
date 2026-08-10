@@ -242,6 +242,8 @@ export function ColumnMenu({
     <Menu x={x} y={y} onClose={onClose} widthClass="w-44" repositionDeps={[mode]} stopPointerDown>
       <MenuItem
         onClick={() => {
+          // 菜单触发的自适应 = 单次撤销单元（拖拽路径在首次实际变化时入栈，这里显式入栈）
+          useTableStore.getState().pushUndo();
           setFieldWidth(field.id, columnAutoWidth(field, rows));
           onClose();
         }}
@@ -363,12 +365,14 @@ export function SelectAllMenu({ x, y, onClose }: { x: number; y: number; onClose
   const fields = useTableStore((s) => s.fields);
   const rows = useTableStore((s) => s.rows);
   const setFieldWidth = useTableStore((s) => s.setFieldWidth);
-  const clearRowHeight = useTableStore((s) => s.clearRowHeight);
+  const clearAllRowHeights = useTableStore((s) => s.clearAllRowHeights);
 
   return (
     <Menu x={x} y={y} onClose={onClose} widthClass="w-44" stopPointerDown>
       <MenuItem
         onClick={() => {
+          // 整表自适应 = 单次撤销单元（批量入栈一次，防每列一个撤销单元）
+          useTableStore.getState().pushUndo();
           for (const f of fields) setFieldWidth(f.id, columnAutoWidth(f, rows));
           onClose();
         }}
@@ -378,7 +382,7 @@ export function SelectAllMenu({ x, y, onClose }: { x: number; y: number; onClose
       </MenuItem>
       <MenuItem
         onClick={() => {
-          for (const r of rows) clearRowHeight(r.id);
+          clearAllRowHeights();
           onClose();
         }}
         title="清除全部手动行高，恢复按内容自然撑开"

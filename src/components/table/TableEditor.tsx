@@ -136,10 +136,28 @@ export function TableEditor({ areaId }: { areaId: string }) {
     dragRef.current = { rowId, startX: e.clientX, startY: e.clientY, active: false };
   }, []);
 
-  // ===== 选中单元格后打字 = 覆盖编辑（全局键盘监听；单击仅选中不聚焦，字符键直达覆盖）=====
+  // ===== 选中单元格后打字 = 覆盖编辑 + Ctrl+Z/Y 撤销/重做（全局键盘监听；单击仅选中不聚焦，字符键直达覆盖）=====
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) {
+        // 撤销/重做：仅表格面积聚焦时生效（同画布快捷键门控惯例）；编辑框聚焦也接管
+        // （受控 input/textarea 原生撤销不可靠，整编辑会话一步撤销与 Esc 放弃编辑互补）
+        const ctrl = e.ctrlKey || e.metaKey;
+        if (ctrl && !e.altKey && focusedAreaId === areaId) {
+          const key = e.key.toLowerCase();
+          if (key === "z" && !e.shiftKey) {
+            e.preventDefault();
+            useTableStore.getState().undo();
+            return;
+          }
+          if (key === "y" || (key === "z" && e.shiftKey)) {
+            e.preventDefault();
+            useTableStore.getState().redo();
+            return;
+          }
+        }
+        return;
+      }
       if (e.key === "Escape" || e.key === "Enter" || e.key === "Tab" || e.key === "Backspace" || e.key === "Delete") return;
       if (e.key.startsWith("Arrow") || e.key === "Home" || e.key === "End" || e.key === "PageUp" || e.key === "PageDown") return;
       if (/^F\d{1,2}$/.test(e.key)) return;
@@ -178,6 +196,8 @@ export function TableEditor({ areaId }: { areaId: string }) {
     | { kind: "row"; rowId: string; startY: number; startHeight: number }
     | null
   >(null);
+  /** 拖拽是否已入栈（首次实际变化才 push，点击未拖动不产生空撤销单元）。 */
+  const pushedRef = useRef(false);
   const setFieldWidth = useTableStore((s) => s.setFieldWidth);
   const setRowHeight = useTableStore((s) => s.setRowHeight);
   useEffect(() => {
@@ -188,16 +208,26 @@ export function TableEditor({ areaId }: { areaId: string }) {
         const width = Math.round(
           Math.max(MIN_COL_WIDTH, Math.min(MAX_COL_WIDTH, r.startWidth + (e.clientX - r.startX))),
         );
+        // 拖拽会话首次实际变化才入栈（期间连续调整合并为一步撤销）
+        if (!pushedRef.current && width !== r.startWidth) {
+          useTableStore.getState().pushUndo();
+          pushedRef.current = true;
+        }
         setFieldWidth(r.fieldId, width);
       } else {
         const height = Math.round(
           Math.max(MIN_ROW_HEIGHT, Math.min(MAX_ROW_HEIGHT, r.startHeight + (e.clientY - r.startY))),
         );
+        if (!pushedRef.current && height !== r.startHeight) {
+          useTableStore.getState().pushUndo();
+          pushedRef.current = true;
+        }
         setRowHeight(r.rowId, height);
       }
     };
     const onUp = () => {
       resizeRef.current = null;
+      pushedRef.current = false;
       document.body.style.cursor = "";
     };
     document.addEventListener("pointermove", onMove);
@@ -219,6 +249,7 @@ export function TableEditor({ areaId }: { areaId: string }) {
       startX: e.clientX,
       startWidth: field.width ?? fieldDefaultWidth(field.name),
     };
+    pushedRef.current = false;
     document.body.style.cursor = "col-resize";
   }, []);
 
@@ -234,6 +265,7 @@ export function TableEditor({ areaId }: { areaId: string }) {
       startY: e.clientY,
       startHeight: row.height ?? el?.offsetHeight ?? MIN_ROW_HEIGHT,
     };
+    pushedRef.current = false;
     document.body.style.cursor = "row-resize";
   }, []);
 

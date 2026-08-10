@@ -38,6 +38,26 @@ function useOverwriteRequest(
   }, [overwriteTarget, rowId, fieldId, clearOverwriteTarget, setDraft, setEditing]);
 }
 
+/**
+ * 撤销回退本单元格的编辑会话后，把草稿同步为撤销后的 store 值（防失焦提交把已撤销内容写回）。
+ * 用布尔 selector 订阅：仅当「本次撤销弹掉的是本单元格会话入口」时由 false→true 触发，
+ * 其余单元格 selector 恒为 false（原始值比较稳定，zustand 不通知）——避免撤销时全表 effect 风暴。
+ */
+function useDraftSyncOnUndo(
+  rowId: string,
+  fieldId: string,
+  setDraft: (v: string) => void,
+): void {
+  const isResetTarget = useTableStore(
+    (s) => s.undoResetCell?.rowId === rowId && s.undoResetCell?.fieldId === fieldId,
+  );
+  useEffect(() => {
+    if (!isResetTarget) return;
+    const v = useTableStore.getState().rows.find((r) => r.id === rowId)?.values[fieldId];
+    setDraft(typeof v === "string" ? v : "");
+  }, [isResetTarget, rowId, fieldId, setDraft]);
+}
+
 interface Props {
   field: TableField;
   row: TableRow;
@@ -53,7 +73,13 @@ export function TableCell({ field, row }: Props) {
     return (
       <DropdownSelect
         value={typeof value === "string" ? value : ""}
-        onChange={(v) => updateCell(row.id, field.id, v || undefined)}
+        onChange={(v) => {
+          const next = v || undefined;
+          // 未变化不提交（防无意义写盘 + 空撤销单元）；单次选择 = 一步撤销
+          if (next === value) return;
+          useTableStore.getState().pushUndo();
+          updateCell(row.id, field.id, next);
+        }}
         options={[{ value: "", label: "未选择" }, ...options.map((o) => ({ value: o, label: o }))]}
         className="w-full h-8 px-1.5 text-xs"
         style={{ color: value ? "var(--text-primary)" : "var(--text-muted)" }}
@@ -86,6 +112,7 @@ function TextCell({
   const ref = useRef<HTMLTextAreaElement>(null);
   // 选中单元格后打字 → 覆盖编辑（清空原值，新内容直接覆盖）
   useOverwriteRequest(row.id, field.id, setDraft, setEditing);
+  useDraftSyncOnUndo(row.id, field.id, setDraft);
 
   useEffect(() => {
     if (editing) {
@@ -107,11 +134,17 @@ function TextCell({
           onBlur={() => {
             setEditing(false);
             // diff 后才写：失焦未改动不置脏（避免无谓写盘，同 TextNode 惯例）；
-            // 保留原文首尾空白（文本即真相，不 trim）
-            if (draft !== value) updateCell(row.id, field.id, draft || undefined);
+            // 保留原文首尾空白（文本即真相，不 trim）；有改动提交会话（撤销单元保留），无改动丢弃
+            if (draft !== value) {
+              useTableStore.getState().commitCellEdit();
+              updateCell(row.id, field.id, draft || undefined);
+            } else {
+              useTableStore.getState().abortCellEdit();
+            }
           }}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
+              useTableStore.getState().abortCellEdit();
               setDraft(value);
               setEditing(false);
             }
@@ -131,6 +164,8 @@ function TextCell({
       style={{ color: "var(--text-primary)", maxHeight: row.height ?? undefined }}
       onDoubleClick={(e) => {
         e.preventDefault(); // 阻止双击默认选词选区闪现
+        // 编辑会话开始（提交时才确认撤销单元，Esc/无改动不产生空撤销）
+        useTableStore.getState().beginCellEdit(row.id, field.id);
         setDraft(value);
         setEditing(true);
       }}
@@ -156,6 +191,7 @@ function NumberCell({
   const ref = useRef<HTMLInputElement>(null);
   // 选中单元格后打字 → 覆盖编辑（清空原值，新内容直接覆盖）
   useOverwriteRequest(row.id, field.id, setDraft, setEditing);
+  useDraftSyncOnUndo(row.id, field.id, setDraft);
 
   useEffect(() => {
     if (editing) ref.current?.focus();
@@ -165,11 +201,27 @@ function NumberCell({
     setEditing(false);
     const v = draft.trim();
     if (v === "") {
-      updateCell(row.id, field.id, undefined);
+      // 空 = 清空；已是空则不提交（无意义写盘 + 误清 redo），中止会话丢弃空撤销单元
+      if (value !== undefined) {
+        useTableStore.getState().commitCellEdit();
+        updateCell(row.id, field.id, undefined);
+      } else {
+        useTableStore.getState().abortCellEdit();
+      }
     } else {
       const n = Number(v);
-      if (!Number.isNaN(n)) updateCell(row.id, field.id, n);
-      else setDraft(value !== undefined ? String(value) : "");
+      if (!Number.isNaN(n)) {
+        if (n !== value) {
+          useTableStore.getState().commitCellEdit();
+          updateCell(row.id, field.id, n);
+        } else {
+          useTableStore.getState().abortCellEdit();
+        }
+      } else {
+        // 非法输入：恢复原值，视为放弃编辑
+        useTableStore.getState().abortCellEdit();
+        setDraft(value !== undefined ? String(value) : "");
+      }
     }
   };
 
@@ -186,6 +238,7 @@ function NumberCell({
           onKeyDown={(e) => {
             if (e.key === "Enter") commit();
             if (e.key === "Escape") {
+              useTableStore.getState().abortCellEdit();
               setDraft(value !== undefined ? String(value) : "");
               setEditing(false);
             }
@@ -211,6 +264,8 @@ function NumberCell({
       style={{ color: "var(--text-primary)" }}
       onDoubleClick={(e) => {
         e.preventDefault(); // 阻止双击默认选词选区闪现
+        // 编辑会话开始（提交时才确认撤销单元，Esc/无改动不产生空撤销）
+        useTableStore.getState().beginCellEdit(row.id, field.id);
         setDraft(value !== undefined ? String(value) : "");
         setEditing(true);
       }}

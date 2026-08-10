@@ -28,6 +28,8 @@ import { abortAutoTitle } from "@/services/ai/autoTitle";
 import { runSearch, resultsToText } from "@/services/search";
 import { pickFile } from "@/services/dialog";
 import { findFreeSpot, pickEdgeHandles } from "@/utils/layout";
+import { createPersistController } from "@/utils/persist";
+import { createUndoManager } from "@/utils/undoStack";
 import { inferImageMime } from "@/utils/whiteboard";
 import { DEFAULT_CONVERSATION_WIDTH, DEFAULT_CONVERSATION_HEIGHT, DEFAULT_TEXT_NODE_WIDTH, DEFAULT_TEXT_NODE_HEIGHT, DEFAULT_TABLE_NODE_WIDTH, DEFAULT_TABLE_NODE_HEIGHT } from "@/constants/canvas";
 import { WEB_SEARCH_TOOL } from "@/constants/tools";
@@ -49,8 +51,6 @@ import type {
   PendingAttachment,
   SearchResultData,
 } from "@/types";
-
-const MAX_UNDO = 50;
 
 /** Undo/Redo 快照（含 messagesByConv，否则分支撤销时消息状态会撕裂） */
 interface Snapshot {
@@ -181,8 +181,6 @@ interface CanvasState {
   deleteSelected: () => void;
   /** 获取某对话节点入边引用的文本/搜索节点（send 时一次性固化注入）。 */
   getReferencedInputs: (conversationId: string) => ReferencedInput[];
-  undoStack: Snapshot[];
-  redoStack: Snapshot[];
   undo: () => void;
   redo: () => void;
   /** 保存当前快照到 undo 栈（清空 redo 栈）。内部方法，外部也可调用。 */
@@ -219,7 +217,20 @@ interface CanvasState {
   retrySearch: (nodeId: string, query: string) => Promise<void>;
 }
 
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
+// ===== Undo/Redo 栈（快照 nodes/edges/messagesByConv，深 50）=====
+// 通用快照栈（画布/表格共用工具）；快照/应用经 store 运行时状态读写。
+const undoMgr = createUndoManager<Snapshot>({
+  snapshot: () => {
+    const { nodes, edges, messagesByConv } = useCanvasStore.getState();
+    return snapshot(nodes, edges, messagesByConv);
+  },
+  apply: (entry) =>
+    useCanvasStore.setState({
+      nodes: entry.nodes,
+      edges: entry.edges,
+      messagesByConv: entry.messagesByConv,
+    }),
+});
 
 // ===== 自写回放抑制（watcher）=====
 // schedulePersist 写完成时记录时刻；watcher 收到 .atlx 事件时若在抑制窗口内则视为自我回放，
@@ -240,22 +251,19 @@ export function markSelfSave(): void {
 /** 非 pushUndo 的数据变更后调用：作废 redo 栈。
  * 标准撤销语义——undo 后产生任何新变更，Ctrl+Y 不得再恢复旧快照（否则新消息会被 redo 从内存与磁盘抹掉）。 */
 function touchRedo(): void {
-  useCanvasStore.setState({ redoStack: [] });
+  undoMgr.touchRedo();
 }
-
-/** 变更代数：schedulePersist 时递增，persistNow 写盘期间有新变更则保留 dirty（防成功回调吞掉新编辑）。 */
-let persistVersion = 0;
 
 /**
  * 立即持久化当前画布（flush 与保存 timer 共用；timer 回调里读最新 state，
  * 确保流式完成时 onDone 触发的保存拿到最终消息内容）。
- * 返回是否写盘；写入失败/冲突返回 false。
+ * 写盘期间若又有新变更（persistCtl.version 已变）则保留 dirty，由下一轮 timer 再写。
  */
-async function persistNow(): Promise<boolean> {
-  const version = persistVersion;
+async function persistNow(): Promise<void> {
+  const versionAtStart = persistCtl.version;
   const { canvasId, canvasFile, canvasTitle, nodes, edges, messagesByConv, baseUpdatedAt } =
     useCanvasStore.getState();
-  if (!canvasId || !canvasFile) return false;
+  if (!canvasId || !canvasFile) return;
   try {
     const newUpdatedAt = await persistCanvasVault(
       canvasId,
@@ -270,27 +278,31 @@ async function persistNow(): Promise<boolean> {
     // 竞态守卫：await 期间可能已切换画布/清空状态（load 异步读盘），旧画布的写盘结果
     // 不得覆盖新画布的乐观锁基准/脏标记（否则新画布下次保存被误判冲突、脏编辑被吞）
     const cur = useCanvasStore.getState();
-    if (cur.canvasId !== canvasId || cur.canvasFile !== canvasFile) return true;
-    if (version !== persistVersion) {
+    if (cur.canvasId !== canvasId || cur.canvasFile !== canvasFile) return;
+    if (persistCtl.version !== versionAtStart) {
       // 写盘期间有新变更（已挂新 timer）：保留 dirty，由下一轮 timer 再写盘，防本次成功吞掉新编辑
       useCanvasStore.setState({ saving: false });
-      return true;
+      return;
     }
     // 同步乐观锁基准为本次写入的磁盘版本，避免下次保存误判冲突
     useCanvasStore.setState({ error: null, dirty: false, saving: false, baseUpdatedAt: newUpdatedAt });
-    return true;
   } catch (e) {
     useCanvasStore.setState({ saving: false });
     if (typeof e === "string" && e.includes("已被外部修改")) {
       // 乐观锁冲突：不覆盖磁盘，提示用户重载（本地改动保留在内存供查看）
       useCanvasStore.setState({ conflictPending: true });
-      return false;
+    } else {
+      console.error("自动保存失败", e);
+      useCanvasStore.setState({ error: "自动保存失败，请检查磁盘空间或权限" });
     }
-    console.error("自动保存失败", e);
-    useCanvasStore.setState({ error: "自动保存失败，请检查磁盘空间或权限" });
-    return false;
   }
 }
+
+/** 防抖持久化控制器：timer 管理 + 代数防吞统一在此（各 store 共用工具）。 */
+const persistCtl = createPersistController({
+  persist: persistNow,
+  beforeSchedule: () => useCanvasStore.setState({ saving: true, dirty: true }),
+});
 
 /**
  * debounce 500ms 持久化画布到仓库（拓扑 + messages 整体写 .atlx，text 正文写 .md）。
@@ -299,13 +311,7 @@ function schedulePersist() {
   // 只读画布（外部白板格式）永不落盘：内容来自原 .canvas 文件，本应用不写该格式
   const { readOnly, canvasId, canvasFile } = useCanvasStore.getState();
   if (readOnly || !canvasId || !canvasFile) return;
-  if (saveTimer) clearTimeout(saveTimer);
-  persistVersion++;
-  useCanvasStore.setState({ saving: true, dirty: true });
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    void useCanvasStore.getState().flush();
-  }, 500);
+  persistCtl.schedule();
 }
 
 /** 边锚点自适应：按两节点中心相对方位重写 handle（与 ConnectionFrame 命名对齐）。 */
@@ -688,11 +694,9 @@ function snapshot(
   edges: Edge[],
   messagesByConv: Record<string, Message[]>
 ): Snapshot {
-  return {
-    nodes: structuredClone(nodes),
-    edges: structuredClone(edges),
-    messagesByConv: structuredClone(messagesByConv),
-  };
+  // 不可变更新保证引用即快照（零拷贝）：store 每次变更生成新数组/新消息对象，
+  // 历史引用不会被污染——深拷贝只会拖慢每次撤销/入栈（大画布 + 长对话尤甚）
+  return { nodes, edges, messagesByConv };
 }
 
 export const useCanvasStore = create<CanvasState>((set, get) => ({
@@ -713,15 +717,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   dirty: false,
   conflictPending: false,
   baseUpdatedAt: 0,
-  undoStack: [],
-  redoStack: [],
   load: async (file) => {
-    // 切换画布前先取消未落盘的保存定时器：timer 回调读最新 state（canvasId 已是新画布），
-    // 不清会导致旧画布最后改动丢失且新画布被意外保存（P0 数据丢失）
-    if (saveTimer) {
-      clearTimeout(saveTimer);
-      saveTimer = null;
-    }
+    // 切换画布前先落盘旧画布未保存改动（防 debounce 窗口内丢改动；无脏不写）。
+    // 仅 cancel 不够：500ms 窗口内的编辑会随切换丢失；flush 内部已清保存 timer，
+    // 防残留 timer 用新画布状态写旧画布文件（P0 数据丢失）
+    await get().flush();
     // 中止旧画布进行中的流：abort 后 onDone 只清流式标志，不再向新画布写增量
     abortAllStreams();
     // 中止旧画布进行中的命名请求（防其后台空转/误写；与面板 load 对称）
@@ -744,11 +744,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         dirty: false,
         conflictPending: false,
         // 跨画布切换清空 undo/redo 与流式状态：快照含 messages，混用会串画布污染撤销
-        undoStack: [],
-        redoStack: [],
         streamingByConv: {},
         loading: false,
       });
+      undoMgr.clear();
       // 恢复补命名：加载后对首个未命名对话节点重试（覆盖上次命名被中断/丢失的窗口；
       // 仅补一个防并发请求轰炸模型端点）；无 title 无消息的节点由消息检查自然跳过
       if (!isWhiteboard) {
@@ -1120,10 +1119,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   },
 
   flush: async () => {
-    if (saveTimer) {
-      clearTimeout(saveTimer);
-      saveTimer = null;
-    }
     const { readOnly, dirty, canvasId, canvasFile } = get();
     if (readOnly) return false;
     if (!dirty || !canvasId || !canvasFile) {
@@ -1131,7 +1126,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       set({ saving: false });
       return false;
     }
-    return persistNow();
+    await persistCtl.flush();
+    return true;
   },
 
   mergeFromDisk: async () => {
@@ -1247,12 +1243,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   },
 
   pushUndo: () => {
-    const { nodes, edges, messagesByConv, undoStack } = get();
-    const entry = snapshot(nodes, edges, messagesByConv);
-    set({
-      undoStack: [...undoStack, entry].slice(-MAX_UNDO),
-      redoStack: [],
-    });
+    undoMgr.push();
   },
 
   send: async (conversationId, content, attachments = [], mentions = []) => {
@@ -1590,10 +1581,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   resetCanvasState: () => {
     // 删除当前画布：取消未落盘保存定时器 + 中止流，再复位全部画布态——
     // 否则残留 saveTimer 会重写已删的 .atlx、watcher 事件匹配旧 id 产生误导 reload
-    if (saveTimer) {
-      clearTimeout(saveTimer);
-      saveTimer = null;
-    }
+    persistCtl.cancel();
     abortAllStreams();
     set({
       canvasId: null,
@@ -1612,9 +1600,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       dirty: false,
       conflictPending: false,
       baseUpdatedAt: 0,
-      undoStack: [],
-      redoStack: [],
     });
+    undoMgr.clear();
   },
   retrySearch: async (nodeId, query) => {
     const settings = useSettingsStore.getState();
@@ -1684,34 +1671,16 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   // ===== Undo / Redo =====
 
   undo: () => {
-    const state = get();
-    if (state.undoStack.length === 0) return;
+    if (!undoMgr.canUndo) return;
     // 流式期间 undo 会撕裂消息状态（占位消息不在旧快照中，后续 delta 丢失）→ 先中止流
     abortAllStreams();
-    const prev = state.undoStack[state.undoStack.length - 1];
-    const current = snapshot(state.nodes, state.edges, state.messagesByConv);
-    set({
-      nodes: prev.nodes,
-      edges: prev.edges,
-      messagesByConv: prev.messagesByConv,
-      undoStack: state.undoStack.slice(0, -1),
-      redoStack: [...state.redoStack, current],
-    });
+    undoMgr.undo();
     schedulePersist();
   },
   redo: () => {
-    const state = get();
-    if (state.redoStack.length === 0) return;
+    if (!undoMgr.canRedo) return;
     abortAllStreams();
-    const next = state.redoStack[state.redoStack.length - 1];
-    const current = snapshot(state.nodes, state.edges, state.messagesByConv);
-    set({
-      nodes: next.nodes,
-      edges: next.edges,
-      messagesByConv: next.messagesByConv,
-      undoStack: [...state.undoStack, current],
-      redoStack: state.redoStack.slice(0, -1),
-    });
+    undoMgr.redo();
     schedulePersist();
   },
 }));

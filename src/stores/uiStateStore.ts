@@ -17,6 +17,7 @@
 import { create } from "zustand";
 import { readAppUiState, writeAppUiState } from "@/services/uiState";
 import { remapDirPrefix } from "@/utils/filename";
+import { createPersistController } from "@/utils/persist";
 import {
   closeArea as closeAreaOp,
   mergeSibling as mergeSiblingOp,
@@ -124,12 +125,23 @@ function nextLayoutName(names: string[]): string {
 }
 
 // 输入高频（展开/折叠/布局拖拽），debounce 后落盘避免每键一次 IPC
-let persistTimer: ReturnType<typeof setTimeout> | null = null;
-function persistDebounced(get: () => UiStateStore): void {
-  if (persistTimer) clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => {
-    void get().flush();
-  }, 400);
+/** 防抖持久化控制器：timer 管理统一在此（400ms；写盘含 loaded 竞态守卫）。 */
+const persistCtl = createPersistController({
+  persist: async () => {
+    // 启动竞态守卫：load 未完成前落盘会用默认值覆盖真实磁盘状态
+    const s = useUiStateStore.getState();
+    if (!s.loaded) return;
+    try {
+      await writeAppUiState(toDiskState(() => useUiStateStore.getState()));
+    } catch (e) {
+      console.error("保存应用级 UI 状态失败", e);
+    }
+  },
+  delay: 400,
+});
+
+function persistDebounced(): void {
+  persistCtl.schedule();
 }
 
 /** 内存态 → 磁盘条目（缺省字段不落盘，保持文件精简）。 */
@@ -156,7 +168,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
         l.id === layout.id ? { ...l, tree: updater(layout.tree) } : l,
       ),
     });
-    persistDebounced(get);
+    persistDebounced();
   };
 
   return {
@@ -171,10 +183,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
 
   load: async () => {
     // 清残留 debounce timer：应用启动/重载前旧 timer 不应再写盘
-    if (persistTimer) {
-      clearTimeout(persistTimer);
-      persistTimer = null;
-    }
+    persistCtl.cancel();
     try {
       const disk = await readAppUiState();
       // 布局恢复：磁盘无/损坏（数组空、项缺 tree 结构）时回退默认布局——
@@ -223,7 +232,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
       else next.add(path);
       return { fileExplorerExpanded: next };
     });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   expandDirs: (paths) => {
@@ -233,7 +242,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
       for (const p of paths) next.add(p);
       return { fileExplorerExpanded: next };
     });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   toggleExpandAll: (dirPaths) => {
@@ -241,40 +250,40 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
       const allExpanded = dirPaths.length > 0 && dirPaths.every((p) => s.fileExplorerExpanded.has(p));
       return { fileExplorerExpanded: allExpanded ? new Set() : new Set(dirPaths) };
     });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   recordOpenCanvas: (file) => {
     set({ lastCanvasFile: file });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   recordOpenNote: (file) => {
     set({ lastNoteFile: file });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   recordOpenTable: (file) => {
     set({ lastTableFile: file });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   renameLastCanvas: (oldFile, newFile) => {
     if (get().lastCanvasFile !== oldFile) return;
     set({ lastCanvasFile: newFile });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   renameLastNote: (oldFile, newFile) => {
     if (get().lastNoteFile !== oldFile) return;
     set({ lastNoteFile: newFile });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   renameLastTable: (oldFile, newFile) => {
     if (get().lastTableFile !== oldFile) return;
     set({ lastTableFile: newFile });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   renameByDir: (oldDir, newDir) => {
@@ -295,7 +304,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
       expandedChanged || lastCanvasFile !== s.lastCanvasFile || lastNoteFile !== s.lastNoteFile || lastTableFile !== s.lastTableFile;
     if (!changed) return;
     set({ fileExplorerExpanded: expanded, lastCanvasFile, lastNoteFile, lastTableFile });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   removeExpandedByDir: (dir) => {
@@ -305,28 +314,28 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
     );
     if (next.size === get().fileExplorerExpanded.size) return;
     set({ fileExplorerExpanded: next });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   closeCanvas: () => {
     set({ lastCanvasFile: null });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   closeNote: () => {
     set({ lastNoteFile: null });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   closeTable: () => {
     set({ lastTableFile: null });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   setFocusedArea: (areaId) => {
     if (get().focusedAreaId === areaId) return;
     set({ focusedAreaId: areaId });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   splitArea: (areaId, direction) => {
@@ -337,7 +346,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
         l.id === layout.id ? { ...l, tree } : l,
       ),
     });
-    persistDebounced(get);
+    persistDebounced();
     return newAreaId;
   },
 
@@ -375,7 +384,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
       activeLayoutId: copy.id,
       focusedAreaId: null,
     });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   renameLayout: (id, name) => {
@@ -386,7 +395,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
         l.id === id ? { ...l, name: trimmed } : l,
       ),
     });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   deleteLayout: (id) => {
@@ -399,13 +408,13 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
       activeLayoutId: nextActive,
       focusedAreaId: nextActive === activeLayoutId ? get().focusedAreaId : null,
     });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   activateLayout: (id) => {
     if (!get().workspaceLayouts.some((l) => l.id === id)) return;
     set({ activeLayoutId: id, focusedAreaId: null });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   moveLayout: (fromIndex, toIndex) => {
@@ -417,19 +426,11 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
     if (!moved) return;
     next.splice(toIndex, 0, moved);
     set({ workspaceLayouts: next });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   flush: async () => {
-    // 启动竞态守卫：load 未完成前落盘会用默认值覆盖真实磁盘状态
-    if (!get().loaded) return;
-    // 直接整写（应用级单文件，无合并/归属校验）；无仓库也可写（布局跨仓库共享）
-    const payload = toDiskState(get);
-    try {
-      await writeAppUiState(payload);
-    } catch (e) {
-      console.error("保存应用级 UI 状态失败", e);
-    }
+    await persistCtl.flush();
   },
   };
 });

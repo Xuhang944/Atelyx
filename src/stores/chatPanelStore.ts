@@ -14,6 +14,7 @@ import { WEB_SEARCH_TOOL } from "@/constants/tools";
 import { runStreamExchange, decideCleanup, runAutoNaming } from "./streaming";
 import { prefix, scanMentionHits } from "@/utils/text";
 import { baseName } from "@/utils/filename";
+import { createPersistController } from "@/utils/persist";
 import { useSettingsStore } from "./settingsStore";
 import { useAppStore } from "./appStore";
 import {
@@ -102,7 +103,6 @@ interface ChatPanelState {
   flush: (vaultId: string | null) => Promise<void>;
 }
 
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let abortController: AbortController | null = null;
 /** 最近一次成功 load 的仓库 ID：同一仓库重复 load（挂载 effect / selectVault / AiChatPanel vaultRoot effect）只读一次盘 */
 let lastLoadedVaultId: string | null = null;
@@ -111,6 +111,11 @@ let lastLoadedVaultId: string | null = null;
 let dirty = false;
 /** 需要重写消息 .md 的会话 id 集合（发送/流式结束时标记；persistNow 统一写盘后清空）。 */
 const dirtyMessageFiles = new Set<string>();
+
+/** 防抖持久化控制器：timer 管理 + 代数防吞统一在此；extra = flush 传入的期望仓库 ID（定时写盘不传）。 */
+const persistCtl = createPersistController<string | null>({
+  persist: persistNow,
+});
 
 // ===== 会话消息正文转写（.atelyx/对话历史/<会话 id>.md）=====
 
@@ -191,11 +196,7 @@ async function autoNameSession(sessionId: string): Promise<void> {
 function schedulePersist(messageSessionId?: string) {
   if (messageSessionId) dirtyMessageFiles.add(messageSessionId);
   dirty = true;
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    persistNow();
-  }, 500);
+  persistCtl.schedule();
 }
 
 /**
@@ -204,6 +205,7 @@ function schedulePersist(messageSessionId?: string) {
  * 定时写盘不传（sessionVaultId 随 load 已同步为当前仓库）。
  */
 async function persistNow(guardVaultId?: string | null): Promise<void> {
+  const versionAtStart = persistCtl.version;
   // 守卫：load 完成前（loaded=false，store 仍是初始空态）不落盘——
   // React 18 StrictMode 开发模式双挂载会在 load 完成前触发卸载 flush，
   // 若此时写盘会用空 sessions 覆盖磁盘真实历史（实测：退出重进历史丢失）
@@ -251,7 +253,9 @@ async function persistNow(guardVaultId?: string | null): Promise<void> {
   };
   try {
     await writeEditorChats(index);
-    dirty = false;
+    // 写盘期间若又有新变更（schedule 已置 dirty + 挂新 timer），保留 dirty 由下一轮再写，
+    // 防成功回调吞掉新编辑（消息文件已有快照保护，索引全量重写须防误清）
+    if (persistCtl.version === versionAtStart) dirty = false;
   } catch (e) {
     console.error("保存 AI 对话会话失败", e);
   }
@@ -460,10 +464,8 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     if (useChatPanelStore.getState().loaded && lastLoadedVaultId === vaultId) {
       return;
     }
-    if (saveTimer) {
-      clearTimeout(saveTimer);
-      saveTimer = null;
-    }
+    // 清残留 debounce timer（防旧仓库 timer 写新仓库状态）+ 脏会话标记
+    persistCtl.cancel();
     dirtyMessageFiles.clear();
     autoNamedSessions.clear();
     // 切仓库让路：中止旧仓库进行中的命名请求，防其后台空转/误写
@@ -798,12 +800,8 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
   clearPendingMentions: () => set({ pendingMentions: [] }),
 
   flush: (vaultId) => {
-    if (saveTimer) {
-      clearTimeout(saveTimer);
-      saveTimer = null;
-    }
     // 无本地改动不写盘：外部删除会话文件后切仓库/退出，不把内存副本写回（覆盖删除）
     if (!dirty) return Promise.resolve();
-    return persistNow(vaultId);
+    return persistCtl.flush(vaultId);
   },
 }));

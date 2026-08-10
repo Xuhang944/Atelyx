@@ -18,6 +18,8 @@ import { chatOnce } from "@/services/ai/client";
 import { pickFile, saveFile } from "@/services/dialog";
 import { markSelfSave } from "@/stores/canvasStore";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { createPersistController } from "@/utils/persist";
+import { createUndoManager } from "@/utils/undoStack";
 import { parseFillRows } from "@/utils/table";
 import type { CalcType, CellValue, FieldType, Message, TableField, TableRow } from "@/types";
 
@@ -72,6 +74,8 @@ interface TableStoreState {
   /** 覆盖编辑瞬态意图（打字触发 → TableCell 消费后清除；不持久化）。 */
   overwriteTarget: CellOverwriteTarget | null;
   view: TableView;
+  /** 最近一次撤销回退的编辑会话单元格（undo 弹掉会话入口时置位；TableCell 按布尔 selector 订阅回退草稿，无关撤销为 null）。 */
+  undoResetCell: { rowId: string; fieldId: string } | null;
 
   /** 打开表格：读盘填充 + 同步乐观锁基准。失败时 error 提示（文件已删/损坏降级不崩溃）。 */
   load: (file: string) => Promise<void>;
@@ -114,6 +118,8 @@ interface TableStoreState {
   setRowHeight: (rowId: string, height: number) => void;
   /** 行高自适应：清除手动行高，恢复内容自然撑开。 */
   clearRowHeight: (rowId: string) => void;
+  /** 整表行高自适应：全部行清除手动行高（单次撤销单元；无手动行高 no-op）。 */
+  clearAllRowHeights: () => void;
   /** 设置状态栏列自动计算类型（缺省 = 无计算）。 */
   setCalcType: (fieldId: string, calcType: CalcType | undefined) => void;
   removeField: (fieldId: string) => void;
@@ -135,19 +141,128 @@ interface TableStoreState {
   /** 消费覆盖意图（TableCell 匹配本单元格后清除）。 */
   clearOverwriteTarget: () => void;
   setView: (view: TableView) => void;
+  /** 保存当前快照到 undo 栈（清空 redo 栈）。结构变更方法内置；拖拽/编辑会话入口由调用方触发。 */
+  pushUndo: () => void;
+  undo: () => void;
+  redo: () => void;
+  /** 编辑会话开始（双击/覆盖进入时调用）：入栈 + 记录会话（提交确认/中止丢弃/撤销回退判定）。 */
+  beginCellEdit: (rowId: string, fieldId: string) => void;
+  /** 编辑会话提交（失焦有改动时调用）：撤销单元保留。 */
+  commitCellEdit: () => void;
+  /** 编辑会话中止（Esc/未改动退出时调用）：丢弃空撤销单元（恢复被清的 redo）。 */
+  abortCellEdit: () => void;
 }
 
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
+/** 撤销快照：fields + rows（含 id/calcType/width/height/options/values，id 保真——撤销后选中引用不悬空）。 */
+interface TableSnapshot {
+  fields: TableField[];
+  rows: TableRow[];
+}
+
+/** 撤销/重做栈（深 50，通用快照栈工具；与画布共用语义）。 */
+const undoMgr = createUndoManager<TableSnapshot>({
+  snapshot: () => {
+    // 不可变更新保证引用即快照（零拷贝）：store 每次 set 生成新 fields/rows，
+    // 历史引用不被污染；深拷贝会拖慢每次入栈/撤销（含 image dataURL 大字符串）
+    const { fields, rows } = useTableStore.getState();
+    return { fields, rows };
+  },
+  apply: (entry) =>
+    useTableStore.setState((s) => {
+      // 被撤销的选中目标可能已不存在：清理失效选择，防高亮残留失效引用；
+      // 覆盖编辑意图同样清理（防 redo 恢复行后误进入编辑）
+      const fieldIds = new Set(entry.fields.map((f) => f.id));
+      const rowIds = new Set(entry.rows.map((r) => r.id));
+      const sel = s.selection;
+      const stale =
+        sel &&
+        (((sel.kind === "cell" || sel.kind === "column") && !fieldIds.has(sel.fieldId)) ||
+          ((sel.kind === "cell" || sel.kind === "row") && !rowIds.has(sel.rowId)));
+      return {
+        fields: entry.fields,
+        rows: entry.rows,
+        selection: stale ? null : sel,
+        selectedRowId:
+          s.selectedRowId && !rowIds.has(s.selectedRowId) ? null : s.selectedRowId,
+        overwriteTarget: null,
+      };
+    }),
+});
+
+/** 非入栈变更后作废 redo 栈（标准撤销语义——undo 后产生新变更，Ctrl+Y 不得再恢复旧快照）。 */
+function touchRedo(): void {
+  undoMgr.touchRedo();
+}
+
+/** 进行中的编辑会话（双击/覆盖进入；null = 无会话）。 */
+let sessionCell: { rowId: string; fieldId: string } | null = null;
+/** 会话入栈时的 undo 栈深：中止时栈深未变（期间无其他操作插入）才丢弃该会话的空撤销单元。 */
+let sessionUndoDepth = -1;
+
+/** 编辑会话开始：入栈（快照此刻旧值）+ 记录会话标识（提交确认/中止丢弃/撤销回退草稿判定用）。 */
+function beginEditSession(rowId: string, fieldId: string): void {
+  undoMgr.push();
+  sessionUndoDepth = undoMgr.size;
+  sessionCell = { rowId, fieldId };
+}
+
+/** 编辑会话提交：撤销单元保留生效。 */
+function commitEditSession(): void {
+  sessionUndoDepth = -1;
+  sessionCell = null;
+}
+
+/** 编辑会话中止（Esc/未改动退出）：期间无其他操作插入则丢弃空撤销单元（恢复被清的 redo）。 */
+function abortEditSession(): void {
+  if (sessionUndoDepth >= 0 && undoMgr.size === sessionUndoDepth) undoMgr.dropTop();
+  sessionUndoDepth = -1;
+  sessionCell = null;
+}
+
+/**
+ * 防抖持久化控制器：写盘期间又有新变更（persistCtl.version 已变）则保留 dirty，
+ * 由下一轮 timer 再写，防写盘成功回调吞掉新编辑。force = 保留本地（绕过乐观锁强制覆盖）。
+ */
+const persistCtl = createPersistController<boolean>({
+  persist: async (force = false) => {
+    const versionAtStart = persistCtl.version;
+    const { tableFile, id, title, fields, rows, baseUpdatedAt } = useTableStore.getState();
+    if (!tableFile) return;
+    try {
+      markSelfSave();
+      const updatedAt = await writeTableVault(
+        { schema: TABLE_SCHEMA, id, title, fields, rows, createdAt: 0, updatedAt: Date.now() },
+        tableFile,
+        force ? undefined : baseUpdatedAt,
+      );
+      // 竞态守卫：await 期间可能已切换表格（load 替换了状态），旧表的写盘结果不得覆盖新表
+      // 的乐观锁基准/脏标记（否则新表下次保存被误判冲突、脏编辑被吞）
+      if (useTableStore.getState().tableFile !== tableFile) return;
+      if (persistCtl.version !== versionAtStart) {
+        // 写盘期间有新变更（已挂新 timer）：保留 dirty，由下一轮 timer 再写盘
+        useTableStore.setState({ saving: false });
+        return;
+      }
+      useTableStore.setState({ dirty: false, saving: false, baseUpdatedAt: updatedAt, error: null });
+    } catch (e) {
+      const msg = typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
+      if (msg.includes("已被外部修改")) {
+        // 乐观锁冲突：不覆盖磁盘，提示用户重载（本地改动保留在内存供查看）
+        useTableStore.setState({ conflictPending: true, saving: false });
+      } else {
+        console.error("表格自动保存失败", e);
+        useTableStore.setState({ error: "自动保存失败，请检查磁盘空间或权限", saving: false });
+      }
+    }
+  },
+  beforeSchedule: () => useTableStore.setState({ saving: true, dirty: true }),
+});
 
 /** debounce 500ms 持久化（内容变更后调用；timer 回调里读最新 state）。 */
 function schedulePersist(): void {
   const st = useTableStore.getState();
   if (!st.tableFile) return;
-  if (saveTimer) clearTimeout(saveTimer);
-  useTableStore.setState({ saving: true, dirty: true });
-  saveTimer = setTimeout(() => {
-    void useTableStore.getState().flush();
-  }, 500);
+  persistCtl.schedule();
 }
 
 export const useTableStore = create<TableStoreState>((set, get) => ({
@@ -165,12 +280,13 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   selection: null,
   overwriteTarget: null,
   view: "table",
+  undoResetCell: null,
 
   load: async (file) => {
-    if (saveTimer) {
-      clearTimeout(saveTimer);
-      saveTimer = null;
-    }
+    // 切换表格前取消未落盘的保存定时器 + 清空撤销栈：快照含旧表内容，混用会串表污染撤销
+    persistCtl.cancel();
+    undoMgr.clear();
+    abortEditSession();
     try {
       const table = await readTableVault(file);
       set({
@@ -187,6 +303,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
         selectedRowId: null,
         selection: null,
         overwriteTarget: null,
+        undoResetCell: null,
       });
     } catch (e) {
       console.error("加载表格失败", e);
@@ -205,6 +322,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
         selectedRowId: null,
         selection: null,
         overwriteTarget: null,
+        undoResetCell: null,
       });
     }
   },
@@ -226,10 +344,10 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   },
 
   clear: () => {
-    if (saveTimer) {
-      clearTimeout(saveTimer);
-      saveTimer = null;
-    }
+    // 取消保存定时器，防残留 timer 重写已删文件；清撤销栈（内容已不存在）
+    persistCtl.cancel();
+    undoMgr.clear();
+    abortEditSession();
     set({
       tableFile: null,
       id: "",
@@ -244,41 +362,21 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
       selectedRowId: null,
       selection: null,
       overwriteTarget: null,
+      undoResetCell: null,
     });
   },
 
   clearError: () => set({ error: null }),
 
   flush: async (force = false) => {
-    const { tableFile, id, title, fields, rows, dirty, baseUpdatedAt } = get();
+    const { tableFile, dirty } = get();
     // 无脏/未打开：复位 saving（schedulePersist 曾置位但 timer 内无改动可写，防状态卡死）
     if (!tableFile || !dirty) {
       set({ saving: false });
       return false;
     }
-    try {
-      markSelfSave();
-      const updatedAt = await writeTableVault(
-        { schema: TABLE_SCHEMA, id, title, fields, rows, createdAt: 0, updatedAt: Date.now() },
-        tableFile,
-        force ? undefined : baseUpdatedAt,
-      );
-      // 竞态守卫：await 期间可能已切换表格（load 替换了状态），旧表的写盘结果不得覆盖新表
-      // 的乐观锁基准/脏标记（否则新表下次保存被误判冲突、脏编辑被吞）
-      if (get().tableFile !== tableFile) return false;
-      set({ dirty: false, saving: false, baseUpdatedAt: updatedAt, error: null });
-      return true;
-    } catch (e) {
-      const msg = typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
-      if (msg.includes("已被外部修改")) {
-        // 乐观锁冲突：不覆盖磁盘，提示用户重载（本地改动保留在内存供查看）
-        set({ conflictPending: true, saving: false });
-      } else {
-        console.error("表格自动保存失败", e);
-        set({ error: "自动保存失败，请检查磁盘空间或权限", saving: false });
-      }
-      return false;
-    }
+    await persistCtl.flush(force);
+    return true;
   },
 
   updateCell: (rowId, fieldId, value) => {
@@ -289,6 +387,8 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
           : r,
       ),
     }));
+    // 编辑会话的提交（入栈点在会话入口：triggerOverwrite/双击）；任何新变更作废 redo
+    touchRedo();
     schedulePersist();
   },
 
@@ -296,7 +396,9 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
     try {
       const src = await pickFile([{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "gif"] }]);
       if (!src) return;
+      // 图片增删 = 独立操作，一次一个撤销单元（读盘成功、变更前入栈）
       const dataUrl = await readExternalImageDataUrl(src);
+      undoMgr.push();
       const current = get().rows.find((r) => r.id === rowId)?.values[fieldId];
       const list = Array.isArray(current) ? [...current] : [];
       list.push(dataUrl);
@@ -310,6 +412,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   removeImageAt: (rowId, fieldId, index) => {
     const current = get().rows.find((r) => r.id === rowId)?.values[fieldId];
     if (!Array.isArray(current)) return;
+    undoMgr.push();
     const list = [...current];
     list.splice(index, 1);
     get().updateCell(rowId, fieldId, list);
@@ -369,6 +472,8 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
       });
       const rows = parseFillRows(raw, fields);
       if (rows.length === 0) return { ok: false, reason: "AI 未返回有效行数据，请重试" };
+      // 填行 = 一步撤销单元（结构性追加，用户预期可撤销）
+      undoMgr.push();
       set((s) => ({ rows: [...s.rows, ...rows] }));
       schedulePersist();
       return { ok: true };
@@ -379,12 +484,14 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   },
 
   addField: (name, type) => {
+    undoMgr.push();
     const field: TableField = { id: crypto.randomUUID(), name: name || "字段", type };
     set((s) => ({ fields: [...s.fields, field] }));
     schedulePersist();
   },
 
   insertField: (index, name, type) => {
+    undoMgr.push();
     const field: TableField = { id: crypto.randomUUID(), name: name || "字段", type };
     set((s) => {
       const next = [...s.fields];
@@ -395,6 +502,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   },
 
   renameField: (fieldId, name) => {
+    undoMgr.push();
     set((s) => ({
       fields: s.fields.map((f) => (f.id === fieldId ? { ...f, name: name || f.name } : f)),
     }));
@@ -402,6 +510,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   },
 
   retypeField: (fieldId, type) => {
+    undoMgr.push();
     set((s) => ({
       fields: s.fields.map((f) => {
         if (f.id !== fieldId) return f;
@@ -415,6 +524,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   },
 
   setFieldOptions: (fieldId, options) => {
+    undoMgr.push();
     set((s) => ({
       fields: s.fields.map((f) => (f.id === fieldId ? { ...f, options } : f)),
     }));
@@ -422,6 +532,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   },
 
   setFieldWidth: (fieldId, width) => {
+    // 拖拽高频：不入栈（TableEditor 拖拽开始时 pushUndo 一次）
     set((s) => ({
       fields: s.fields.map((f) => (f.id === fieldId ? { ...f, width } : f)),
     }));
@@ -429,6 +540,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   },
 
   setRowHeight: (rowId, height) => {
+    // 拖拽高频：不入栈（TableEditor 拖拽开始时 pushUndo 一次）
     set((s) => ({
       rows: s.rows.map((r) => (r.id === rowId ? { ...r, height } : r)),
     }));
@@ -436,6 +548,9 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   },
 
   clearRowHeight: (rowId) => {
+    // 无手动行高：no-op（不产生空撤销单元）
+    if (!get().rows.some((r) => r.id === rowId && r.height !== undefined)) return;
+    undoMgr.push();
     set((s) => ({
       rows: s.rows.map((r) => {
         if (r.id !== rowId) return r;
@@ -446,7 +561,18 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
     schedulePersist();
   },
 
+  /** 整表行高自适应：全部行清除手动行高（单次撤销单元；无手动行高 no-op）。 */
+  clearAllRowHeights: () => {
+    if (!get().rows.some((r) => r.height !== undefined)) return;
+    undoMgr.push();
+    set((s) => ({
+      rows: s.rows.map(({ height: _drop, ...rest }) => rest),
+    }));
+    schedulePersist();
+  },
+
   setCalcType: (fieldId, calcType) => {
+    undoMgr.push();
     set((s) => ({
       fields: s.fields.map((f) => (f.id === fieldId ? { ...f, calcType } : f)),
     }));
@@ -454,6 +580,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   },
 
   removeField: (fieldId) => {
+    undoMgr.push();
     set((s) => {
       // 选中范围指向被删列（单元格/整列）时清空，防高亮残留失效引用
       const sel = s.selection;
@@ -472,12 +599,14 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   },
 
   addRow: () => {
+    undoMgr.push();
     const row: TableRow = { id: crypto.randomUUID(), values: {} };
     set((s) => ({ rows: [...s.rows, row] }));
     schedulePersist();
   },
 
   duplicateRow: (rowId) => {
+    undoMgr.push();
     set((s) => {
       const idx = s.rows.findIndex((r) => r.id === rowId);
       if (idx < 0) return {};
@@ -490,6 +619,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   },
 
   removeRow: (rowId) => {
+    undoMgr.push();
     set((s) => {
       // 选中范围指向被删行（单元格/整行）时清空，防高亮残留失效引用
       const sel = s.selection;
@@ -511,6 +641,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
     let insertAt = from < targetIndex ? targetIndex - 1 : targetIndex;
     insertAt = Math.max(0, Math.min(insertAt, rows.length - 1));
     if (insertAt === from) return;
+    undoMgr.push();
     const next = [...rows];
     const [moved] = next.splice(from, 1);
     next.splice(insertAt, 0, moved);
@@ -534,10 +665,39 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
 
   selectAll: () => set({ selection: { kind: "all" }, selectedRowId: null }),
 
-  triggerOverwrite: (rowId, fieldId, initial) =>
-    set({ overwriteTarget: { rowId, fieldId, initial } }),
+  triggerOverwrite: (rowId, fieldId, initial) => {
+    // 覆盖编辑会话开始（此刻旧值仍在）：提交时才确认撤销单元，Esc/无改动不产生空撤销
+    beginEditSession(rowId, fieldId);
+    set({ overwriteTarget: { rowId, fieldId, initial } });
+  },
 
   clearOverwriteTarget: () => set({ overwriteTarget: null }),
 
   setView: (view) => set({ view }),
+
+  pushUndo: () => undoMgr.push(),
+
+  undo: () => {
+    if (undoMgr.undo()) {
+      // 撤销弹掉的是进行中编辑会话的入口（栈顶即会话、无其他操作插入）→ 该单元格草稿须回退；
+      // 弹掉的是无关条目（如会话期间 AI 填行）→ 不打断输入，草稿保留
+      const sessionPopped =
+        sessionCell !== null && undoMgr.size < sessionUndoDepth;
+      set({ undoResetCell: sessionPopped ? sessionCell : null });
+      commitEditSession();
+      schedulePersist();
+    }
+  },
+
+  redo: () => {
+    if (undoMgr.redo()) {
+      set({ undoResetCell: null });
+      commitEditSession();
+      schedulePersist();
+    }
+  },
+
+  beginCellEdit: (rowId, fieldId) => beginEditSession(rowId, fieldId),
+  commitCellEdit: () => commitEditSession(),
+  abortCellEdit: () => abortEditSession(),
 }));

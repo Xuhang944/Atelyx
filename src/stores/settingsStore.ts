@@ -16,6 +16,7 @@ import type {
 import { DEFAULT_AI_CONFIG } from "@/services/ai/types";
 import { PROVIDER_PRESETS } from "@/constants/providers";
 import { remapDirPrefix } from "@/utils/filename";
+import { createPersistController } from "@/utils/persist";
 
 /**
  * 设置 store（配置全部仓库化）。
@@ -166,13 +167,18 @@ async function persist(cfg: AiConfig): Promise<void> {
 }
 
 // 输入框键击高频，debounce 后落盘避免每键一次 IPC + keychain 写入
-let persistTimer: ReturnType<typeof setTimeout> | null = null;
-function persistDebounced(get: () => SettingsState): void {
-  if (persistTimer) clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => {
-    const { config } = get();
-    persist(config).catch((e) => console.error("保存 AI 配置失败", e));
-  }, 400);
+/** 防抖持久化控制器：timer 管理统一在此（400ms）。 */
+const persistCtl = createPersistController({
+  persist: async () => {
+    await persist(useSettingsStore.getState().config).catch((e) =>
+      console.error("保存 AI 配置失败", e),
+    );
+  },
+  delay: 400,
+});
+
+function persistDebounced(): void {
+  persistCtl.schedule();
 }
 
 /** 写仓库级配置前剔除 undefined，保持 .atelyx/config.json 干净（providers 空数组不落盘）。 */
@@ -383,15 +389,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     );
     const cfg = { ...get().config, providers };
     set({ config: cfg });
-    persistDebounced(get);
+    persistDebounced();
   },
 
   flush: async () => {
-    if (persistTimer) {
-      clearTimeout(persistTimer);
-      persistTimer = null;
-    }
-    await persist(get().config).catch((e) => console.error("保存 AI 配置失败", e));
+    await persistCtl.flush();
   },
 
   removeProvider: async (id) => {
