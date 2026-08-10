@@ -417,6 +417,10 @@ pub struct TableRow {
     /// 单元格值按字段 id 存（缺 key = 空单元格）。
     #[serde(default)]
     pub values: serde_json::Map<String, serde_json::Value>,
+    /// 用户拖拽调整后的行高（px；缺省 = 前端按内容自然撑开）。
+    /// 必须在此显式声明，否则 serde 反序列化会丢弃前端传来的该字段，写盘丢失。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f64>,
 }
 
 /// 读 .atb 文件并反序列化（schema 校验同 .atlx 私有格式保护）。

@@ -1,41 +1,65 @@
 /**
  * 多维表格编辑器（表格视图）。
  *
- * 布局：工具条（保存状态 / 冲突条）→ 表格（列头 ⋮ 字段菜单、行 ⋮ 菜单、
- * 行首拖拽手柄插入排序、表头末尾「+」列添加字段、类型化单元格）→ 行尾「+ 新行」→
- * 底部横向滑动条 → 状态栏（列自动计算，整格点击选类型 + 实时结果）。
+ * 布局：工具条（保存状态 / 冲突条 / 视图切换 / 导出）→ 表格主体（行号列 + 列头 + 类型化单元格）→
+ * 行尾「+ 新行」→ 底部横向滑动条 → 状态栏（列自动计算，整格点击选类型 + 实时结果）。
  *
  * 交互要点：
+ * - 选中体系（互斥）：左上角整格单击全选（角标示意）/ 右键全选并弹菜单；表头单击选整列；
+ *   行首单击选整行；单元格单击仅选中（td 金色内描边，编辑时保持单元格大小）。选中后打字 = 覆盖编辑；
+ *   双击单元格 = 进入编辑。
  * - 行拖拽为 pointer 模拟（HTML5 DnD 在 WebView2 不可靠，与文件面板同策略）：
  *   行首手柄按下 → 位移超 5px 激活 → 按行元素中点计算插入位（金色插入线指示）→ 松手 moveRow。
- * - 字段菜单：重命名 / 改类型 / 单选选项管理 / 左·右插入字段 / 删除字段（就地确认）。
+ * - 列宽：列头右缘拖拽（钳制 MIN/MAX）；行高：行首底缘拖拽。表头/行首/整表选中后右键菜单
+ *   （`ColumnMenu`/`RowMenu`/`SelectAllMenu`）提供列宽/行高自适应与左右插入字段。
  * - 状态栏：每列整格 hover 高亮可点击（未设置留空），弹出计算类型菜单（固定向上弹出，
  *   底边贴点击位置不遮住点击处）；已设置列居中显示「类型 + 结果」。
  * - 保存状态/冲突提示镜像画布窗口（冲突条「重新加载（丢弃本地）/ 保留本地并保存」）。
+ * - 弹层菜单（字段/列/行/整表/状态栏）见 `TableMenus.tsx`。
  */
-import { Check, Columns3, FileOutput, GripVertical, MoreHorizontal, Pencil, Plus, Sigma, Trash2, X } from "lucide-react";
+import { FileOutput, GripVertical, MoreHorizontal, MoveDiagonal, Plus, Sigma, X } from "lucide-react";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { useClampedMenuPosition } from "@/hooks/useClampedMenuPosition";
-import { useDismissOnOutside } from "@/hooks/useDismissOnOutside";
-import { CALC_TYPE_LABELS, CALC_TYPES_BY_FIELD, FIELD_TYPE_LABELS } from "@/constants/table";
 import { useTableStore } from "@/stores/tableStore";
+import { useUiStateStore } from "@/stores/uiStateStore";
 import { TableCell } from "@/components/table/TableCell";
 import { TableTimeline } from "@/components/table/TableTimeline";
+import {
+  AddFieldMenu,
+  ColumnMenu,
+  FieldMenu,
+  RowMenu,
+  SelectAllMenu,
+  StatMenu,
+} from "@/components/table/TableMenus";
 import { computeColumnCalc, fieldDefaultWidth } from "@/utils/table";
-import { MAX_COL_WIDTH, MIN_COL_WIDTH, ROW_NUM_COL_WIDTH, ADD_FIELD_COL_WIDTH } from "@/constants/table";
-import type { FieldType, TableField } from "@/types";
+import {
+  ADD_FIELD_COL_WIDTH,
+  CALC_TYPE_LABELS,
+  MAX_COL_WIDTH,
+  MAX_ROW_HEIGHT,
+  MIN_COL_WIDTH,
+  MIN_ROW_HEIGHT,
+  ROW_NUM_COL_WIDTH,
+} from "@/constants/table";
+import type { TableField, TableRow } from "@/types";
 
 /** 保存状态文本（镜像画布窗口状态区）。 */
 const SAVE_TEXT = { saving: "保存中…", saved: "已自动保存" } as const;
 
-export function TableEditor() {
+/** 表格编辑器：areaId 用于聚焦判定（覆盖编辑键盘监听门控，同画布快捷键惯例）。 */
+export function TableEditor({ areaId }: { areaId: string }) {
   const fields = useTableStore((s) => s.fields);
   const rows = useTableStore((s) => s.rows);
   const saving = useTableStore((s) => s.saving);
   const conflictPending = useTableStore((s) => s.conflictPending);
   const error = useTableStore((s) => s.error);
-  const selectedRowId = useTableStore((s) => s.selectedRowId);
+  const selection = useTableStore((s) => s.selection);
   const selectRow = useTableStore((s) => s.selectRow);
+  const selectCell = useTableStore((s) => s.selectCell);
+  const selectField = useTableStore((s) => s.selectField);
+  const selectAll = useTableStore((s) => s.selectAll);
+  const triggerOverwrite = useTableStore((s) => s.triggerOverwrite);
+  const focusedAreaId = useUiStateStore((s) => s.focusedAreaId);
   const resolveConflict = useTableStore((s) => s.resolveConflict);
   const clearError = useTableStore((s) => s.clearError);
   const addRow = useTableStore((s) => s.addRow);
@@ -51,9 +75,11 @@ export function TableEditor() {
 
   // 字段菜单 / 行菜单 / 添加字段浮层 / 状态栏计算菜单
   const [fieldMenu, setFieldMenu] = useState<{ fieldId: string; x: number; y: number } | null>(null);
+  const [columnMenu, setColumnMenu] = useState<{ fieldId: string; x: number; y: number } | null>(null);
   const [rowMenu, setRowMenu] = useState<{ rowId: string; x: number; y: number } | null>(null);
   const [addFieldMenu, setAddFieldMenu] = useState<{ x: number; y: number } | null>(null);
   const [statMenu, setStatMenu] = useState<{ fieldId: string; x: number; y: number } | null>(null);
+  const [allMenu, setAllMenu] = useState<{ x: number; y: number } | null>(null);
 
   // ===== 行拖拽插入排序（pointer 模拟）=====
   const dragRef = useRef<{ rowId: string; startX: number; startY: number; active: boolean } | null>(null);
@@ -110,17 +136,65 @@ export function TableEditor() {
     dragRef.current = { rowId, startX: e.clientX, startY: e.clientY, active: false };
   }, []);
 
-  // ===== 列宽拖拽调整（指针模拟，与行拖拽同策略）=====
-  const resizeRef = useRef<{ fieldId: string; startX: number; startWidth: number } | null>(null);
+  // ===== 选中单元格后打字 = 覆盖编辑（全局键盘监听；单击仅选中不聚焦，字符键直达覆盖）=====
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key === "Escape" || e.key === "Enter" || e.key === "Tab" || e.key === "Backspace" || e.key === "Delete") return;
+      if (e.key.startsWith("Arrow") || e.key === "Home" || e.key === "End" || e.key === "PageUp" || e.key === "PageDown") return;
+      if (/^F\d{1,2}$/.test(e.key)) return;
+      const st = useTableStore.getState();
+      if (st.view !== "table") return;
+      const sel = st.selection;
+      if (sel?.kind !== "cell") return;
+      // 仅表格面积聚焦时生效（跨面积打字不误写单元格，同画布快捷键门控惯例）
+      if (focusedAreaId !== areaId) return;
+      // 仅文本类字段支持覆盖输入（singleSelect/image 无文本编辑，不产生覆盖意图）
+      const field = st.fields.find((f) => f.id === sel.fieldId);
+      if (!field || (field.type !== "text" && field.type !== "number" && field.type !== "duration")) return;
+      // 编辑态/其他输入元素聚焦时忽略（防重复触发与误吞打字）
+      const el = document.activeElement;
+      if (
+        el &&
+        (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.tagName === "SELECT" ||
+          (el as HTMLElement).isContentEditable)
+      ) {
+        return;
+      }
+      // IME 组合开始（中文拼音）→ 覆盖为空，组合继续输入；可打印字符 → 直接覆盖为该字符
+      if (e.isComposing || e.key === "Process") {
+        st.triggerOverwrite(sel.rowId, sel.fieldId, "");
+      } else if (e.key.length === 1) {
+        st.triggerOverwrite(sel.rowId, sel.fieldId, e.key);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [triggerOverwrite, focusedAreaId, areaId]);
+
+  // ===== 列宽 / 行高拖拽调整（指针模拟，与行拖拽同策略）=====
+  const resizeRef = useRef<
+    | { kind: "col"; fieldId: string; startX: number; startWidth: number }
+    | { kind: "row"; rowId: string; startY: number; startHeight: number }
+    | null
+  >(null);
   const setFieldWidth = useTableStore((s) => s.setFieldWidth);
+  const setRowHeight = useTableStore((s) => s.setRowHeight);
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
       const r = resizeRef.current;
       if (!r) return;
-      const width = Math.round(
-        Math.max(MIN_COL_WIDTH, Math.min(MAX_COL_WIDTH, r.startWidth + (e.clientX - r.startX))),
-      );
-      setFieldWidth(r.fieldId, width);
+      if (r.kind === "col") {
+        const width = Math.round(
+          Math.max(MIN_COL_WIDTH, Math.min(MAX_COL_WIDTH, r.startWidth + (e.clientX - r.startX))),
+        );
+        setFieldWidth(r.fieldId, width);
+      } else {
+        const height = Math.round(
+          Math.max(MIN_ROW_HEIGHT, Math.min(MAX_ROW_HEIGHT, r.startHeight + (e.clientY - r.startY))),
+        );
+        setRowHeight(r.rowId, height);
+      }
     };
     const onUp = () => {
       resizeRef.current = null;
@@ -133,13 +207,14 @@ export function TableEditor() {
       document.removeEventListener("pointerup", onUp);
       document.body.style.cursor = "";
     };
-  }, [setFieldWidth]);
+  }, [setFieldWidth, setRowHeight]);
 
   const startColResize = useCallback((e: React.PointerEvent, field: TableField) => {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
     resizeRef.current = {
+      kind: "col",
       fieldId: field.id,
       startX: e.clientX,
       startWidth: field.width ?? fieldDefaultWidth(field.name),
@@ -147,11 +222,36 @@ export function TableEditor() {
     document.body.style.cursor = "col-resize";
   }, []);
 
+  /** 行高拖拽起点：手动高度优先，缺省读当前 DOM 实际行高（内容撑开的值），防起点跳变。 */
+  const startRowResize = useCallback((e: React.PointerEvent, row: TableRow) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const el = rowsElRef.current?.querySelector<HTMLElement>(`[data-row-id="${row.id}"]`);
+    resizeRef.current = {
+      kind: "row",
+      rowId: row.id,
+      startY: e.clientY,
+      startHeight: row.height ?? el?.offsetHeight ?? MIN_ROW_HEIGHT,
+    };
+    document.body.style.cursor = "row-resize";
+  }, []);
+
   /** 列宽：手动调整值优先，缺省按字段名自适应。 */
   const widthOf = (f: TableField): number => f.width ?? fieldDefaultWidth(f.name);
   /** 表格总宽 = 行号列 + 各列宽 + 表头末尾「+」列：显式设给 table，拖宽一列只增总宽、
    *  其他列不挤压（border-collapse + table-fixed 无显式宽度时引擎会撑满容器并重分配）。 */
   const totalWidth = ROW_NUM_COL_WIDTH + fields.reduce((acc, f) => acc + widthOf(f), 0) + ADD_FIELD_COL_WIDTH;
+
+  // ===== 选中高亮（互斥：单元格 = td 内描边；行/列/整表 = 淡金背景）=====
+  const rowHighlighted = (rowId: string): boolean =>
+    selection?.kind === "row" ? selection.rowId === rowId : selection?.kind === "all";
+  const colHighlighted = (fieldId: string): boolean =>
+    selection?.kind === "column" ? selection.fieldId === fieldId : selection?.kind === "all";
+  const cellSelected = (rowId: string, fieldId: string): boolean =>
+    selection?.kind === "cell" && selection.rowId === rowId && selection.fieldId === fieldId;
+  /** 行/列/整表的淡金背景（列选中作用于表头与数据单元格）。 */
+  const highlightBg = (highlighted: boolean) => (highlighted ? "rgba(212,175,55,0.08)" : undefined);
 
   // ===== 底部横向滑动条 + 状态栏：与表格横向滚动双向同步（常显；宽度 = 表格总宽 + 边框余量）=====
   const bottomScrollRef = useRef<HTMLDivElement>(null);
@@ -287,6 +387,12 @@ export function TableEditor() {
         ref={rowsElRef}
         className="flex-1 overflow-auto relative no-horizontal-scrollbar"
         onScroll={onTableScroll}
+        // 整表选中时右键任意数据单元格 → 列宽/行高自适应菜单（行首/表头各自处理；实时读 selection 防冒泡冲突）
+        onContextMenu={(e) => {
+          if (useTableStore.getState().selection?.kind !== "all") return;
+          e.preventDefault();
+          setAllMenu({ x: e.clientX, y: e.clientY });
+        }}
       >
         <table className="border-collapse table-fixed" style={{ width: totalWidth }}>
           <colgroup>
@@ -299,19 +405,43 @@ export function TableEditor() {
           <thead>
             <tr>
               <th
-                className="border-b border-r text-center sticky top-0 z-10"
+                className="relative border-b border-r text-center sticky top-0 z-10"
                 style={{ background: "var(--bg-secondary)", borderColor: "var(--border)" }}
+                onClick={selectAll}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  selectAll();
+                  setAllMenu({ x: e.clientX, y: e.clientY });
+                }}
+                title="单击全选 · 右键全选并弹出菜单"
               >
-                <Columns3 size={12} className="mx-auto" style={{ color: "var(--text-muted)" }} />
+                {/* 右下角角标（纯示意，事件穿透）：整格可点击全选 */}
+                <div
+                  className="absolute bottom-0.5 right-0.5 w-4 h-4 pointer-events-none"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  <MoveDiagonal size={11} />
+                </div>
               </th>
               {fields.map((f) => (
                 <th
                   key={f.id}
                   className="border-b border-r align-middle px-1.5 py-1 sticky top-0 z-10 group relative"
-                  style={{ background: "var(--bg-secondary)", borderColor: "var(--border)" }}
+                  style={{
+                    background: colHighlighted(f.id) ? "rgba(212,175,55,0.08)" : "var(--bg-secondary)",
+                    borderColor: "var(--border)",
+                  }}
+                  onClick={() => selectField(f.id)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    selectField(f.id);
+                    setColumnMenu({ fieldId: f.id, x: e.clientX, y: e.clientY });
+                  }}
+                  title="单击选中整列"
                 >
                   <div className="flex items-center gap-1 min-w-0">
-                    <span className="truncate flex-1 font-normal" title={f.name}>
+                    <span className="truncate flex-1 font-normal cursor-default" title={f.name}>
                       {f.name}
                     </span>
                     <button
@@ -337,7 +467,7 @@ export function TableEditor() {
               ))}
               {/* 表头末尾「+」列：添加字段入口（点击弹出名称 + 类型浮层） */}
               <th
-                className="border-b border-r align-middle px-1.5 py-1 sticky top-0 z-10"
+                className="border-b border-r align-middle px-1.5 py-1 sticky top-0 z-10 text-center"
                 style={{ background: "var(--bg-secondary)", borderColor: "var(--border)" }}
               >
                 <button
@@ -364,17 +494,25 @@ export function TableEditor() {
                   onClick={() => selectRow(row.id)}
                   className="align-top"
                   style={{
+                    height: row.height ?? undefined,
                     opacity: draggingRowId === row.id ? 0.45 : 1,
-                    background: selectedRowId === row.id ? "rgba(212,175,55,0.08)" : undefined,
+                    background: highlightBg(rowHighlighted(row.id)),
                     cursor: draggingRowId === row.id ? "grabbing" : undefined,
                   }}
                 >
-                  {/* 行首：行号 + 拖拽手柄 + 行菜单 */}
+                  {/* 行首：行号 + 拖拽手柄 + 底部行高拖拽手柄（行菜单走右键） */}
                   <td
-                    className="border-b border-r px-1 text-center"
+                    className="relative border-b border-r px-1 text-center"
                     style={{ borderColor: "var(--border)" }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      selectRow(row.id);
+                      setRowMenu({ rowId: row.id, x: e.clientX, y: e.clientY });
+                    }}
+                    title="右键行菜单 · 底部拖拽调行高"
                   >
-                    <div className="flex items-center justify-center gap-0.5 h-8">
+                    {/* absolute 铺满 td：序号 + 拖拽手柄随行高垂直居中（行高拖拽手柄在其下层仍可交互） */}
+                    <div className="absolute inset-0 flex items-center justify-center gap-0.5">
                       <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
                         {i + 1}
                       </span>
@@ -386,26 +524,28 @@ export function TableEditor() {
                       >
                         <GripVertical size={11} />
                       </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const rect = e.currentTarget.getBoundingClientRect();
-                          setRowMenu({ rowId: row.id, x: rect.left, y: rect.bottom + 2 });
-                        }}
-                        className="w-4 h-5 flex items-center justify-center rounded hover:bg-[var(--hover)]"
-                        style={{ color: "var(--text-muted)" }}
-                        title="行菜单"
-                      >
-                        <MoreHorizontal size={11} />
-                      </button>
                     </div>
+                    {/* 行高拖拽手柄：底部横条，按下拖拽调整（钳制 MIN/MAX） */}
+                    <div
+                      onPointerDown={(e) => startRowResize(e, row)}
+                      className="absolute left-0 right-0 bottom-0 h-1.5 cursor-row-resize hover:bg-[var(--accent)]/25 transition-colors"
+                      title="拖拽调整行高"
+                    />
                   </td>
                   {fields.map((f) => (
                     <td
                       key={f.id}
-                      className="border-b border-r"
-                      style={{ borderColor: "var(--border)" }}
-                      onClick={(e) => e.stopPropagation()}
+                      // relative：编辑态 textarea absolute inset-0 以此为定位上下文撑满单元格
+                      className="border-b border-r relative"
+                      style={{
+                        borderColor: "var(--border)",
+                        background: highlightBg(colHighlighted(f.id)),
+                        boxShadow: cellSelected(row.id, f.id) ? "inset 0 0 0 2px var(--accent)" : undefined,
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        selectCell(row.id, f.id);
+                      }}
                     >
                       <TableCell field={f} row={row} />
                     </td>
@@ -487,13 +627,22 @@ export function TableEditor() {
         </>
       )}
 
-      {/* 字段菜单 */}
+      {/* 字段菜单（⋮：字段修改） */}
       {fieldMenu && (
         <FieldMenu
           field={fields.find((f) => f.id === fieldMenu.fieldId)}
           x={fieldMenu.x}
           y={fieldMenu.y}
           onClose={() => setFieldMenu(null)}
+        />
+      )}
+      {/* 表头右键菜单（列修改/调整） */}
+      {columnMenu && (
+        <ColumnMenu
+          field={fields.find((f) => f.id === columnMenu.fieldId)}
+          x={columnMenu.x}
+          y={columnMenu.y}
+          onClose={() => setColumnMenu(null)}
         />
       )}
       {/* 行菜单 */}
@@ -518,384 +667,8 @@ export function TableEditor() {
           onClose={() => setStatMenu(null)}
         />
       )}
-    </div>
-  );
-}
-
-/** 字段菜单：重命名 / 改类型 / 单选选项管理 / 左·右插入 / 删除（就地确认）。 */
-function FieldMenu({
-  field,
-  x,
-  y,
-  onClose,
-}: {
-  field: TableField | undefined;
-  x: number;
-  y: number;
-  onClose: () => void;
-}) {
-  const renameField = useTableStore((s) => s.renameField);
-  const retypeField = useTableStore((s) => s.retypeField);
-  const setFieldOptions = useTableStore((s) => s.setFieldOptions);
-  const insertField = useTableStore((s) => s.insertField);
-  const removeField = useTableStore((s) => s.removeField);
-  const fieldIndex = useTableStore((s) => (field ? s.fields.findIndex((f) => f.id === field.id) : -1));
-
-  const [mode, setMode] = useState<"menu" | "rename" | "options" | "insertLeft" | "insertRight">("menu");
-  const [draft, setDraft] = useState("");
-  const [optionsDraft, setOptionsDraft] = useState((field?.options ?? []).join("\n"));
-  const [confirming, setConfirming] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const optionsRef = useRef<HTMLTextAreaElement>(null);
-  const { ref: menuRef, pos } = useClampedMenuPosition(x, y, [mode, confirming]);
-  useDismissOnOutside(onClose, menuRef);
-
-  useEffect(() => {
-    if (mode === "options") optionsRef.current?.focus();
-    else if (mode !== "menu") inputRef.current?.focus();
-  }, [mode]);
-
-  if (!field) return null;
-
-  const itemClass =
-    "w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)] inline-flex items-center gap-1.5";
-
-  // 重命名 / 选项管理 / 插入字段：inline 输入
-  if (mode === "rename" || mode === "insertLeft" || mode === "insertRight") {
-    return (
-      <div
-        ref={menuRef}
-        className="fixed border rounded shadow-lg py-2 px-2.5 z-50 w-44"
-        style={{ left: pos.x, top: pos.y, background: "var(--bg-secondary)", borderColor: "var(--border)" }}
-      >
-        <input
-          ref={inputRef}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              const v = draft.trim();
-              if (mode === "rename") renameField(field.id, v || field.name);
-              else {
-                const idx = mode === "insertLeft" ? fieldIndex : fieldIndex + 1;
-                insertField(idx, v || "字段", "text");
-              }
-              onClose();
-            }
-            if (e.key === "Escape") onClose();
-          }}
-          onBlur={onClose}
-          placeholder={mode === "rename" ? "字段名称" : "新字段名称"}
-          className="w-full bg-transparent border-b border-[var(--accent)] outline-none text-xs"
-          style={{ color: "var(--text-primary)" }}
-        />
-      </div>
-    );
-  }
-
-  if (mode === "options") {
-    return (
-      <div
-        ref={menuRef}
-        className="fixed border rounded shadow-lg p-2.5 z-50 w-52"
-        style={{ left: pos.x, top: pos.y, background: "var(--bg-secondary)", borderColor: "var(--border)" }}
-      >
-        <p className="text-[10px] mb-1" style={{ color: "var(--text-muted)" }}>
-          每行一个选项
-        </p>
-        <textarea
-          ref={optionsRef}
-          value={optionsDraft}
-          onChange={(e) => setOptionsDraft(e.target.value)}
-          rows={5}
-          className="w-full bg-transparent border border-[var(--border)] rounded p-1.5 outline-none text-xs resize-none"
-          style={{ color: "var(--text-primary)" }}
-        />
-        <div className="flex justify-end gap-1 mt-1.5">
-          <button
-            onClick={onClose}
-            className="px-2 py-0.5 rounded text-xs hover:bg-[var(--hover)]"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            取消
-          </button>
-          <button
-            onClick={() => {
-              setFieldOptions(
-                field.id,
-                optionsDraft.split("\n").map((s) => s.trim()).filter(Boolean),
-              );
-              onClose();
-            }}
-            className="px-2 py-0.5 rounded text-xs"
-            style={{ background: "rgba(212,175,55,0.15)", color: "var(--accent)" }}
-          >
-            确定
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      ref={menuRef}
-      className="fixed border rounded shadow-lg py-1 z-50 w-44"
-      style={{ left: pos.x, top: pos.y, background: "var(--bg-secondary)", borderColor: "var(--border)", color: "var(--text-primary)" }}
-      onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      {confirming ? (
-        <div className="px-3 py-1.5">
-          <p className="text-xs mb-1.5" style={{ color: "var(--text-muted)" }}>
-            删除字段将清空所有行该列的值
-          </p>
-          <button
-            onClick={() => {
-              removeField(field.id);
-              onClose();
-            }}
-            className="w-full text-left px-3 py-1.5 text-sm rounded mb-1 text-[#f87171] hover:bg-red-600 hover:text-white"
-          >
-            <span className="inline-flex items-center gap-1.5">
-              <Trash2 size={14} /> 确认删除
-            </span>
-          </button>
-          <button
-            onClick={() => setConfirming(false)}
-            className="w-full text-left px-3 py-1.5 text-sm rounded hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
-            style={{ color: "var(--text-primary)" }}
-          >
-            取消
-          </button>
-        </div>
-      ) : (
-        <>
-          <button className={itemClass} onClick={() => { setMode("rename"); setDraft(field.name); }}>
-            <Pencil size={14} /> 重命名
-          </button>
-          <div className="px-3 py-1">
-            <p className="text-[10px] mb-1" style={{ color: "var(--text-muted)" }}>
-              字段类型
-            </p>
-            <div className="flex flex-col gap-0.5">
-              {(Object.keys(FIELD_TYPE_LABELS) as FieldType[]).map((t) => (
-                <button
-                  key={t}
-                  onClick={() => {
-                    retypeField(field.id, t);
-                    onClose();
-                  }}
-                  className="w-full text-left px-2 py-0.5 text-xs rounded hover:bg-[var(--hover)] inline-flex items-center justify-between"
-                  style={{ color: field.type === t ? "var(--accent)" : "var(--text-primary)" }}
-                >
-                  {FIELD_TYPE_LABELS[t]}
-                  {field.type === t && <Check size={11} />}
-                </button>
-              ))}
-            </div>
-          </div>
-          {field.type === "singleSelect" && (
-            <button className={itemClass} onClick={() => { setMode("options"); setOptionsDraft((field.options ?? []).join("\n")); }}>
-              单选选项管理
-            </button>
-          )}
-          <hr className="my-1" style={{ borderColor: "var(--border)" }} />
-          <button className={itemClass} onClick={() => { setMode("insertLeft"); setDraft(""); }}>
-            <Plus size={14} /> 左侧插入字段
-          </button>
-          <button className={itemClass} onClick={() => { setMode("insertRight"); setDraft(""); }}>
-            <Plus size={14} /> 右侧插入字段
-          </button>
-          <button
-            onClick={() => setConfirming(true)}
-            className="w-full text-left px-3 py-1.5 text-sm text-[#f87171] hover:bg-red-600 hover:text-white inline-flex items-center gap-1.5"
-          >
-            <Trash2 size={14} /> 删除字段
-          </button>
-        </>
-      )}
-    </div>
-  );
-}
-
-/** 行菜单：复制行 / 上移 / 下移 / 删除行。 */
-function RowMenu({ rowId, x, y, onClose }: { rowId: string; x: number; y: number; onClose: () => void }) {
-  const rows = useTableStore((s) => s.rows);
-  const duplicateRow = useTableStore((s) => s.duplicateRow);
-  const removeRow = useTableStore((s) => s.removeRow);
-  const moveRow = useTableStore((s) => s.moveRow);
-  const from = rows.findIndex((r) => r.id === rowId);
-  const { ref: menuRef, pos } = useClampedMenuPosition(x, y);
-  useDismissOnOutside(onClose, menuRef);
-
-  const itemClass =
-    "w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)] inline-flex items-center gap-1.5";
-
-  return (
-    <div
-      ref={menuRef}
-      className="fixed border rounded shadow-lg py-1 z-50 w-36"
-      style={{ left: pos.x, top: pos.y, background: "var(--bg-secondary)", borderColor: "var(--border)", color: "var(--text-primary)" }}
-      onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      <button className={itemClass} onClick={() => { duplicateRow(rowId); onClose(); }}>
-        <Columns3 size={14} /> 复制行
-      </button>
-      <button
-        className={itemClass}
-        disabled={from <= 0}
-        onClick={() => { moveRow(rowId, from - 1); onClose(); }}
-      >
-        上移
-      </button>
-      <button
-        className={itemClass}
-        disabled={from < 0 || from >= rows.length - 1}
-        onClick={() => { moveRow(rowId, from + 2); onClose(); }}
-      >
-        下移
-      </button>
-      <hr className="my-1" style={{ borderColor: "var(--border)" }} />
-      <button
-        onClick={() => { removeRow(rowId); onClose(); }}
-        className="w-full text-left px-3 py-1.5 text-sm text-[#f87171] hover:bg-red-600 hover:text-white inline-flex items-center gap-1.5"
-      >
-        <Trash2 size={14} /> 删除行
-      </button>
-    </div>
-  );
-}
-
-/** 添加字段浮层：名称 + 类型选择 + 添加。 */
-function AddFieldMenu({ x, y, onClose }: { x: number; y: number; onClose: () => void }) {
-  const addField = useTableStore((s) => s.addField);
-  const [name, setName] = useState("");
-  const [type, setType] = useState<FieldType>("text");
-  const inputRef = useRef<HTMLInputElement>(null);
-  const { ref: menuRef, pos } = useClampedMenuPosition(x, y);
-  useDismissOnOutside(onClose, menuRef);
-
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
-  return (
-    <div
-      ref={menuRef}
-      className="fixed border rounded shadow-lg p-2.5 z-50 w-48"
-      style={{ left: pos.x, top: pos.y, background: "var(--bg-secondary)", borderColor: "var(--border)" }}
-      onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      <input
-        ref={inputRef}
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            addField(name.trim() || "字段", type);
-            onClose();
-          }
-        }}
-        placeholder="字段名称"
-        className="w-full bg-transparent border-b border-[var(--accent)] outline-none text-xs mb-2"
-        style={{ color: "var(--text-primary)" }}
-      />
-      <div className="flex flex-col gap-0.5 mb-2">
-        {(Object.keys(FIELD_TYPE_LABELS) as FieldType[]).map((t) => (
-          <button
-            key={t}
-            onClick={() => setType(t)}
-            className="w-full text-left px-2 py-0.5 text-xs rounded hover:bg-[var(--hover)] inline-flex items-center justify-between"
-            style={{ color: type === t ? "var(--accent)" : "var(--text-primary)" }}
-          >
-            {FIELD_TYPE_LABELS[t]}
-            {type === t && <Check size={11} />}
-          </button>
-        ))}
-      </div>
-      <div className="flex justify-end">
-        <button
-          onClick={() => {
-            addField(name.trim() || "字段", type);
-            onClose();
-          }}
-          className="px-2 py-0.5 rounded text-xs"
-          style={{ background: "rgba(212,175,55,0.15)", color: "var(--accent)" }}
-        >
-          添加
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/** 状态栏计算类型菜单：无 + 字段类型可用计算（当前项 accent + Check）。
- *  固定向上弹出（bottom 定位，底边贴点击位置上方不遮住点击处），左边缘对齐点击单元格，右缘视口钳制。 */
-function StatMenu({
-  field,
-  x,
-  y,
-  onClose,
-}: {
-  field: TableField | undefined;
-  x: number;
-  y: number;
-  onClose: () => void;
-}) {
-  const setCalcType = useTableStore((s) => s.setCalcType);
-  const menuRef = useDismissOnOutside(onClose);
-
-  if (!field) return null;
-
-  // 左边缘对齐点击单元格，右缘不溢出视口（w-24 = 96px + 4px 边距）
-  const left = Math.max(4, Math.min(x, window.innerWidth - 96 - 4));
-  // 菜单估算高 ~200px（最多 6 项）：上方空间不足（状态栏贴近窗口顶）时贴视口顶展开，保证选项可达
-  const bottom = Math.min(window.innerHeight - y + 4, window.innerHeight - 4 - 200);
-
-  const itemClass =
-    "w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)] inline-flex items-center justify-between";
-
-  return (
-    <div
-      ref={menuRef}
-      className="fixed border rounded shadow-lg py-1 z-50 w-24"
-      style={{
-        left,
-        bottom,
-        background: "var(--bg-secondary)",
-        borderColor: "var(--border)",
-      }}
-      onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      <button
-        className={itemClass}
-        style={{ color: field.calcType ? "var(--text-primary)" : "var(--accent)" }}
-        onClick={() => {
-          setCalcType(field.id, undefined);
-          onClose();
-        }}
-      >
-        <span>无</span>
-        {!field.calcType && <Check size={12} />}
-      </button>
-      {CALC_TYPES_BY_FIELD[field.type]?.map((t) => (
-        <button
-          key={t}
-          className={itemClass}
-          style={{ color: field.calcType === t ? "var(--accent)" : "var(--text-primary)" }}
-          onClick={() => {
-            setCalcType(field.id, t);
-            onClose();
-          }}
-        >
-          <span>{CALC_TYPE_LABELS[t]}</span>
-          {field.calcType === t && <Check size={12} />}
-        </button>
-      ))}
+      {/* 整表选中右键菜单：全部列宽 / 行高自适应 */}
+      {allMenu && <SelectAllMenu x={allMenu.x} y={allMenu.y} onClose={() => setAllMenu(null)} />}
     </div>
   );
 }

@@ -31,6 +31,8 @@ export interface TableRow {
   id: string;
   /** 按字段 id 存值（缺 key = 空单元格；undefined 序列化时丢弃，保持文件干净）。 */
   values: Record<string, CellValue | undefined>;
+  /** 用户拖拽调整后的行高（px）；缺省 = 内容自然撑开（行高自适应清除）。 */
+  height?: number;
 }
 
 /** `.atb` 文件根结构。 */

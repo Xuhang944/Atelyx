@@ -61,7 +61,7 @@ export const AreaFrame = memo(function AreaFrame({
       case "note":
         return <NoteView />;
       case "table":
-        return <TableView />;
+        return <TableView areaId={node.id} />;
       case "files":
         return <FilesView />;
       case "search":

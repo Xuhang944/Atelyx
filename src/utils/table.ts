@@ -23,6 +23,35 @@ export function fieldDefaultWidth(name: string): number {
   return Math.max(MIN_COL_WIDTH, Math.min(MAX_COL_WIDTH, units * 7 + 24));
 }
 
+/** 单个单元格内容的估算宽度（与 fieldDefaultWidth 同口径：CJK 双宽 × 7px + 边距 24px）。 */
+function cellContentWidth(v: CellValue | undefined): number {
+  if (Array.isArray(v)) return 72; // image 缩略图 64px + 边距
+  const text = v === undefined || v === null ? "" : String(v);
+  let maxUnits = 0;
+  for (const line of text.split("\n")) {
+    let units = 0;
+    for (const ch of line) {
+      units += /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/.test(ch) ? 2 : 1;
+    }
+    maxUnits = Math.max(maxUnits, units);
+  }
+  return maxUnits * 7 + 24;
+}
+
+/**
+ * 列宽自适应：按该列全部单元格内容估算最大宽度，且不小于字段名宽度（名称自适应为下限），
+ * 钳制 [MIN_COL_WIDTH, MAX_COL_WIDTH]；空列结果为字段名宽度（与清除手动宽度等效）。
+ * 返回最终宽度，由调用方 `setFieldWidth` 写死持久化（table-fixed 布局需显式宽度）。
+ */
+export function columnAutoWidth(field: TableField, rows: TableRow[]): number {
+  const nameWidth = fieldDefaultWidth(field.name);
+  const contentWidth = rows.reduce(
+    (acc, r) => Math.max(acc, cellContentWidth(r.values[field.id])),
+    0,
+  );
+  return Math.max(MIN_COL_WIDTH, Math.min(MAX_COL_WIDTH, Math.max(nameWidth, contentWidth)));
+}
+
 export function tableToSnapshotText(table: TableFile): string {
   const header = `字段：${table.fields.map((f) => f.name).join(" | ")}`;
   const lines: string[] = [header];

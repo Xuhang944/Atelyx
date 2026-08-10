@@ -36,6 +36,21 @@ const FILL_ROWS_SYSTEM_PROMPT = `你是表格数据填充助手。根据字段�
 /** 编辑器视图：表格 / 时间线（内存态不持久化）。 */
 export type TableView = "table" | "timeline";
 
+/** 表格选中范围（互斥）：单元格 / 整行 / 整列 / 整表；null = 无选中。 */
+export type TableSelection =
+  | { kind: "cell"; rowId: string; fieldId: string }
+  | { kind: "row"; rowId: string }
+  | { kind: "column"; fieldId: string }
+  | { kind: "all" }
+  | null;
+
+/** 覆盖编辑瞬态意图（选中单元格后打字触发；initial = 覆盖初始内容，IME 为 ""）。 */
+export interface CellOverwriteTarget {
+  rowId: string;
+  fieldId: string;
+  initial: string;
+}
+
 interface TableStoreState {
   /** 当前打开的 .atb 相对仓库根路径（null = 未打开）。 */
   tableFile: string | null;
@@ -52,6 +67,10 @@ interface TableStoreState {
   error: string | null;
   /** 选中行（表格/时间线视图联动；null = 无选中）。 */
   selectedRowId: string | null;
+  /** 当前选中范围（单元格/行/列/整表互斥；表格视图高亮用，时间线只读 selectedRowId）。 */
+  selection: TableSelection;
+  /** 覆盖编辑瞬态意图（打字触发 → TableCell 消费后清除；不持久化）。 */
+  overwriteTarget: CellOverwriteTarget | null;
   view: TableView;
 
   /** 打开表格：读盘填充 + 同步乐观锁基准。失败时 error 提示（文件已删/损坏降级不崩溃）。 */
@@ -91,6 +110,10 @@ interface TableStoreState {
   setFieldOptions: (fieldId: string, options: string[]) => void;
   /** 拖拽调整列宽（px，随 .atb 持久化；缺省 = 按字段名自适应）。 */
   setFieldWidth: (fieldId: string, width: number) => void;
+  /** 拖拽调整行高（px，随 .atb 持久化；缺省 = 内容自然撑开）。 */
+  setRowHeight: (rowId: string, height: number) => void;
+  /** 行高自适应：清除手动行高，恢复内容自然撑开。 */
+  clearRowHeight: (rowId: string) => void;
   /** 设置状态栏列自动计算类型（缺省 = 无计算）。 */
   setCalcType: (fieldId: string, calcType: CalcType | undefined) => void;
   removeField: (fieldId: string) => void;
@@ -99,7 +122,18 @@ interface TableStoreState {
   removeRow: (rowId: string) => void;
   /** 拖拽插入排序：把 dragId 行移动到 targetIndex 位置（targetIndex = 拖放时原始数组的插入位）。 */
   moveRow: (dragId: string, targetIndex: number) => void;
+  /** 选中单元格（同时联动 selectedRowId 供时间线行高亮）。 */
+  selectCell: (rowId: string, fieldId: string) => void;
+  /** 选中整行（时间线/行首点击共用）。 */
   selectRow: (rowId: string | null) => void;
+  /** 选中整列（表头点击）。 */
+  selectField: (fieldId: string) => void;
+  /** 选中整个表格（左上角点击）。 */
+  selectAll: () => void;
+  /** 请求目标单元格进入覆盖编辑（清空原值写入 initial；表格视图键盘监听触发）。 */
+  triggerOverwrite: (rowId: string, fieldId: string, initial: string) => void;
+  /** 消费覆盖意图（TableCell 匹配本单元格后清除）。 */
+  clearOverwriteTarget: () => void;
   setView: (view: TableView) => void;
 }
 
@@ -128,6 +162,8 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   conflictPending: false,
   error: null,
   selectedRowId: null,
+  selection: null,
+  overwriteTarget: null,
   view: "table",
 
   load: async (file) => {
@@ -149,6 +185,8 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
         conflictPending: false,
         error: null,
         selectedRowId: null,
+        selection: null,
+        overwriteTarget: null,
       });
     } catch (e) {
       console.error("加载表格失败", e);
@@ -165,6 +203,8 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
         conflictPending: false,
         error: e instanceof Error ? e.message : String(e),
         selectedRowId: null,
+        selection: null,
+        overwriteTarget: null,
       });
     }
   },
@@ -202,6 +242,8 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
       conflictPending: false,
       error: null,
       selectedRowId: null,
+      selection: null,
+      overwriteTarget: null,
     });
   },
 
@@ -386,6 +428,24 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
     schedulePersist();
   },
 
+  setRowHeight: (rowId, height) => {
+    set((s) => ({
+      rows: s.rows.map((r) => (r.id === rowId ? { ...r, height } : r)),
+    }));
+    schedulePersist();
+  },
+
+  clearRowHeight: (rowId) => {
+    set((s) => ({
+      rows: s.rows.map((r) => {
+        if (r.id !== rowId) return r;
+        const { height: _drop, ...rest } = r;
+        return rest;
+      }),
+    }));
+    schedulePersist();
+  },
+
   setCalcType: (fieldId, calcType) => {
     set((s) => ({
       fields: s.fields.map((f) => (f.id === fieldId ? { ...f, calcType } : f)),
@@ -394,14 +454,20 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   },
 
   removeField: (fieldId) => {
-    set((s) => ({
-      fields: s.fields.filter((f) => f.id !== fieldId),
-      // 删除列同时清掉所有行的该列值（防 values 残留孤儿键）
-      rows: s.rows.map((r) => {
-        const { [fieldId]: _drop, ...rest } = r.values;
-        return { ...r, values: rest };
-      }),
-    }));
+    set((s) => {
+      // 选中范围指向被删列（单元格/整列）时清空，防高亮残留失效引用
+      const sel = s.selection;
+      const stale = sel && (sel.kind === "cell" || sel.kind === "column") && sel.fieldId === fieldId;
+      return {
+        fields: s.fields.filter((f) => f.id !== fieldId),
+        // 删除列同时清掉所有行的该列值（防 values 残留孤儿键）
+        rows: s.rows.map((r) => {
+          const { [fieldId]: _drop, ...rest } = r.values;
+          return { ...r, values: rest };
+        }),
+        selection: stale ? null : s.selection,
+      };
+    });
     schedulePersist();
   },
 
@@ -424,10 +490,16 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   },
 
   removeRow: (rowId) => {
-    set((s) => ({
-      rows: s.rows.filter((r) => r.id !== rowId),
-      selectedRowId: s.selectedRowId === rowId ? null : s.selectedRowId,
-    }));
+    set((s) => {
+      // 选中范围指向被删行（单元格/整行）时清空，防高亮残留失效引用
+      const sel = s.selection;
+      const stale = sel && (sel.kind === "cell" || sel.kind === "row") && sel.rowId === rowId;
+      return {
+        rows: s.rows.filter((r) => r.id !== rowId),
+        selectedRowId: s.selectedRowId === rowId ? null : s.selectedRowId,
+        selection: stale ? null : s.selection,
+      };
+    });
     schedulePersist();
   },
 
@@ -446,7 +518,26 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
     schedulePersist();
   },
 
-  selectRow: (rowId) => set({ selectedRowId: rowId }),
+  selectCell: (rowId, fieldId) => {
+    set({ selection: { kind: "cell", rowId, fieldId }, selectedRowId: rowId });
+  },
+
+  selectRow: (rowId) => {
+    if (rowId === null) {
+      set({ selection: null, selectedRowId: null });
+    } else {
+      set({ selection: { kind: "row", rowId }, selectedRowId: rowId });
+    }
+  },
+
+  selectField: (fieldId) => set({ selection: { kind: "column", fieldId }, selectedRowId: null }),
+
+  selectAll: () => set({ selection: { kind: "all" }, selectedRowId: null }),
+
+  triggerOverwrite: (rowId, fieldId, initial) =>
+    set({ overwriteTarget: { rowId, fieldId, initial } }),
+
+  clearOverwriteTarget: () => set({ overwriteTarget: null }),
 
   setView: (view) => set({ view }),
 }));

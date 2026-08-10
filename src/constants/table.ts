@@ -52,6 +52,10 @@ export const MAX_TABLE_INJECT_ROWS = 50;
 export const MIN_COL_WIDTH = 120;
 /** 列宽拖拽调整的上限（px）。 */
 export const MAX_COL_WIDTH = 360;
+/** 行高拖拽调整的下限（px；行首操作区高 32px）。 */
+export const MIN_ROW_HEIGHT = 32;
+/** 行高拖拽调整的上限（px）。 */
+export const MAX_ROW_HEIGHT = 600;
 /** 行号列固定宽度（px）。 */
 export const ROW_NUM_COL_WIDTH = 40;
 /** 表头末尾「+」添加字段列固定宽度（px）。 */

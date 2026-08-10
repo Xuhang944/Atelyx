@@ -1,12 +1,13 @@
 /**
  * 表格编辑器视图面积（全局当前打开表格；无文件时占位引导）。
+ * areaId 用于聚焦判定（覆盖编辑键盘监听门控，同画布快捷键惯例）。
  */
 import { Table as TableIcon } from "lucide-react";
 import { TableEditor } from "@/components/table/TableEditor";
 import { AreaPlaceholder } from "@/components/layout/AreaPlaceholder";
 import { useAppStore } from "@/stores/appStore";
 
-export function TableView() {
+export function TableView({ areaId }: { areaId: string }) {
   const currentTableFile = useAppStore((s) => s.currentTableFile);
 
   if (!currentTableFile) {
@@ -18,5 +19,5 @@ export function TableView() {
       />
     );
   }
-  return <TableEditor key={currentTableFile} />;
+  return <TableEditor key={currentTableFile} areaId={areaId} />;
 }
