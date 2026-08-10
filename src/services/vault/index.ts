@@ -232,6 +232,15 @@ export async function renameFolder(oldDir: string, newDir: string): Promise<void
 /** 最近写入的 .md 内容缓存（脏检测：仅内容变化才写盘，避免每次保存全量重写全部笔记）。 */
 const lastWrittenMd = new Map<string, string>();
 
+/**
+ * 记录某 .md 的最近已知磁盘内容（load/外部刷新读到磁盘内容后调用）。
+ * 脏检测基线 = 「最近已知磁盘内容」而非「应用最近一次写入」：外部改后刷新、用户改回旧值
+ * 时必须能感知差异写盘（否则外部内容会永久覆盖用户的回退），见 canvasStore.refreshTextContent。
+ */
+export function recordNoteDiskContent(file: string, content: string): void {
+  lastWrittenMd.set(file, content);
+}
+
 /** 加载后的运行时画布（对齐原 loadCanvas 返回结构，供 canvasStore 消费）。 */
 export interface RuntimeCanvas {
   /** 磁盘文件内的画布 id（运行时身份；文件名不再含 id） */
@@ -260,7 +269,10 @@ async function canvasFileToRuntime(file: CanvasFile): Promise<RuntimeCanvas> {
       if (td.file) {
         // 笔记节点：正文从 `.md` 实时读取
         try {
-          data.bodyMd = await readNote(td.file);
+          const bodyMd = await readNote(td.file);
+          data.bodyMd = bodyMd;
+          // 记录磁盘基线：load 后该文件内容即磁盘内容，后续脏检测以此为基准
+          recordNoteDiskContent(td.file, bodyMd);
         } catch {
           // 文件不存在，bodyMd 留空（外部编辑删除等情况）
         }

@@ -113,6 +113,8 @@ interface SettingsState {
   remapPromptNote: (oldFile: string, newFile: string) => Promise<void>;
   /** 文件夹重命名后同步标记路径（`oldDir/` 前缀 → `newDir/`，写 .atelyx/prompt-notes.json）。 */
   remapPromptNotesByDir: (oldDir: string, newDir: string) => Promise<void>;
+  /** 立即落盘当前配置（关窗/切仓库前 flush，防 debounce 窗口内丢设置）。 */
+  flush: () => Promise<void>;
 }
 
 /** 运行时 ProviderConfig → 磁盘 GlobalProvider（syncKeys 开时带 apiKey 落盘，关时剥离；旧 model 字段一并剥离）。 */
@@ -382,6 +384,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const cfg = { ...get().config, providers };
     set({ config: cfg });
     persistDebounced(get);
+  },
+
+  flush: async () => {
+    if (persistTimer) {
+      clearTimeout(persistTimer);
+      persistTimer = null;
+    }
+    await persist(get().config).catch((e) => console.error("保存 AI 配置失败", e));
   },
 
   removeProvider: async (id) => {

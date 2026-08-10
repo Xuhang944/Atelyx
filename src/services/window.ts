@@ -32,6 +32,20 @@ export function closeWindow(): Promise<void> {
   return getCurrentWindow().close();
 }
 
+/** 注册窗口关闭请求监听：先阻止默认关闭，await 回调（落盘等）后真正销毁窗口。
+ * 返回取消订阅函数；仅在回调完成后销毁，防 debounce 窗口内丢改动。 */
+export async function onCloseRequested(handler: () => Promise<void>): Promise<() => void> {
+  const win = getCurrentWindow();
+  return win.onCloseRequested(async (event) => {
+    event.preventDefault();
+    try {
+      await handler();
+    } finally {
+      await win.destroy();
+    }
+  });
+}
+
 /** 切换全屏（视图控制图标用）。 */
 export async function toggleFullscreen(): Promise<void> {
   const win = getCurrentWindow();

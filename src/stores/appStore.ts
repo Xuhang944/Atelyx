@@ -27,8 +27,8 @@ import { dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename, siblingPat
 import { getAppVersion as getVersionSvc } from "@/services/app";
 import { openInExplorer as openInExplorerSvc, openUrl as openUrlSvc } from "@/services/shell";
 import { pickDirectory as pickDirectorySvc } from "@/services/dialog";
-import { applyStartupWindow as applyStartupWindowSvc, applyWorkspaceWindow as applyWorkspaceWindowSvc, closeWindow as closeWindowSvc, minimizeWindow as minimizeWindowSvc, toggleFullscreen as toggleFullscreenSvc, toggleMaximizeWindow as toggleMaximizeWindowSvc } from "@/services/window";
-import { checkForUpdate as checkForUpdateSvc, installUpdate as installUpdateSvc } from "@/services/updater";
+import { applyStartupWindow as applyStartupWindowSvc, applyWorkspaceWindow as applyWorkspaceWindowSvc, closeWindow as closeWindowSvc, minimizeWindow as minimizeWindowSvc, onCloseRequested as onCloseRequestedSvc, toggleFullscreen as toggleFullscreenSvc, toggleMaximizeWindow as toggleMaximizeWindowSvc } from "@/services/window";
+import { checkAndAutoUpdate as checkAndAutoUpdateSvc, checkForUpdate as checkForUpdateSvc, installUpdate as installUpdateSvc } from "@/services/updater";
 import type { CanvasFileRow, RecentVault } from "@/types";
 
 /** 手动检查更新状态（设置页「关于」tab 用）。 */
@@ -38,6 +38,9 @@ export type UpdateStatus =
   | "upToDate"
   | "available"
   | "error";
+
+/** 窗口关闭守卫已注册标志（installCloseGuard 幂等，防 React StrictMode 双挂载重复订阅）。 */
+let closeGuardInstalled = false;
 
 /**
  * 应用级状态：路由 + 当前仓库 + 画布列表 CRUD。
@@ -98,6 +101,12 @@ interface AppState {
   removeRecentVault: (root: string) => Promise<void>;
   /** 返回仓库选择页（VaultSwitcher「管理仓库」入口）。 */
   backToVaultSelect: () => void;
+  /** 立即落盘全部 store 的 pending 改动（画布/表格/面板会话/UI 状态/配置；关窗与更新重启前调用）。 */
+  flushAllPending: () => Promise<void>;
+  /** 注册窗口关闭守卫：关窗前先 flushAllPending 再销毁（幂等，App 挂载时调用一次）。 */
+  installCloseGuard: () => void;
+  /** 静默自动更新链路（启动时 autoUpdate 开启才调用）：先落盘再下载安装重启，失败静默降级。 */
+  runAutoUpdate: () => Promise<void>;
 
   /** 调系统目录选择器，选中路径（用户取消返回 null）。 */
   pickVaultDirectory: () => Promise<string | null>;
@@ -250,6 +259,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   installUpdate: async () => {
     set({ installing: true, updateError: "" });
     try {
+      // 更新安装后 relaunch 重启：先落盘全部 pending 改动，防 debounce 保存随 webview 销毁丢失
+      await useAppStore.getState().flushAllPending();
       await installUpdateSvc();
     } catch (e) {
       console.error("安装更新失败", e);
@@ -263,9 +274,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   selectVault: async (root) => {
     try {
-      // 切换前先落盘旧仓库的 AI 对话会话并**等待写盘完成**：openVault 会把 VaultState.root 切到新仓库，
-      // 若 fire-and-forget 直接放行，写盘可能晚于 open_vault 执行、把旧会话写进新仓库（跨仓库污染）；
-      // 传当前仓库 vaultId 做归属校验 + 脏检测：无改动（如外部删除会话文件）则不写回
+      // 切换前先落盘旧仓库的全部编辑并**等待写盘完成**：openVault 会把 VaultState.root 切到新仓库，
+      // 若 fire-and-forget 直接放行，写盘可能晚于 open_vault 执行、把旧仓库内容写进新仓库（跨仓库污染）。
+      // 画布/表格无改动则不写（脏门控，见各自 flush）；chatPanel 额外传当前仓库 vaultId 做归属校验
+      await useCanvasStore.getState().flush();
+      await useTableStore.getState().flush();
       await useChatPanelStore.getState().flush(get().vaultId);
       const info = await openVault(root);
       const now = Math.floor(Date.now() / 1000);
@@ -340,6 +353,31 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentTableFile: null,
       currentTableTitle: "",
     });
+  },
+
+  flushAllPending: async () => {
+    await useCanvasStore.getState().flush();
+    await useTableStore.getState().flush();
+    await useChatPanelStore.getState().flush(get().vaultId);
+    await useUiStateStore.getState().flush();
+    await useSettingsStore.getState().flush();
+  },
+
+  installCloseGuard: () => {
+    if (closeGuardInstalled) return;
+    closeGuardInstalled = true;
+    void onCloseRequestedSvc(() => useAppStore.getState().flushAllPending());
+  },
+
+  runAutoUpdate: async () => {
+    if (import.meta.env.DEV) return;
+    try {
+      // 更新重启前先落盘：relaunch 会销毁 webview，pending 的 debounce 保存随之中断
+      await useAppStore.getState().flushAllPending();
+      await checkAndAutoUpdateSvc();
+    } catch (e) {
+      console.error("自动更新失败（静默降级，下次启动再试）", e);
+    }
   },
 
   pickVaultDirectory: () => pickDirectorySvc(),
