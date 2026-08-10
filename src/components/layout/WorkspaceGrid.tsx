@@ -12,14 +12,13 @@ import { useCallback, useEffect, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
-import { useClampedMenuPosition } from "@/hooks/useClampedMenuPosition";
-import { useDismissOnOutside } from "@/hooks/useDismissOnOutside";
 import {
   adjacentArea,
   collectAreas,
   findArea,
 } from "@/utils/workspaceLayout";
 import { AreaFrame } from "@/components/layout/AreaFrame";
+import { Menu, MenuDivider, MenuItem } from "@/components/common/Menu";
 import type { LayoutNode, SplitDirection, SplitNode } from "@/types";
 
 /** 递归渲染节点。 */
@@ -80,9 +79,6 @@ function SplitHandle({ split }: { split: SplitNode }) {
   const mergeSibling = useUiStateStore((s) => s.mergeSibling);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const close = useCallback(() => setMenu(null), []);
-  const { ref: menuRef, pos: menuPos } = useClampedMenuPosition(menu?.x ?? 0, menu?.y ?? 0);
-  // 点击菜单外 / Esc 关闭
-  useDismissOnOutside(close, menuRef);
 
   // 竖边（左右并排）→ 分割目标为左/右相邻叶子面积，分割方向 = 上下（新边横）
   const isVerticalEdge = split.direction === "horizontal";
@@ -104,61 +100,47 @@ function SplitHandle({ split }: { split: SplitNode }) {
         style={{ background: "var(--border)" }}
       />
       {menu && (
-        <div
-          ref={menuRef}
-          className="fixed border rounded shadow-lg py-1 z-50 w-44"
-          style={{
-            left: menuPos.x,
-            top: menuPos.y,
-            background: "var(--bg-secondary)",
-            borderColor: "var(--border)",
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button
+        <Menu x={menu.x} y={menu.y} onClose={close} widthClass="w-44">
+          <MenuItem
             onClick={() => {
               if (a) splitArea(a.id, splitDir);
               close();
             }}
-            className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
-            style={{ color: "var(--text-primary)" }}
+            className="text-xs"
           >
             分割{edgeLabel}侧面积
-          </button>
-          <button
+          </MenuItem>
+          <MenuItem
             onClick={() => {
               if (b) splitArea(b.id, splitDir);
               close();
             }}
-            className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
-            style={{ color: "var(--text-primary)" }}
+            className="text-xs"
           >
             分割{edgeLabel2}侧面积
-          </button>
-          <hr className="my-1" style={{ borderColor: "var(--border)" }} />
-          <button
+          </MenuItem>
+          <MenuDivider />
+          <MenuItem
             onClick={() => {
               mergeSibling(split.id, 1);
               close();
             }}
-            className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
-            style={{ color: "var(--text-primary)" }}
+            className="text-xs"
             title={`${edgeLabel}侧面积消失，${edgeLabel2}侧接管`}
           >
             向{edgeLabel2}合并
-          </button>
-          <button
+          </MenuItem>
+          <MenuItem
             onClick={() => {
               mergeSibling(split.id, 0);
               close();
             }}
-            className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
-            style={{ color: "var(--text-primary)" }}
+            className="text-xs"
             title={`${edgeLabel2}侧面积消失，${edgeLabel}侧接管`}
           >
             向{edgeLabel}合并
-          </button>
-        </div>
+          </MenuItem>
+        </Menu>
       )}
     </>
   );

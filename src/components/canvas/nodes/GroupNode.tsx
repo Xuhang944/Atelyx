@@ -11,17 +11,26 @@ import { useCanvasStore } from "@/stores/canvasStore";
 import { DEFAULT_GROUP_HEIGHT, DEFAULT_GROUP_WIDTH, GROUP_COLORS } from "@/constants/canvas";
 import type { GroupFileData } from "@/types";
 import { ConnectionFrame } from "./ConnectionFrame";
+import { useInlineEdit } from "@/hooks/useInlineEdit";
 
 /** 色板顺序（色块按钮循环展示用）：1-5 + 默认（无色）。 */
 const COLOR_OPTIONS: (string | undefined)[] = ["1", "2", "3", "4", "5", undefined];
 
 export function GroupNode({ id, data, width, height, selected }: NodeProps) {
   const { label, color } = data as unknown as GroupFileData;
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
   const [colorMenu, setColorMenu] = useState(false);
   const colorMenuRef = useRef<HTMLDivElement>(null);
   const readOnly = useCanvasStore((s) => s.readOnly);
+  // label 双击 inline 编辑：空提交不修改（清空无意义，保留原文）
+  const labelEdit = useInlineEdit({
+    value: label,
+    onCommit: (v) => {
+      const t = v.trim();
+      if (t && t !== label) {
+        useCanvasStore.getState().updateNodeData(id, { label: t });
+      }
+    },
+  });
 
   const base = GROUP_COLORS[color ?? ""] ?? "#8a8a8a";
 
@@ -46,16 +55,7 @@ export function GroupNode({ id, data, width, height, selected }: NodeProps) {
 
   const startEdit = () => {
     if (readOnly) return;
-    setDraft(label);
-    setEditing(true);
-  };
-  /** 提交 label：空提交不修改（清空无意义，保留原文）。 */
-  const commitEdit = () => {
-    const t = draft.trim();
-    setEditing(false);
-    if (t && t !== label) {
-      useCanvasStore.getState().updateNodeData(id, { label: t });
-    }
+    labelEdit.start();
   };
 
   return (
@@ -84,15 +84,9 @@ export function GroupNode({ id, data, width, height, selected }: NodeProps) {
           color: "var(--text-primary)",
         }}
       >
-        {editing ? (
+        {labelEdit.editing ? (
           <input
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={commitEdit}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") commitEdit();
-              else if (e.key === "Escape") setEditing(false);
-            }}
+            {...labelEdit.inputProps}
             autoFocus
             onClick={(e) => e.stopPropagation()}
             className="nodrag w-full min-w-0 rounded px-1 text-xs outline-none focus:ring-1 focus:ring-[var(--accent)]"

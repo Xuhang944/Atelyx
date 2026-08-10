@@ -2,8 +2,8 @@
  * 表格编辑器弹层菜单（字段菜单 / 表头右键列菜单 / 行菜单 / 添加字段浮层 /
  * 整表右键菜单 / 状态栏计算类型菜单）。
  *
- * 弹层惯例与全项目一致：`useClampedMenuPosition` 视口钳制 + `useDismissOnOutside`
- * 关闭交互 + 自带 fixed 定位 div；`MENU_ITEM_CLASS` 收敛菜单项统一样式。
+ * 弹层壳统一走 `common/Menu`（视口钳制 + Esc/点击外部关闭 + 容器样式）；
+ * 状态栏计算菜单（StatMenu）为固定向上弹出 + 自定义钳制，保留自有壳。
  */
 import {
   AlignVerticalSpaceAround,
@@ -15,16 +15,12 @@ import {
   Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { useClampedMenuPosition } from "@/hooks/useClampedMenuPosition";
 import { useDismissOnOutside } from "@/hooks/useDismissOnOutside";
+import { Menu, MenuDivider, MenuItem } from "@/components/common/Menu";
 import { CALC_TYPE_LABELS, CALC_TYPES_BY_FIELD, FIELD_TYPE_LABELS } from "@/constants/table";
 import { useTableStore } from "@/stores/tableStore";
 import { columnAutoWidth } from "@/utils/table";
 import type { FieldType, TableField } from "@/types";
-
-/** 菜单项统一样式（StatMenu 在末尾追加 justify-between）。 */
-const MENU_ITEM_CLASS =
-  "w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)] inline-flex items-center gap-1.5";
 
 /** 字段菜单（⋮ 按钮）：专注字段修改——重命名 / 改类型 / 单选选项管理 / 删除（就地确认）。
  *  列级操作（列宽自适应、左右插入字段）走表头右键 `ColumnMenu`。 */
@@ -50,8 +46,6 @@ export function FieldMenu({
   const [confirming, setConfirming] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const optionsRef = useRef<HTMLTextAreaElement>(null);
-  const { ref: menuRef, pos } = useClampedMenuPosition(x, y, [mode, confirming]);
-  useDismissOnOutside(onClose, menuRef);
 
   useEffect(() => {
     if (mode === "options") optionsRef.current?.focus();
@@ -63,11 +57,7 @@ export function FieldMenu({
   // 重命名：inline 输入
   if (mode === "rename") {
     return (
-      <div
-        ref={menuRef}
-        className="fixed border rounded shadow-lg py-2 px-2.5 z-50 w-44"
-        style={{ left: pos.x, top: pos.y, background: "var(--bg-secondary)", borderColor: "var(--border)" }}
-      >
+      <Menu x={x} y={y} onClose={onClose} widthClass="w-44" contentClassName="py-2 px-2.5" repositionDeps={[mode]} stopPointerDown>
         <input
           ref={inputRef}
           value={draft}
@@ -84,17 +74,13 @@ export function FieldMenu({
           className="w-full bg-transparent border-b border-[var(--accent)] outline-none text-xs"
           style={{ color: "var(--text-primary)" }}
         />
-      </div>
+      </Menu>
     );
   }
 
   if (mode === "options") {
     return (
-      <div
-        ref={menuRef}
-        className="fixed border rounded shadow-lg p-2.5 z-50 w-52"
-        style={{ left: pos.x, top: pos.y, background: "var(--bg-secondary)", borderColor: "var(--border)" }}
-      >
+      <Menu x={x} y={y} onClose={onClose} widthClass="w-52" contentClassName="p-2.5" repositionDeps={[mode]} stopPointerDown>
         <p className="text-[10px] mb-1" style={{ color: "var(--text-muted)" }}>
           每行一个选项
         </p>
@@ -128,47 +114,41 @@ export function FieldMenu({
             确定
           </button>
         </div>
-      </div>
+      </Menu>
     );
   }
 
   return (
-    <div
-      ref={menuRef}
-      className="fixed border rounded shadow-lg py-1 z-50 w-44"
-      style={{ left: pos.x, top: pos.y, background: "var(--bg-secondary)", borderColor: "var(--border)", color: "var(--text-primary)" }}
-      onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
+    <Menu x={x} y={y} onClose={onClose} widthClass="w-44" repositionDeps={[mode, confirming]} stopPointerDown>
       {confirming ? (
         <div className="px-3 py-1.5">
           <p className="text-xs mb-1.5" style={{ color: "var(--text-muted)" }}>
             删除字段将清空所有行该列的值
           </p>
-          <button
+          <MenuItem
             onClick={() => {
               removeField(field.id);
               onClose();
             }}
-            className="w-full text-left px-3 py-1.5 text-sm rounded mb-1 text-[#f87171] hover:bg-red-600 hover:text-white"
+            danger
+            className="rounded mb-1"
           >
             <span className="inline-flex items-center gap-1.5">
               <Trash2 size={14} /> 确认删除
             </span>
-          </button>
-          <button
+          </MenuItem>
+          <MenuItem
             onClick={() => setConfirming(false)}
-            className="w-full text-left px-3 py-1.5 text-sm rounded hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
-            style={{ color: "var(--text-primary)" }}
+            className="rounded"
           >
             取消
-          </button>
+          </MenuItem>
         </div>
       ) : (
         <>
-          <button className={MENU_ITEM_CLASS} onClick={() => { setMode("rename"); setDraft(field.name); }}>
+          <MenuItem onClick={() => { setMode("rename"); setDraft(field.name); }}>
             <Pencil size={14} /> 重命名
-          </button>
+          </MenuItem>
           <div className="px-3 py-1">
             <p className="text-[10px] mb-1" style={{ color: "var(--text-muted)" }}>
               字段类型
@@ -191,20 +171,17 @@ export function FieldMenu({
             </div>
           </div>
           {field.type === "singleSelect" && (
-            <button className={MENU_ITEM_CLASS} onClick={() => { setMode("options"); setOptionsDraft((field.options ?? []).join("\n")); }}>
+            <MenuItem onClick={() => { setMode("options"); setOptionsDraft((field.options ?? []).join("\n")); }}>
               单选选项管理
-            </button>
+            </MenuItem>
           )}
-          <hr className="my-1" style={{ borderColor: "var(--border)" }} />
-          <button
-            onClick={() => setConfirming(true)}
-            className="w-full text-left px-3 py-1.5 text-sm text-[#f87171] hover:bg-red-600 hover:text-white inline-flex items-center gap-1.5"
-          >
+          <MenuDivider />
+          <MenuItem onClick={() => setConfirming(true)} danger>
             <Trash2 size={14} /> 删除字段
-          </button>
+          </MenuItem>
         </>
       )}
-    </div>
+    </Menu>
   );
 }
 
@@ -229,8 +206,6 @@ export function ColumnMenu({
   const [mode, setMode] = useState<"menu" | "insertLeft" | "insertRight">("menu");
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
-  const { ref: menuRef, pos } = useClampedMenuPosition(x, y, [mode]);
-  useDismissOnOutside(onClose, menuRef);
 
   useEffect(() => {
     if (mode !== "menu") inputRef.current?.focus();
@@ -241,11 +216,7 @@ export function ColumnMenu({
   // 插入字段：inline 输入
   if (mode !== "menu") {
     return (
-      <div
-        ref={menuRef}
-        className="fixed border rounded shadow-lg py-2 px-2.5 z-50 w-44"
-        style={{ left: pos.x, top: pos.y, background: "var(--bg-secondary)", borderColor: "var(--border)" }}
-      >
+      <Menu x={x} y={y} onClose={onClose} widthClass="w-44" contentClassName="py-2 px-2.5" repositionDeps={[mode]} stopPointerDown>
         <input
           ref={inputRef}
           value={draft}
@@ -263,20 +234,13 @@ export function ColumnMenu({
           className="w-full bg-transparent border-b border-[var(--accent)] outline-none text-xs"
           style={{ color: "var(--text-primary)" }}
         />
-      </div>
+      </Menu>
     );
   }
 
   return (
-    <div
-      ref={menuRef}
-      className="fixed border rounded shadow-lg py-1 z-50 w-44"
-      style={{ left: pos.x, top: pos.y, background: "var(--bg-secondary)", borderColor: "var(--border)", color: "var(--text-primary)" }}
-      onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      <button
-        className={MENU_ITEM_CLASS}
+    <Menu x={x} y={y} onClose={onClose} widthClass="w-44" repositionDeps={[mode]} stopPointerDown>
+      <MenuItem
         onClick={() => {
           setFieldWidth(field.id, columnAutoWidth(field, rows));
           onClose();
@@ -284,14 +248,14 @@ export function ColumnMenu({
         title="按该列内容宽度自适应（不小于字段名宽度）"
       >
         <Columns3 size={14} /> 列宽自适应
-      </button>
-      <button className={MENU_ITEM_CLASS} onClick={() => { setMode("insertLeft"); setDraft(""); }}>
+      </MenuItem>
+      <MenuItem onClick={() => { setMode("insertLeft"); setDraft(""); }}>
         <ArrowLeft size={14} /> 左侧插入字段
-      </button>
-      <button className={MENU_ITEM_CLASS} onClick={() => { setMode("insertRight"); setDraft(""); }}>
+      </MenuItem>
+      <MenuItem onClick={() => { setMode("insertRight"); setDraft(""); }}>
         <ArrowRight size={14} /> 右侧插入字段
-      </button>
-    </div>
+      </MenuItem>
+    </Menu>
   );
 }
 
@@ -303,49 +267,38 @@ export function RowMenu({ rowId, x, y, onClose }: { rowId: string; x: number; y:
   const moveRow = useTableStore((s) => s.moveRow);
   const clearRowHeight = useTableStore((s) => s.clearRowHeight);
   const from = rows.findIndex((r) => r.id === rowId);
-  const { ref: menuRef, pos } = useClampedMenuPosition(x, y);
-  useDismissOnOutside(onClose, menuRef);
 
   return (
-    <div
-      ref={menuRef}
-      className="fixed border rounded shadow-lg py-1 z-50 w-36"
-      style={{ left: pos.x, top: pos.y, background: "var(--bg-secondary)", borderColor: "var(--border)", color: "var(--text-primary)" }}
-      onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      <button className={MENU_ITEM_CLASS} onClick={() => { duplicateRow(rowId); onClose(); }}>
+    <Menu x={x} y={y} onClose={onClose} widthClass="w-36" stopPointerDown>
+      <MenuItem onClick={() => { duplicateRow(rowId); onClose(); }}>
         <Columns3 size={14} /> 复制行
-      </button>
-      <button
-        className={MENU_ITEM_CLASS}
+      </MenuItem>
+      <MenuItem
         disabled={from <= 0}
         onClick={() => { moveRow(rowId, from - 1); onClose(); }}
       >
         上移
-      </button>
-      <button
-        className={MENU_ITEM_CLASS}
+      </MenuItem>
+      <MenuItem
         disabled={from < 0 || from >= rows.length - 1}
         onClick={() => { moveRow(rowId, from + 2); onClose(); }}
       >
         下移
-      </button>
-      <button
-        className={MENU_ITEM_CLASS}
+      </MenuItem>
+      <MenuItem
         onClick={() => { clearRowHeight(rowId); onClose(); }}
         title="清除手动行高，恢复按内容自然撑开"
       >
         <AlignVerticalSpaceAround size={14} /> 行高自适应
-      </button>
-      <hr className="my-1" style={{ borderColor: "var(--border)" }} />
-      <button
+      </MenuItem>
+      <MenuDivider />
+      <MenuItem
         onClick={() => { removeRow(rowId); onClose(); }}
-        className="w-full text-left px-3 py-1.5 text-sm text-[#f87171] hover:bg-red-600 hover:text-white inline-flex items-center gap-1.5"
+        danger
       >
         <Trash2 size={14} /> 删除行
-      </button>
-    </div>
+      </MenuItem>
+    </Menu>
   );
 }
 
@@ -355,21 +308,13 @@ export function AddFieldMenu({ x, y, onClose }: { x: number; y: number; onClose:
   const [name, setName] = useState("");
   const [type, setType] = useState<FieldType>("text");
   const inputRef = useRef<HTMLInputElement>(null);
-  const { ref: menuRef, pos } = useClampedMenuPosition(x, y);
-  useDismissOnOutside(onClose, menuRef);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
   return (
-    <div
-      ref={menuRef}
-      className="fixed border rounded shadow-lg p-2.5 z-50 w-48"
-      style={{ left: pos.x, top: pos.y, background: "var(--bg-secondary)", borderColor: "var(--border)" }}
-      onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
+    <Menu x={x} y={y} onClose={onClose} widthClass="w-48" contentClassName="p-2.5" stopPointerDown>
       <input
         ref={inputRef}
         value={name}
@@ -409,7 +354,7 @@ export function AddFieldMenu({ x, y, onClose }: { x: number; y: number; onClose:
           添加
         </button>
       </div>
-    </div>
+    </Menu>
   );
 }
 
@@ -419,19 +364,10 @@ export function SelectAllMenu({ x, y, onClose }: { x: number; y: number; onClose
   const rows = useTableStore((s) => s.rows);
   const setFieldWidth = useTableStore((s) => s.setFieldWidth);
   const clearRowHeight = useTableStore((s) => s.clearRowHeight);
-  const { ref: menuRef, pos } = useClampedMenuPosition(x, y);
-  useDismissOnOutside(onClose, menuRef);
 
   return (
-    <div
-      ref={menuRef}
-      className="fixed border rounded shadow-lg py-1 z-50 w-44"
-      style={{ left: pos.x, top: pos.y, background: "var(--bg-secondary)", borderColor: "var(--border)", color: "var(--text-primary)" }}
-      onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      <button
-        className={MENU_ITEM_CLASS}
+    <Menu x={x} y={y} onClose={onClose} widthClass="w-44" stopPointerDown>
+      <MenuItem
         onClick={() => {
           for (const f of fields) setFieldWidth(f.id, columnAutoWidth(f, rows));
           onClose();
@@ -439,9 +375,8 @@ export function SelectAllMenu({ x, y, onClose }: { x: number; y: number; onClose
         title="按各列内容宽度自适应（不小于字段名宽度）"
       >
         <Columns3 size={14} /> 列宽自适应
-      </button>
-      <button
-        className={MENU_ITEM_CLASS}
+      </MenuItem>
+      <MenuItem
         onClick={() => {
           for (const r of rows) clearRowHeight(r.id);
           onClose();
@@ -449,8 +384,8 @@ export function SelectAllMenu({ x, y, onClose }: { x: number; y: number; onClose
         title="清除全部手动行高，恢复按内容自然撑开"
       >
         <AlignVerticalSpaceAround size={14} /> 行高自适应
-      </button>
-    </div>
+      </MenuItem>
+    </Menu>
   );
 }
 
@@ -490,8 +425,8 @@ export function StatMenu({
       onClick={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      <button
-        className={`${MENU_ITEM_CLASS} justify-between`}
+      <MenuItem
+        className="justify-between"
         style={{ color: field.calcType ? "var(--text-primary)" : "var(--accent)" }}
         onClick={() => {
           setCalcType(field.id, undefined);
@@ -500,11 +435,11 @@ export function StatMenu({
       >
         <span>无</span>
         {!field.calcType && <Check size={12} />}
-      </button>
+      </MenuItem>
       {CALC_TYPES_BY_FIELD[field.type]?.map((t) => (
-        <button
+        <MenuItem
           key={t}
-          className={`${MENU_ITEM_CLASS} justify-between`}
+          className="justify-between"
           style={{ color: field.calcType === t ? "var(--accent)" : "var(--text-primary)" }}
           onClick={() => {
             setCalcType(field.id, t);
@@ -513,7 +448,7 @@ export function StatMenu({
         >
           <span>{CALC_TYPE_LABELS[t]}</span>
           {field.calcType === t && <Check size={12} />}
-        </button>
+        </MenuItem>
       ))}
     </div>
   );

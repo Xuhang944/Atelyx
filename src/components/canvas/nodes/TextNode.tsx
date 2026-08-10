@@ -16,6 +16,7 @@ import {
   wikiNoteFileOf,
 } from "@/utils/markdown";
 import { ConnectionFrame } from "./ConnectionFrame";
+import { useInlineEdit } from "@/hooks/useInlineEdit";
 
 export function TextNode({ id, data, width, height }: NodeProps) {
   const { bodyMd, title, file, fileMissing } = data as unknown as TextData;
@@ -26,11 +27,15 @@ export function TextNode({ id, data, width, height }: NodeProps) {
   const [editing, setEditing] = useState(false);
   /** 编辑草稿：输入期间只写本地 state，不触碰 store（防输入法组合中间态被 debounce 落盘） */
   const [draft, setDraft] = useState("");
-  /** 标题重命名草稿（双击 header 标题进入 inline 编辑） */
-  const [renaming, setRenaming] = useState(false);
-  const [draftTitle, setDraftTitle] = useState("");
   /** Esc 丢弃标记：退出编辑不提交草稿（onBlur 同样跳过，防 textarea 移除时误提交） */
   const discardEditRef = useRef(false);
+  /** 标题重命名（双击 header 标题 inline 编辑） */
+  const renameEdit = useInlineEdit({
+    value: title ?? "",
+    onCommit: (v) => {
+      void commitRename(v);
+    },
+  });
   const { fitView } = useReactFlow();
 
   const enterEdit = () => {
@@ -47,14 +52,9 @@ export function TextNode({ id, data, width, height }: NodeProps) {
     setEditing(false);
   };
 
-  const startRename = () => {
-    setDraftTitle(title ?? "");
-    setRenaming(true);
-  };
   /** 确认重命名：笔记节点 renameNote 改名 + 扫全部 .atlx 更新引用；画布内文本节点只改标题（无仓库文件） */
-  const commitRename = async () => {
+  const commitRename = async (draftTitle: string) => {
     const t = draftTitle.trim();
-    setRenaming(false);
     if (!t || t === title) return;
     try {
       if (file) {
@@ -140,18 +140,9 @@ export function TextNode({ id, data, width, height }: NodeProps) {
               <span className="ml-1 w-1.5 h-1.5 rounded-full" style={{ background: "#f59e0b" }} />
             </span>
           )}
-          {renaming ? (
+          {renameEdit.editing ? (
             <input
-              value={draftTitle}
-              onChange={(e) => setDraftTitle(e.target.value)}
-              onBlur={() => commitRename()}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") commitRename();
-                else if (e.key === "Escape") {
-                  setDraftTitle(title ?? "");
-                  setRenaming(false);
-                }
-              }}
+              {...renameEdit.inputProps}
               autoFocus
               onClick={(e) => e.stopPropagation()}
               className="nodrag w-full min-w-0 rounded px-1 text-xs outline-none focus:ring-1 focus:ring-[var(--accent)]"
@@ -161,7 +152,7 @@ export function TextNode({ id, data, width, height }: NodeProps) {
             <span
               className="truncate"
               title={fileMissing || readOnly ? undefined : "双击重命名"}
-              onDoubleClick={fileMissing || readOnly ? undefined : startRename}
+              onDoubleClick={fileMissing || readOnly ? undefined : renameEdit.start}
             >
               {title || "文本"}
             </span>

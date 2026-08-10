@@ -1,0 +1,73 @@
+/**
+ * 弹层菜单公共壳（右键菜单/浮层菜单共用）。
+ *
+ * 收敛全项目菜单的重复样板：fixed 定位 + 视口钳制（useClampedMenuPosition）+
+ * Esc/点击外部关闭（useDismissOnOutside）+ 容器样式 + 菜单项/分隔线统一样式。
+ *
+ * 容器内元素无需再 stopPropagation 防提前关闭（外部关闭检测用 contains 判定）；
+ * 但 React Flow / 文件树行等宿主有 pointerdown 拦截的场景需传 stopPointerDown
+ * （阻止事件到达宿主处理器，防按钮 click 被宿主 preventDefault 抑制）。
+ */
+import type { ReactNode } from "react";
+import { useClampedMenuPosition } from "@/hooks/useClampedMenuPosition";
+import { useDismissOnOutside } from "@/hooks/useDismissOnOutside";
+
+interface MenuProps {
+  x: number;
+  y: number;
+  onClose: () => void;
+  /** 宽度 class（如 "w-44" / "w-56"），缺省 w-48。 */
+  widthClass?: string;
+  /** 容器内容 class（默认 "py-1"；内容非菜单项列表时覆盖，如 "p-2.5"）。 */
+  contentClassName?: string;
+  /** 内容高度可能变化的场景（如删除确认态切换）重新钳制，防贴视口底部溢出。 */
+  repositionDeps?: unknown[];
+  /** 阻止 pointerdown 冒泡（React Flow / 树行等宿主有 pointerdown 拦截时传）。 */
+  stopPointerDown?: boolean;
+  children: ReactNode;
+}
+
+/** 弹层菜单容器：fixed 定位 + 视口钳制 + Esc/点击外部关闭。 */
+export function Menu({ x, y, onClose, widthClass = "w-48", contentClassName, repositionDeps, stopPointerDown, children }: MenuProps) {
+  const { ref: menuRef, pos } = useClampedMenuPosition(x, y, repositionDeps ?? []);
+  useDismissOnOutside(onClose, menuRef);
+  return (
+    <div
+      ref={menuRef}
+      className={`fixed border rounded shadow-lg z-50 ${widthClass} ${contentClassName ?? "py-1"}`}
+      style={{
+        left: pos.x,
+        top: pos.y,
+        background: "var(--bg-secondary)",
+        borderColor: "var(--border)",
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={stopPointerDown ? (e) => e.stopPropagation() : undefined}
+    >
+      {children}
+    </div>
+  );
+}
+
+interface MenuItemProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  /** 危险操作样式（红字，hover 红底白字）。 */
+  danger?: boolean;
+}
+
+/** 统一菜单项（w-full 左对齐 + 图标文本同行 + hover 强调色）；danger = 删除类操作。 */
+export function MenuItem({ danger, style, className, ...rest }: MenuItemProps) {
+  return (
+    <button
+      {...rest}
+      className={`w-full text-left px-3 py-1.5 text-sm inline-flex items-center gap-1.5 ${
+        danger ? "text-[#f87171] hover:bg-red-600 hover:text-white" : "hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
+      } ${className ?? ""}`}
+      style={danger ? undefined : { color: "var(--text-primary)", ...style }}
+    />
+  );
+}
+
+/** 菜单内分隔线。 */
+export function MenuDivider() {
+  return <hr className="my-1" style={{ borderColor: "var(--border)" }} />;
+}

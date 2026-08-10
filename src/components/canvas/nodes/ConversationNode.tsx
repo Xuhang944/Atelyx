@@ -1,8 +1,7 @@
-import { ArrowDown, Check, Copy, FileText, GitBranch, Globe, History, Loader2, Plus, RefreshCw, Scissors, X } from "lucide-react";
-import { useEffect, useCallback, memo, useMemo, useRef, useState, type CSSProperties } from "react";
+import { ArrowDown, Globe, Loader2, Plus, RefreshCw, Scissors, X } from "lucide-react";
+import { useEffect, useCallback, useMemo, useRef, useState } from "react";
 import { NodeResizeControl, useReactFlow, type NodeProps } from "@xyflow/react";
 import { useShallow } from "zustand/react/shallow";
-import ReactMarkdown from "react-markdown";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -16,13 +15,10 @@ import {
   modelDisplayName,
   modelNameAcrossProviders,
   prefix,
-  scanMentionHits,
   splitMentions,
   type MentionSeg,
 } from "@/utils/text";
 import {
-  MARKDOWN_PLUGINS,
-  REHYPE_PLUGINS,
   markdownComponents,
   vaultPathNoteOf,
   wikiNoteFileCandidates,
@@ -33,27 +29,21 @@ import type {
   MediaData,
   PendingAttachment,
   Attachment,
-  Message,
 } from "@/types";
 import type { Node as FlowNode } from "@xyflow/react";
 import { ConversationAtPicker } from "./ConversationAtPicker";
 import { ConversationAttachmentTray } from "./ConversationAttachmentTray";
 import { ConnectionFrame } from "./ConnectionFrame";
-import { ThinkingBlock } from "@/components/common/ThinkingBlock";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
+import { ChatMessageBubble } from "@/components/common/ChatMessageBubble";
+import { MentionTextarea } from "@/components/common/MentionTextarea";
+import { useInlineEdit } from "@/hooks/useInlineEdit";
 
 /** 模块级空数组，避免 selector 每次返回新引用导致 React 无限循环。 */
 const EMPTY_MESSAGES: never[] = [];
 const FALSE = false as const;
 /** 拖线引用队列的空数组占位（selector 稳定引用）。 */
 const EMPTY_PENDING: string[] = [];
-
-/** overlay 与 textarea 严格一致的字体（CSS 未给 textarea 设 font，UA 默认不同会导致标签错位） */
-const INPUT_FONT: CSSProperties = {
-  fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
-  fontSize: 14,
-  lineHeight: "1.4rem",
-};
 
 /** 待发送附件 → 媒体节点 data（影子节点 / 固定到画布共用，） */
 function toMediaData(att: PendingAttachment): MediaData & Record<string, unknown> {
@@ -66,6 +56,10 @@ function toMediaData(att: PendingAttachment): MediaData & Record<string, unknown
     parseFailed: att.parseFailed,
   };
 }
+
+/** 画布消息 refs → chip 去重键（nodeId）：模块级稳定函数，供 ChatMessageBubble memo 生效 */
+const refKeyOfNodeRef = (r: { label: string }) =>
+  (r as unknown as { nodeId: string }).nodeId;
 
 /**
  * 对话节点。
@@ -117,24 +111,14 @@ export function ConversationNode({ id, width, height }: NodeProps) {
   const firstUserMsg = messages.find((m) => m.role === "user");
   const displayTitle =
     nodeData?.title || prefix(firstUserMsg?.displayContent ?? firstUserMsg?.content ?? "", 12) || "对话";
-  const [editingTitle, setEditingTitle] = useState(false);
-  const [titleDraft, setTitleDraft] = useState("");
-  const titleCancelRef = useRef(false);
-  const titleInputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (editingTitle) titleInputRef.current?.focus();
-  }, [editingTitle]);
-  const commitTitle = () => {
-    // Escape 取消后 input 卸载触发 blur，靠 flag 拦截这次误提交
-    if (titleCancelRef.current) {
-      titleCancelRef.current = false;
-      return;
-    }
-    setEditingTitle(false);
-    const v = titleDraft.trim();
-    if (v === displayTitle) return;
-    updateNodeData(id, { title: v || undefined });
-  };
+  const titleEdit = useInlineEdit({
+    value: displayTitle,
+    onCommit: (v) => {
+      const t = v.trim();
+      if (t === displayTitle) return;
+      updateNodeData(id, { title: t || undefined });
+    },
+  });
   const [picker, setPicker] = useState<{ x: number; y: number; openUp: boolean; yBottom: number; query: string } | null>(null);
   // 记录 @ 触发时光标位置（@ 尚未插入，插入后 @ 即在该索引），用于精确删除而非只删末尾
   const [atIdx, setAtIdx] = useState(-1);
@@ -169,7 +153,6 @@ export function ConversationNode({ id, width, height }: NodeProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const nodeRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const overlayRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ===== 智能滚动跟随：贴底时自动跟随新消息；用户上翻看历史时不被拉走，显示「新消息」回底按钮（与 AI 对话面板共用 hook） =====
@@ -637,6 +620,30 @@ export function ConversationNode({ id, width, height }: NodeProps) {
 
   // ===== 渲染 =====
 
+  // assistant 消息的 Markdown 组件配置：useMemo 稳定化（气泡 memo 生效前提，流式期间历史消息不重渲染）
+  const messageMarkdownComponents = useMemo(
+    () =>
+      markdownComponents({
+        isLocatable: isWikiLocatable,
+        onLocate: handleLocateWiki,
+        onOpenNote: handleOpenWikiNote,
+        isVaultPathNote,
+        onOpenVaultPathNote: handleOpenVaultPathNote,
+        onCreateNote: handleCreateNote,
+        onOpenUrl: (url) => void useAppStore.getState().openUrl(url),
+      }),
+    [isWikiLocatable, handleLocateWiki, handleOpenWikiNote, isVaultPathNote, handleOpenVaultPathNote, handleCreateNote]
+  );
+  const handleRollback = useCallback(
+    (messageId: string) => rollbackTo(id, messageId),
+    [id, rollbackTo]
+  );
+  // @chip 点击定位（稳定引用，气泡 memo 生效前提）
+  const handleRefChipClick = useCallback(
+    (refKey: string) => handleLocateRef(refKey),
+    [handleLocateRef]
+  );
+
   const last = messages[messages.length - 1];
   const canRegenerate =
     !!last && last.role === "assistant" && !streaming && !last.content.startsWith("[错误]");
@@ -669,19 +676,10 @@ export function ConversationNode({ id, width, height }: NodeProps) {
         }}
       >
         {/* 标题：双击 inline 编辑（nodrag + stopPropagation 防触发节点拖拽） */}
-        {editingTitle ? (
+        {titleEdit.editing ? (
           <input
-            ref={titleInputRef}
-            value={titleDraft}
-            onChange={(e) => setTitleDraft(e.target.value)}
-            onBlur={commitTitle}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") commitTitle();
-              if (e.key === "Escape") {
-                titleCancelRef.current = true;
-                setEditingTitle(false);
-              }
-            }}
+            {...titleEdit.inputProps}
+            autoFocus
             onPointerDown={(e) => e.stopPropagation()}
             placeholder="对话"
             className="nodrag font-medium text-sm min-w-0 w-32 bg-transparent border-b border-[var(--accent)] outline-none"
@@ -691,9 +689,7 @@ export function ConversationNode({ id, width, height }: NodeProps) {
           <span
             onDoubleClick={(e) => {
               e.stopPropagation();
-              titleCancelRef.current = false;
-              setTitleDraft(displayTitle);
-              setEditingTitle(true);
+              titleEdit.start();
             }}
             title="双击重命名"
             className="font-medium truncate max-w-[150px] min-w-0 flex-shrink cursor-text"
@@ -806,22 +802,26 @@ export function ConversationNode({ id, width, height }: NodeProps) {
             const canBranch =
               m.role === "assistant" && m.content.trim() !== "" && !isStreamingMsg;
             return (
-              <MessageBubble
+              <ChatMessageBubble
                 key={m.id}
-                message={m}
-                onMediaExtract={extractToMediaNode}
-                canBranch={canBranch}
-                onBranch={handleBranch}
-                canRollback={canBranch}
-                onRollback={(messageId) => rollbackTo(id, messageId)}
-                onLocateRef={handleLocateRef}
-                onLocateWiki={handleLocateWiki}
-                onOpenWikiNote={handleOpenWikiNote}
-                isVaultPathNote={isVaultPathNote}
-                onOpenVaultPathNote={handleOpenVaultPathNote}
-                onCreateNote={handleCreateNote}
-                isWikiLocatable={isWikiLocatable}
+                role={m.role === "user" ? "user" : "assistant"}
+                displayContent={m.role === "user" ? m.displayContent ?? m.content : undefined}
+                refs={m.refs}
+                refKeyOf={refKeyOfNodeRef}
+                onRefChipClick={handleRefChipClick}
+                content={m.content}
+                reasoningContent={m.reasoningContent}
                 isStreaming={isStreamingMsg}
+                attachments={m.attachments}
+                onMediaExtract={extractToMediaNode}
+                markdownComponents={messageMarkdownComponents}
+                copyText={m.role === "user" ? (m.displayContent ?? m.content) : m.content}
+                messageId={m.id}
+                canRollback={canBranch}
+                onRollback={handleRollback}
+                onBranch={canBranch ? handleBranch : undefined}
+                userBubbleClass="bg-[var(--accent)] text-[var(--accent-fg)]"
+                stopPropagation
               />
             );
           })
@@ -958,58 +958,19 @@ export function ConversationNode({ id, width, height }: NodeProps) {
           <Plus size={16} />
         </button>
         <div className="relative flex-1 min-w-0 overflow-hidden">
-          {/* 背景层：textarea 透明化后承载输入区底色 */}
-          <div className="absolute inset-0 rounded" style={{ background: "var(--input-bg)" }} />
-          {/* 渲染层：@提及 标签（样式同消息气泡定位按钮）+ 普通文本；滚动与 textarea 同步（transform 位移） */}
-          <div
-            ref={overlayRef}
-            aria-hidden
-            className="absolute inset-0 z-10 overflow-hidden pointer-events-none rounded px-2 py-1 text-sm whitespace-pre-wrap break-words"
-            style={{ ...INPUT_FONT, color: "var(--text-primary)" }}
-          >
-            {segments.map((s, i) =>
-              s.mention ? (
-                // 强调色系（深浅主题均可见）：白底白字在浅色 input-bg 下不可见。
-                // 只加背景 + 内阴影描边，**不加 padding/border/nowrap**：inline 元素
-                // padding/border 会撑高行盒并右移后续文本，与 textarea 原始文本布局错位
-                // （光标由 textarea 按自身布局绘制 → 落在标签视觉边缘内侧）；box-shadow 不影响布局
-                <span
-                  key={i}
-                  className="inline rounded"
-                  style={{
-                    background: "rgba(212,175,55,0.22)",
-                    boxShadow: "inset 0 0 0 1px var(--accent)",
-                    color: "var(--accent)",
-                  }}
-                >
-                  {s.mention.text}
-                </span>
-              ) : (
-                <span key={i}>{s.text}</span>
-              )
-            )}
-          </div>
-          <textarea
-            ref={textareaRef}
+          <MentionTextarea
+            textareaRef={textareaRef}
             value={input}
-            onChange={(e) => {
-              setInput(e.target.value);
+            onChange={(v) => {
+              setInput(v);
               // @ 后继续输入 → 实时过滤候选（query = @ 位置之后的内容）
               if (picker && atIdx >= 0) {
-                setPicker((p) => (p ? { ...p, query: e.target.value.slice(atIdx + 1) } : p));
+                setPicker((p) => (p ? { ...p, query: v.slice(atIdx + 1) } : p));
               }
             }}
+            segments={segments}
+            onRemoveMention={removeMention}
             onKeyDown={(e) => {
-              // 光标紧贴 @引用标签 末尾按退格 → 整段删除标签并取消引用（替代原悬浮 X 删除按钮）
-              if (e.key === "Backspace") {
-                const cursor = textareaRef.current?.selectionStart ?? 0;
-                const seg = segments.find((s) => s.mention && s.start + s.text.length === cursor);
-                if (seg) {
-                  e.preventDefault();
-                  removeMention(seg);
-                  return;
-                }
-              }
               if (e.key === "@") {
                 setAtIdx(textareaRef.current?.selectionStart ?? 0);
                 const taRect = textareaRef.current?.getBoundingClientRect();
@@ -1028,17 +989,12 @@ export function ConversationNode({ id, width, height }: NodeProps) {
                 handleSend();
               }
             }}
-            onScroll={(e) => {
-              // overlay 与 textarea 滚动同步（直接改 DOM，避免滚动触发重渲染）
-              if (overlayRef.current) {
-                overlayRef.current.style.transform = `translateY(${-e.currentTarget.scrollTop}px)`;
-              }
-            }}
             onPaste={handlePaste}
             placeholder="输入消息…（@ 引用画布资产，Shift+Enter 换行）"
             rows={2}
-            className="relative w-full h-full resize-none rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-[var(--accent)] nodrag nowheel overflow-y-auto"
-            style={{ ...INPUT_FONT, background: "transparent", color: "transparent", caretColor: "var(--text-primary)" }}
+            backgroundLayer={<div className="absolute inset-0 rounded" style={{ background: "var(--input-bg)" }} />}
+            overlayClassName="z-10 rounded px-2 py-1 text-sm"
+            textareaClassName="relative w-full h-full rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-[var(--accent)] nodrag nowheel overflow-y-auto"
           />
         </div>
         {streaming ? (
@@ -1077,201 +1033,3 @@ export function ConversationNode({ id, width, height }: NodeProps) {
   );
 }
 
-// memo：流式期间 messages 数组每帧新引用，历史消息对象引用不变——只重渲染最后一条
-const MessageBubble = memo(function MessageBubble({
-  message,
-  onMediaExtract,
-  canBranch,
-  onBranch,
-  canRollback,
-  onRollback,
-  onLocateRef,
-  onLocateWiki,
-  onOpenWikiNote,
-  isVaultPathNote,
-  onOpenVaultPathNote,
-  onCreateNote,
-  isWikiLocatable,
-  isStreaming,
-}: {
-  message: Message;
-  onMediaExtract: (att: Attachment) => void;
-  canBranch: boolean;
-  onBranch: (messageId: string) => void;
-  /** 仅完整 AI 回复可「回到此处」（进行中的流式占位禁用）。 */
-  canRollback: boolean;
-  onRollback: (messageId: string) => void;
-  onLocateRef: (nodeId: string) => void;
-  onLocateWiki: (value: string) => void;
-  onOpenWikiNote: (value: string) => void;
-  isVaultPathNote: (href: string) => boolean;
-  onOpenVaultPathNote: (href: string) => void;
-  onCreateNote: (name: string) => void;
-  isWikiLocatable: (value: string) => boolean;
-  /** 是否进行中的流式消息（思考块折叠态显示等待扫光动画）。 */
-  isStreaming: boolean;
-}) {
-  const isUser = message.role === "user";
-  const atts = message.attachments ?? [];
-  // 复制反馈 1.5s 后复原（复制内容 = 气泡所见原文）
-  const [copied, setCopied] = useState(false);
-  const copyMessage = () => {
-    const text = isUser ? (message.displayContent ?? message.content) : message.content;
-    void navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
-  // user 消息气泡显示文本：原始输入剔除 @引用标记（引用内容已随消息注入历史，气泡不重复展示 @标题）
-  const displayText = message.displayContent ?? message.content;
-  const mentionHits = useMemo(
-    () => scanMentionHits(displayText, (message.refs ?? []).map((r) => ({ nodeId: r.nodeId, text: `@${r.label}` }))),
-    [displayText, message.refs]
-  );
-  const textParts = useMemo(() => {
-    const parts: string[] = [];
-    let last = 0;
-    for (const h of mentionHits) {
-      if (h.start > last) parts.push(displayText.slice(last, h.start));
-      last = h.end;
-    }
-    if (last < displayText.length) parts.push(displayText.slice(last));
-    return parts;
-  }, [displayText, mentionHits]);
-  // @chip 按源节点去重（同一节点被重复引用/再次注入时气泡只显示一个 @标题，不累计）
-  const uniqueRefs = useMemo(() => {
-    const seen = new Set<string>();
-    return (message.refs ?? []).filter((r) =>
-      seen.has(r.nodeId) ? false : (seen.add(r.nodeId), true)
-    );
-  }, [message.refs]);
-
-  return (
-    <div className={`group relative flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div
-        className={`relative max-w-[85%] rounded-lg px-2.5 py-1.5 ${isUser ? "bg-[var(--accent)] text-[var(--accent-fg)]" : ""}`}
-        style={{
-          cursor: "text",
-          userSelect: "text",
-          WebkitUserSelect: "text",
-          ...(isUser
-            ? {}
-            : {
-                background: "var(--bg-tertiary)",
-                color: "var(--text-primary)",
-              }),
-        }}
-      >
-        {atts.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mb-1.5">
-            {atts.map((att, i) =>
-              att.kind === "image" && att.payload ? (
-                <img
-                  key={i}
-                  src={att.payload}
-                  alt={att.filename ?? ""}
-                  className="max-h-32 rounded border"
-                  style={{ borderColor: "var(--border)", background: "var(--bg-card)" }}
-                  draggable={false}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onMediaExtract(att);
-                  }}
-                  title="右键：拉出为媒体节点"
-                />
-              ) : (
-                <span
-                  key={i}
-                  className="inline-flex items-center gap-1 text-xs rounded px-1.5 py-0.5"
-                  style={{ background: "rgba(128,128,128,.2)" }}
-                  title={att.filename}
-                >
-                  <FileText size={12} className="flex-shrink-0" /> {att.filename || "文件"}
-                </span>
-              )
-            )}
-          </div>
-        )}
-        {isUser && uniqueRefs.length > 0 && (
-          /* 定位按钮组：放用户消息气泡内，按钮显示 @引用标题，点击定位到引用源节点 */
-          <div className="flex flex-wrap gap-1 mb-1">
-            {uniqueRefs.map((ref, i) => (
-              <button
-                key={i}
-                onClick={() => onLocateRef(ref.nodeId)}
-                title={`定位到 ${ref.label}`}
-                className="inline-flex items-center text-xs rounded px-1.5 py-0.5 border max-w-40 hover:opacity-80"
-                style={{ background: "rgba(255,255,255,.15)", borderColor: "rgba(255,255,255,.3)", color: "#fff" }}
-              >
-                <span className="truncate">@{ref.label}</span>
-              </button>
-            ))}
-          </div>
-        )}
-        {isUser ? (
-          <div className="whitespace-pre-wrap break-words">{textParts.join("")}</div>
-        ) : (
-          <div className="markdown-body max-w-none break-words">
-            {message.reasoningContent ? (
-              <ThinkingBlock text={message.reasoningContent} streaming={isStreaming} />
-            ) : null}
-            <ReactMarkdown
-              remarkPlugins={MARKDOWN_PLUGINS}
-              rehypePlugins={REHYPE_PLUGINS}
-              components={markdownComponents({
-                isLocatable: isWikiLocatable,
-                onLocate: onLocateWiki,
-                onOpenNote: onOpenWikiNote,
-                isVaultPathNote,
-                onOpenVaultPathNote,
-                onCreateNote,
-                onOpenUrl: (url) => void useAppStore.getState().openUrl(url),
-              })}
-            >
-              {message.content || (message.reasoningContent ? "" : "...")}
-            </ReactMarkdown>
-          </div>
-        )}
-      </div>
-      {/* 气泡下方操作按钮组：复制（全部消息）+ 回到此处 / 分支（仅完整 AI 回复），hover 浮现 */}
-      <div
-        className={`nodrag absolute top-full mt-0.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-60 hover:!opacity-100 z-10 ${isUser ? "right-0" : "left-0"}`}
-        onClick={(e) => e.stopPropagation()}
-        onPointerDown={(e) => e.stopPropagation()}
-      >
-        <button
-          onClick={copyMessage}
-          title="复制消息"
-          aria-label="复制消息"
-          className="flex items-center gap-0.5 rounded px-1 py-0.5 text-[11px]"
-          style={{ color: "var(--text-muted)" }}
-        >
-          {copied ? <Check size={12} className="flex-shrink-0" /> : <Copy size={12} className="flex-shrink-0" />}
-          {copied ? "已复制" : "复制"}
-        </button>
-        {canRollback && (
-          <button
-            onClick={() => onRollback(message.id)}
-            title="截断此消息之后的全部消息，在此处继续对话（可撤销）"
-            className="flex items-center gap-0.5 rounded px-1 py-0.5 text-[11px]"
-            style={{ color: "var(--text-muted)" }}
-          >
-            <History size={12} className="flex-shrink-0" />
-            回到此处
-          </button>
-        )}
-        {canBranch && (
-          <button
-            onClick={() => onBranch(message.id)}
-            title="在此处创建分支对话节点"
-            className="flex items-center gap-0.5 rounded px-1 py-0.5 text-[11px]"
-            style={{ color: "var(--text-muted)" }}
-          >
-            <GitBranch size={12} className="flex-shrink-0" />
-            分支
-          </button>
-        )}
-      </div>
-    </div>
-  );
-});

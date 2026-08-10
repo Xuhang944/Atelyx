@@ -11,8 +11,7 @@ import { Plus } from "lucide-react";
 import { useRef, useState } from "react";
 import { useAppStore } from "@/stores/appStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
-import { useClampedMenuPosition } from "@/hooks/useClampedMenuPosition";
-import { useDismissOnOutside } from "@/hooks/useDismissOnOutside";
+import { Menu, MenuItem } from "@/components/common/Menu";
 
 /** 拖拽判定阈值（px）：低于视为点击，不进入拖动模式。 */
 const DRAG_THRESHOLD = 4;
@@ -35,9 +34,6 @@ export function LayoutTabs() {
   // 右键菜单（重命名 / 删除）
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const closeMenu = () => setMenu(null);
-  const { ref: menuRef, pos: menuPos } = useClampedMenuPosition(menu?.x ?? 0, menu?.y ?? 0);
-  // 点击菜单外 / Esc 关闭（与文件面板行菜单同款）
-  useDismissOnOutside(closeMenu, menuRef);
 
   // ===== pointer 拖拽排序 =====
   /** 拖动会话（pointerdown 时建立；moved = 是否越过阈值进入拖动）。 */
@@ -215,42 +211,31 @@ export function LayoutTabs() {
 
       {/* tab 右键菜单：重命名 / 删除 */}
       {menu && (
-        <div
-          ref={menuRef}
-          className="fixed border rounded shadow-lg py-1 z-50 w-36"
-          style={{
-            left: menuPos.x,
-            top: menuPos.y,
-            background: "var(--bg-secondary)",
-            borderColor: "var(--border)",
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button
+        <Menu x={menu.x} y={menu.y} onClose={closeMenu} widthClass="w-36">
+          <MenuItem
             onClick={() => {
               cancelRef.current = false;
               setDraft(layouts.find((l) => l.id === menu.id)?.name ?? "");
               setEditingId(menu.id);
               closeMenu();
             }}
-            className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
-            style={{ color: "var(--text-primary)" }}
+            className="text-xs"
           >
             重命名
-          </button>
+          </MenuItem>
           {layouts.length > 1 && (
-            <button
+            <MenuItem
               onClick={() => {
                 deleteLayout(menu.id);
                 closeMenu();
               }}
-              className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
-              style={{ color: "#f87171" }}
+              danger
+              className="text-xs"
             >
               删除
-            </button>
+            </MenuItem>
           )}
-        </div>
+        </Menu>
       )}
     </div>
   );

@@ -37,7 +37,6 @@ import {
 import { useAppStore } from "@/stores/appStore";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
-import { useClampedMenuPosition } from "@/hooks/useClampedMenuPosition";
 import { useCanvasHotkeys } from "@/hooks/useCanvasHotkeys";
 import {
   DEFAULT_CONVERSATION_HEIGHT,
@@ -63,6 +62,7 @@ import {
   type AtelyxFilePayload,
 } from "@/components/canvas/panels/FileExplorerPanel";
 import { AreaPlaceholder } from "@/components/layout/AreaPlaceholder";
+import { Menu, MenuDivider, MenuItem } from "@/components/common/Menu";
 
 const nodeTypes = { conversation: ConversationNode, text: TextNode, media: MediaNode, search: SearchResultNode, group: GroupNode, link: LinkNode, table: TableNode };
 const edgeTypes = { default: DataFlowEdge };
@@ -126,8 +126,6 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
   // 画布右键菜单（空白处）
   const [menu, setMenu] = useState<{ x: number; y: number; flowX: number; flowY: number; linkMode?: boolean } | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
-  // 空白右键菜单挂载后按实测尺寸钳制到视口内（防靠近窗口右/下边缘被截断）
-  const { ref: menuRef, pos: menuPos } = useClampedMenuPosition(menu?.x ?? 0, menu?.y ?? 0);
   // 节点右键菜单
   const [nodeMenu, setNodeMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
   const closeNodeMenu = useCallback(() => setNodeMenu(null), []);
@@ -470,17 +468,7 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
 
       {/* 画布空白处右键菜单 */}
       {menu && (
-        <div
-          ref={menuRef}
-          className="fixed border rounded shadow-lg py-1 z-50 w-40"
-          style={{
-            left: menuPos.x,
-            top: menuPos.y,
-            background: "var(--bg-secondary)",
-            borderColor: "var(--border)",
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
+        <Menu x={menu.x} y={menu.y} onClose={closeMenu} widthClass="w-40" stopPointerDown>
           {menu.linkMode ? (
             /* 添加链接：菜单内 inline 输入 URL（Enter 创建，Esc 关闭） */
             <div className="px-3 py-1.5">
@@ -503,56 +491,48 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
             </div>
           ) : (
             <>
-              <button
+              <MenuItem
                 onClick={() => {
                   addConversationAt(menu.flowX, menu.flowY);
                   closeMenu();
                   setTimeout(() => fitView({ duration: 200, padding: 0.2 }), 50);
                 }}
-                className="w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
-                style={{ color: "var(--text-primary)" }}
               >
                 <span className="inline-flex items-center gap-1.5">
                   <MessageSquarePlus size={14} /> 添加对话节点
                 </span>
-              </button>
-              <button
+              </MenuItem>
+              <MenuItem
                 onClick={() => {
                   addTextNodeAt(menu.flowX, menu.flowY);
                   closeMenu();
                 }}
-                className="w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
-                style={{ color: "var(--text-primary)" }}
               >
                 <span className="inline-flex items-center gap-1.5">
                   <FileText size={14} /> 添加文本节点
                 </span>
-              </button>
-              <hr className="my-1" style={{ borderColor: "var(--border)" }} />
-              <button
+              </MenuItem>
+              <MenuDivider />
+              <MenuItem
                 onClick={() => {
                   addGroupAt(menu.flowX, menu.flowY);
                   closeMenu();
                 }}
-                className="w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
-                style={{ color: "var(--text-primary)" }}
               >
                 <span className="inline-flex items-center gap-1.5">
                   <LayoutDashboard size={14} /> 添加分组
                 </span>
-              </button>
-              <button
+              </MenuItem>
+              <MenuItem
                 onClick={() => setMenu((m) => (m ? { ...m, linkMode: true } : m))}
-                className="w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
-                style={{ color: "var(--text-primary)" }}
               >
                 <span className="inline-flex items-center gap-1.5">
                   <Link2 size={14} /> 添加链接
                 </span>
-              </button>
+              </MenuItem>
             </>
           )}
-        </div>
+        </Menu>
       )}
 
       {/* 节点右键菜单 */}

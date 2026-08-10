@@ -1,3 +1,7 @@
+/** 面板消息 refs → chip 去重键（file）：模块级稳定函数，供 ChatMessageBubble memo 生效 */
+const refKeyOfPanelRef = (r: { label: string }) =>
+  (r as unknown as { file: string }).file;
+
 /**
  * 右侧边栏 AI 对话面板。
  *
@@ -14,8 +18,6 @@ import {
   AlertCircle,
   ArrowDown,
   BookMarked,
-  Check,
-  Copy,
   Cpu,
   FilePlus,
   Globe,
@@ -28,16 +30,13 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import ReactMarkdown from "react-markdown";
+import { useEffect, useCallback, useMemo, useRef, useState } from "react";
 import { useAppStore } from "@/stores/appStore";
 import { useChatPanelStore } from "@/stores/chatPanelStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useVaultStore } from "@/stores/vaultStore";
 import { useAutoScrollFollow } from "@/hooks/useAutoScrollFollow";
 import {
-  MARKDOWN_PLUGINS,
-  REHYPE_PLUGINS,
   markdownComponents,
   vaultPathNoteOf,
   wikiNoteFileOf,
@@ -49,18 +48,12 @@ import {
   splitMentions,
   type MentionSeg,
 } from "@/utils/text";
-import { ThinkingBlock } from "@/components/common/ThinkingBlock";
+import { ChatMessageBubble } from "@/components/common/ChatMessageBubble";
+import { MentionTextarea } from "@/components/common/MentionTextarea";
 import type { EditorChatMessage, EditorChatMessageRef } from "@/types";
 
 /** 空消息数组（模块级常量：避免 selector 新引用导致无限重渲染）。 */
 const EMPTY_MESSAGES: EditorChatMessage[] = [];
-
-/** overlay 与 textarea 严格一致的字体（CSS 未给 textarea 设 font，UA 默认不同会导致标签错位） */
-const INPUT_FONT: CSSProperties = {
-  fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
-  fontSize: 14,
-  lineHeight: "1.4rem",
-};
 
 /**
  * 输入框追加 @标签：前文非空且不以空格结尾时才补一个分隔空格，标签后恒带一个尾随空格。
@@ -80,6 +73,8 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
   const send = useChatPanelStore((s) => s.send);
   const stop = useChatPanelStore((s) => s.stop);
   const renameSession = useChatPanelStore((s) => s.renameSession);
+  const rollbackTo = useChatPanelStore((s) => s.rollbackTo);
+  const regenerate = useChatPanelStore((s) => s.regenerate);
   const newSession = useChatPanelStore((s) => s.newSession);
   const openSession = useChatPanelStore((s) => s.openSession);
   const deleteSession = useChatPanelStore((s) => s.deleteSession);
@@ -112,10 +107,50 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
       setRenaming(false);
     }
   };
+  // assistant/user 消息的 Markdown 组件配置：useMemo 稳定化（气泡 memo 生效前提）。
+  // 回调内部实时读 noteList（getState），无需响应 noteList 变化重建
+  const chatMarkdownComponents = useMemo(
+    () =>
+      markdownComponents({
+        isLocatable: () => false,
+        onLocate: () => {},
+        onOpenNote: (value) => {
+          const hit = wikiNoteFileOf(value, useVaultStore.getState().noteList);
+          if (hit) useAppStore.getState().openNote(hit.file, hit.title);
+        },
+        isVaultPathNote: (href) =>
+          vaultPathNoteOf(href, useVaultStore.getState().noteList) != null,
+        onOpenVaultPathNote: (href) => {
+          const hit = vaultPathNoteOf(href, useVaultStore.getState().noteList);
+          if (hit) useAppStore.getState().openNote(hit.file, hit.title);
+        },
+        onCreateNote: (name) => {
+          void useVaultStore
+            .getState()
+            .createNote(name)
+            .then((file) => useAppStore.getState().openNote(file, name))
+            .catch((e) => console.error("创建笔记失败", e));
+        },
+        onOpenUrl: (url) => void useAppStore.getState().openUrl(url),
+      }),
+    []
+  );
+  // 气泡操作回调稳定化（memo 生效前提）
+  const handleRollback = useCallback(
+    (messageId: string) => {
+      rollbackTo(messageId);
+    },
+    [rollbackTo]
+  );
+  const handleRegenerate = useCallback(() => void regenerate(), [regenerate]);
+  // @chip 点击打开笔记（稳定引用，气泡 memo 生效前提）；onOpenNote 由 AiChatView 传 store action（稳定）
+  const handleRefChipClick = useCallback(
+    (file: string, label: string) => onOpenNote?.(file, label),
+    [onOpenNote]
+  );
   // 输入框内的 @引用（拖入的笔记）：@标签 随 input 文本渲染，发送时按命中实例注入笔记全文
   const [mentions, setMentions] = useState<EditorChatMessageRef[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const overlayRef = useRef<HTMLDivElement>(null);
 
   // 拖入的笔记引用队列（FileExplorerPanel 拖拽笔记到本输入框）→ 输入框追加 @标签（去重）
   const pendingMentions = useChatPanelStore((s) => s.pendingMentions);
@@ -234,24 +269,6 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
     });
     if (seg.mention) {
       setMentions((prev) => prev.filter((m) => m.file !== seg.mention?.nodeId));
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // 光标紧贴 @引用标签 末尾按退格 → 整段删除标签并取消引用（与画布对话节点输入框一致）
-    if (e.key === "Backspace") {
-      const cursor = textareaRef.current?.selectionStart ?? 0;
-      const seg = segments.find((s) => s.mention && s.start + s.text.length === cursor);
-      if (seg) {
-        e.preventDefault();
-        removeMention(seg);
-        return;
-      }
-    }
-    // Enter 发送 / Shift+Enter 换行；IME 组合期间 Enter 是「上屏候选词」而非发送
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-      e.preventDefault();
-      handleSend();
     }
   };
 
@@ -417,10 +434,32 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
               return (
                 <ChatMessageBubble
                   key={m.id}
-                  message={m}
-                  isStreamingMsg={isStreamingMsg}
-                  canRegenerate={canRegenerate}
-                  onOpenNote={onOpenNote}
+                  role={m.role}
+                  displayContent={m.role === "user" ? m.displayContent ?? m.content : undefined}
+                  refs={m.refs}
+                  refKeyOf={refKeyOfPanelRef}
+                  onRefChipClick={handleRefChipClick}
+                  renderUserMarkdown
+                  content={m.content}
+                  reasoningContent={m.reasoningContent}
+                  isStreaming={isStreamingMsg}
+                  markdownComponents={chatMarkdownComponents}
+                  streamingPlaceholder={
+                    <span
+                      className="inline-flex items-center gap-1 text-xs"
+                      style={{ color: "var(--text-muted)" }}
+                    >
+                      <Loader2 size={12} className="animate-spin" /> 生成中…
+                    </span>
+                  }
+                  copyText={m.role === "user" ? (m.displayContent ?? m.content) : m.content}
+                  messageId={m.id}
+                  canRollback={!isStreamingMsg && m.role === "assistant" && m.content.trim() !== ""}
+                  onRollback={handleRollback}
+                  onRegenerate={canRegenerate ? handleRegenerate : undefined}
+                  userBubbleClass="bg-[var(--bg-tertiary)]"
+                  assistantBubbleStyle={{ background: "var(--bg-primary)", border: "1px solid var(--border)" }}
+                  paddingClass="px-3 py-2 text-sm leading-relaxed min-w-0"
                 />
               );
             })
@@ -584,50 +623,24 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
         {/* 输入框（data-chat-input = 文件面板拖拽笔记的落点：拖入即 @引用）：
         overlay 渲染 @标签（透明 textarea 承载输入，滚动同步 transform） */}
         <div className="relative" data-chat-input>
-          {/* 渲染层：@引用 标签（样式同对话节点输入框）+ 普通文本；滚动与 textarea 同步（transform 位移） */}
-          <div
-            ref={overlayRef}
-            aria-hidden
-            className="absolute inset-0 z-0 overflow-hidden pointer-events-none px-2 pt-3 pb-12 text-sm leading-relaxed whitespace-pre-wrap break-words"
-            style={{ ...INPUT_FONT, color: "var(--text-primary)" }}
-          >
-            {segments.map((s, i) =>
-              s.mention ? (
-                // 只加背景 + 内阴影描边，**不加 padding/border/nowrap**：inline 元素
-                // padding/border 会撑高行盒并右移后续文本，与 textarea 原始文本布局错位
-                // （光标由 textarea 按自身布局绘制 → 落在标签视觉边缘内侧）；box-shadow 不影响布局
-                <span
-                  key={i}
-                  className="inline rounded"
-                  style={{
-                    background: "rgba(212,175,55,0.22)",
-                    boxShadow: "inset 0 0 0 1px var(--accent)",
-                    color: "var(--accent)",
-                  }}
-                >
-                  {s.mention.text}
-                </span>
-              ) : (
-                <span key={i}>{s.text}</span>
-              )
-            )}
-          </div>
-          <textarea
-            ref={textareaRef}
+          <MentionTextarea
+            textareaRef={textareaRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onScroll={(e) => {
-              // overlay 与 textarea 滚动同步（直接改 DOM，避免滚动触发重渲染）
-              if (overlayRef.current) {
-                overlayRef.current.style.transform = `translateY(${-e.currentTarget.scrollTop}px)`;
+            onChange={(v) => setInput(v)}
+            segments={segments}
+            onRemoveMention={removeMention}
+            onKeyDown={(e) => {
+              // Enter 发送 / Shift+Enter 换行；IME 组合期间 Enter 是「上屏候选词」而非发送
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                handleSend();
               }
             }}
             spellCheck={false}
             placeholder="输入消息，Enter 发送，Shift+Enter 换行（新会话自动 @ 当前笔记，拖入笔记 = @引用）"
             rows={5}
-            className="w-full resize-none outline-none px-2 pt-3 pb-12 text-sm leading-relaxed"
-            style={{ ...INPUT_FONT, background: "transparent", color: "transparent", caretColor: "var(--text-primary)" }}
+            overlayClassName="z-0 px-2 pt-3 pb-12 text-sm leading-relaxed"
+            textareaClassName="w-full px-2 pt-3 pb-12 text-sm leading-relaxed"
           />
         </div>
         </div>
@@ -636,171 +649,3 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
   );
 }
 
-// memo：流式期间仅最后一条 assistant 重渲染（历史消息对象引用不变）
-const ChatMessageBubble = memo(function ChatMessageBubble({
-  message,
-  isStreamingMsg,
-  canRegenerate,
-  onOpenNote,
-}: {
-  message: EditorChatMessage;
-  isStreamingMsg: boolean;
-  canRegenerate: boolean;
-  onOpenNote?: (file: string, title: string) => void;
-}) {
-  const isUser = message.role === "user";
-  // 用户消息气泡显示文本：原始输入剔除 @引用标签（引用内容已注入 content，气泡不重复展示 @标题）
-  const displayText = message.displayContent ?? message.content;
-  const mentionHits = useMemo(
-    () =>
-      scanMentionHits(
-        displayText,
-        (message.refs ?? []).map((r) => ({ nodeId: r.file, text: `@${r.label}` }))
-      ),
-    [displayText, message.refs]
-  );
-  const cleanText = useMemo(() => {
-    let out = "";
-    let last = 0;
-    for (const h of mentionHits) {
-      if (h.start > last) out += displayText.slice(last, h.start);
-      last = h.end;
-    }
-    if (last < displayText.length) out += displayText.slice(last);
-    return out;
-  }, [displayText, mentionHits]);
-  // @chip 按笔记去重（同一笔记重复拖入时气泡只显示一个，不累计）
-  const uniqueRefs = useMemo(() => {
-    const seen = new Set<string>();
-    return (message.refs ?? []).filter((r) =>
-      seen.has(r.file) ? false : (seen.add(r.file), true)
-    );
-  }, [message.refs]);
-
-  const rollbackTo = useChatPanelStore((s) => s.rollbackTo);
-  const regenerate = useChatPanelStore((s) => s.regenerate);
-  // 复制反馈 1.5s 后复原（复制内容 = 气泡所见原文）
-  const [copied, setCopied] = useState(false);
-  const copyMessage = () => {
-    const text = isUser ? (message.displayContent ?? message.content) : message.content;
-    void navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
-  // 回到此处：仅完整 AI 回复可用（截断到该消息在此处继续，同画布 canRollback）
-  const canRollback = !isUser && message.content.trim() !== "" && !isStreamingMsg;
-
-  return (
-    <div className={`group relative flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div
-        className="max-w-[85%] rounded-lg px-3 py-2 text-sm leading-relaxed markdown-body break-words min-w-0"
-        style={{
-          background: isUser ? "var(--bg-tertiary)" : "var(--bg-primary)",
-          border: isUser ? undefined : "1px solid var(--border)",
-          color: "var(--text-primary)",
-        }}
-      >
-        {isStreamingMsg && !message.content.trim() && !message.reasoningContent ? (
-          <span
-            className="inline-flex items-center gap-1 text-xs"
-            style={{ color: "var(--text-muted)" }}
-          >
-            <Loader2 size={12} className="animate-spin" /> 生成中…
-          </span>
-        ) : (
-          <>
-            {isUser && uniqueRefs.length > 0 && (
-              /* 只读 @chip 组：放用户消息气泡内，按钮显示 @笔记名，点击打开对应笔记 */
-              <div className="flex flex-wrap gap-1 mb-1.5">
-                {uniqueRefs.map((ref) => (
-                  <button
-                    key={ref.file}
-                    onClick={() => onOpenNote?.(ref.file, ref.label)}
-                    title={`打开 ${ref.file}`}
-                    className="inline-flex items-center text-xs rounded px-1.5 py-0.5 border max-w-40 hover:opacity-80"
-                    style={{
-                      background: "rgba(255,255,255,.15)",
-                      borderColor: "rgba(255,255,255,.3)",
-                      color: "#fff",
-                    }}
-                  >
-                    <span className="truncate">@{ref.label}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-            {message.reasoningContent ? (
-              <ThinkingBlock text={message.reasoningContent} streaming={isStreamingMsg} />
-            ) : null}
-            <ReactMarkdown
-              remarkPlugins={MARKDOWN_PLUGINS}
-              rehypePlugins={REHYPE_PLUGINS}
-              components={markdownComponents({
-                isLocatable: () => false,
-                onLocate: () => {},
-                onOpenNote: (value) => {
-                  const hit = wikiNoteFileOf(value, useVaultStore.getState().noteList);
-                  if (hit) useAppStore.getState().openNote(hit.file, hit.title);
-                },
-                isVaultPathNote: (href) =>
-                  vaultPathNoteOf(href, useVaultStore.getState().noteList) != null,
-                onOpenVaultPathNote: (href) => {
-                  const hit = vaultPathNoteOf(href, useVaultStore.getState().noteList);
-                  if (hit) useAppStore.getState().openNote(hit.file, hit.title);
-                },
-                onCreateNote: (name) => {
-                  void useVaultStore
-                    .getState()
-                    .createNote(name)
-                    .then((file) => useAppStore.getState().openNote(file, name))
-                    .catch((e) => console.error("创建笔记失败", e));
-                },
-                onOpenUrl: (url) => void useAppStore.getState().openUrl(url),
-              })}
-            >
-              {isUser ? cleanText : message.content}
-            </ReactMarkdown>
-          </>
-        )}
-      </div>
-      {/* 气泡下方操作按钮组（同对话节点，无分支）：复制（全部消息）+ 回到此处 / 重新生成（完整 AI 回复），hover 浮现 */}
-      <div
-        className={`absolute top-full mt-0.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-60 hover:!opacity-100 z-10 ${isUser ? "right-0" : "left-0"}`}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <button
-          onClick={copyMessage}
-          title="复制消息"
-          aria-label="复制消息"
-          className="flex items-center gap-0.5 rounded px-1 py-0.5 text-[11px]"
-          style={{ color: "var(--text-muted)" }}
-        >
-          {copied ? <Check size={12} className="flex-shrink-0" /> : <Copy size={12} className="flex-shrink-0" />}
-          {copied ? "已复制" : "复制"}
-        </button>
-        {canRollback && (
-          <button
-            onClick={() => rollbackTo(message.id)}
-            title="回到此处：移除之后的回复，在此继续对话"
-            aria-label="回到此处"
-            className="flex items-center gap-0.5 rounded px-1 py-0.5 text-[11px]"
-            style={{ color: "var(--text-muted)" }}
-          >
-            <History size={12} className="flex-shrink-0" /> 回到此处
-          </button>
-        )}
-        {canRegenerate && (
-          <button
-            onClick={() => void regenerate()}
-            title="重新生成最后一条回复"
-            aria-label="重新生成"
-            className="flex items-center gap-0.5 rounded px-1 py-0.5 text-[11px]"
-            style={{ color: "var(--text-muted)" }}
-          >
-            <RefreshCw size={12} className="flex-shrink-0" /> 重新生成
-          </button>
-        )}
-      </div>
-    </div>
-  );
-});
