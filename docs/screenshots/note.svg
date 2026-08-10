@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <defs>
+    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.4" fill="#D4AF37" opacity="0.08"/>
+    </pattern>
+  </defs>
+  <rect width="1280" height="720" fill="#1C1C1E"/>
+  <rect width="1280" height="720" fill="url(#dots)"/>
+  <rect x="24" y="24" width="1232" height="672" rx="14" fill="none" stroke="#D4AF37" stroke-opacity="0.4" stroke-width="1.5"/>
+  <text x="60" y="78" font-family="'Segoe UI', Arial, sans-serif" font-size="24" font-weight="700" fill="#D4AF37" letter-spacing="2">ATELYX</text>
+  <text x="1220" y="78" text-anchor="end" font-family="'Segoe UI', 'PingFang SC', Arial, sans-serif" font-size="16" fill="#8b8b8b">笔记 · 实时预览与反链</text>
+
+  <g font-family="'Segoe UI', 'PingFang SC', Arial, sans-serif">
+    <rect x="80" y="120" width="86" height="28" rx="6" fill="#D4AF37"/>
+    <text x="123" y="138" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1C1C1E">预览</text>
+    <rect x="174" y="120" width="106" height="28" rx="6" fill="none" stroke="#5a5a5e"/>
+    <text x="227" y="138" text-anchor="middle" font-size="12.5" fill="#9a9a9e">实时预览</text>
+    <rect x="288" y="120" width="70" height="28" rx="6" fill="none" stroke="#5a5a5e"/>
+    <text x="323" y="138" text-anchor="middle" font-size="12.5" fill="#9a9a9e">源码</text>
+    <text x="1160" y="138" text-anchor="end" font-size="12.5" fill="#8b8b8b">项目A/分镜脚本.md</text>
+
+    <text x="80" y="216" font-size="26" font-weight="700" fill="#E5E0D5">分镜脚本 · 第一幕</text>
+    <text x="80" y="250" font-size="13.5" fill="#b5b5ba">雨夜，城市天台。镜头从霓虹招牌缓慢下摇，</text>
+    <text x="80" y="272" font-size="13.5" fill="#b5b5ba">落到蜷缩在墙角的主角身上。</text>
+    <rect x="80" y="292" width="460" height="66" rx="6" fill="#1f1f21" stroke="#2a2a2e"/>
+    <rect x="80" y="292" width="3.5" height="66" fill="#D4AF37"/>
+    <text x="100" y="316" font-size="13" font-weight="600" fill="#D4AF37">&gt; [!note] 关键道具</text>
+    <text x="100" y="340" font-size="13" fill="#dcdcdc">雨伞——贯穿全片的线索。</text>
+    <text x="80" y="392" font-size="13.5" fill="#dcdcdc">1. 开场：长镜头推近，雨声渐强</text>
+    <text x="80" y="416" font-size="13.5" fill="#dcdcdc">2. 冲突：脚步声在身后逼近</text>
+    <text x="80" y="448" font-size="13.5" fill="#8b8b8b">后续参考：</text>
+    <text x="158" y="448" font-size="13.5" fill="#D4AF37">[[长镜头方案要点]]</text>
+    <rect x="80" y="478" width="520" height="82" rx="6" fill="#19191b" stroke="#2a2a2e"/>
+    <text x="100" y="506" font-family="'Cascadia Mono', Consolas, monospace" font-size="12.5" fill="#8b8b8b">#1 开场雨夜</text>
+    <text x="100" y="528" font-family="'Cascadia Mono', Consolas, monospace" font-size="12.5" fill="#8b8b8b">#2 推进特写</text>
+    <text x="100" y="550" font-family="'Cascadia Mono', Consolas, monospace" font-size="12.5" fill="#8b8b8b">#3 手持跟拍</text>
+    <text x="80" y="596" font-size="13.5" fill="#6a6a6e">（继续书写……）</text>
+
+    <rect x="880" y="176" width="320" height="254" rx="8" fill="#222226" stroke="#2a2a2e"/>
+    <text x="904" y="204" font-size="14" font-weight="600" fill="#D4AF37">属性</text>
+    <text x="904" y="242" font-size="12" fill="#8b8b8b">标签</text>
+    <rect x="904" y="252" width="58" height="24" rx="12" fill="none" stroke="#D4AF37"/>
+    <text x="933" y="268" text-anchor="middle" font-size="12" fill="#D4AF37">剧本</text>
+    <rect x="970" y="252" width="58" height="24" rx="12" fill="none" stroke="#5a5a5e"/>
+    <text x="999" y="268" text-anchor="middle" font-size="12" fill="#9a9a9e">悬疑</text>
+    <circle cx="1040" cy="264" r="10" fill="none" stroke="#5a5a5e"/>
+    <text x="1040" y="269" text-anchor="middle" font-size="13" fill="#8b8b8b">+</text>
+    <text x="904" y="318" font-size="12" fill="#8b8b8b">创建时间</text>
+    <text x="1020" y="318" font-size="12.5" fill="#dcdcdc">2026-08-01</text>
+    <text x="904" y="356" font-size="12" fill="#8b8b8b">状态</text>
+    <circle cx="910" cy="351" r="3.5" fill="#7a9a7a"/>
+    <text x="922" y="356" font-size="12.5" fill="#dcdcdc">进行中</text>
+    <text x="904" y="394" font-size="12" fill="#8b8b8b">别名</text>
+    <text x="1020" y="394" font-size="12.5" fill="#dcdcdc">分镜</text>
+
+    <rect x="880" y="450" width="320" height="210" rx="8" fill="#222226" stroke="#2a2a2e"/>
+    <text x="904" y="478" font-size="14" font-weight="600" fill="#D4AF37">反向链接（2）</text>
+    <circle cx="910" cy="508" r="3" fill="#8a7440"/>
+    <text x="924" y="513" font-size="13" fill="#dcdcdc">剧本大纲.md</text>
+    <text x="924" y="532" font-size="12" fill="#8b8b8b">……在第三幕再次使用长镜头方案</text>
+    <circle cx="910" cy="566" r="3" fill="#8a7440"/>
+    <text x="924" y="571" font-size="13" fill="#dcdcdc">幕表.md</text>
+    <text x="924" y="590" font-size="12" fill="#8b8b8b">……雨夜开场的机位安排</text>
+    <text x="924" y="626" font-size="12" fill="#6a6a6e">点击跳转引用方</text>
+  </g>
+</svg>
