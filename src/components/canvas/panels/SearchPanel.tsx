@@ -10,11 +10,11 @@
  */
 import { Check, ChevronDown, FileText, LayoutDashboard, Paperclip, Search, StickyNote, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useClampedMenuPosition } from "@/hooks/useClampedMenuPosition";
+import { Menu, MenuItem } from "@/components/common/Menu";
 import { useAppStore } from "@/stores/appStore";
 import { useVaultStore } from "@/stores/vaultStore";
 import { VaultSwitcher } from "@/components/canvas/panels/VaultSwitcher";
-import { parentDir } from "@/utils/filename";
+import { parentDir, noteTitleFromFile, stripExt } from "@/utils/filename";
 import type { CanvasFileRow, FileTreeNode } from "@/types";
 
 /** 搜索模式列表：当前仅「按文件名」支持，其余为后续模式占位。 */
@@ -23,11 +23,6 @@ const SEARCH_MODES: { key: string; label: string; supported: boolean }[] = [
   { key: "global", label: "全局搜索", supported: false },
   { key: "tag", label: "按标签搜索", supported: false },
 ];
-
-/** 从 `.md` 文件名还原显示标题：仅去 `.md` 后缀。 */
-function noteTitleFromName(name: string): string {
-  return name.replace(/\.md$/i, "");
-}
 
 /** 递归收集树中全部文件（搜索结果扁平行）。 */
 function collectFiles(nodes: FileTreeNode[]): FileTreeNode[] {
@@ -78,12 +73,12 @@ export function SearchPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenTableFi
       // 外部白板：合成行打开（只读查看）
       onOpenCanvasFile({
         id: node.path,
-        title: node.name.replace(/\.canvas$/i, ""),
+        title: stripExt(node.name),
         file: node.path,
         updatedAt: node.updatedAt,
       });
     } else if (node.name.toLowerCase().endsWith(".md")) {
-      onOpenNoteForEdit(node.path, noteTitleFromName(node.name));
+      onOpenNoteForEdit(node.path, noteTitleFromFile(node.path));
     } else if (node.name.toLowerCase().endsWith(".atb")) {
       onOpenTableFile(node.path, node.name.replace(/\.atb$/i, ""));
     }
@@ -222,51 +217,18 @@ function ModeMenu({
   onChange: (key: string) => void;
   onClose: () => void;
 }) {
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
-  // 挂载后按菜单实测尺寸钳制到视口内（防靠近窗口右/下边缘被截断）
-  const { ref: menuRef, pos } = useClampedMenuPosition(x, y);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCloseRef.current();
-    };
-    const onDown = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) onCloseRef.current();
-    };
-    window.addEventListener("keydown", onKey);
-    document.addEventListener("mousedown", onDown);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      document.removeEventListener("mousedown", onDown);
-    };
-    // menuRef 为稳定引用（hook 内 useRef），加入依赖仅为消除 exhaustive-deps，不会重挂监听
-  }, [menuRef]);
-
   return (
-    <div
-      ref={menuRef}
-      className="fixed border rounded shadow-lg py-1 z-50 w-40"
-      style={{
-        left: pos.x,
-        top: pos.y,
-        background: "var(--bg-secondary)",
-        borderColor: "var(--border)",
-        color: "var(--text-primary)",
-      }}
-      onClick={(e) => e.stopPropagation()}
-      onMouseDown={(e) => e.stopPropagation()}
-    >
+    <Menu x={x} y={y} onClose={onClose} widthClass="w-40">
       {SEARCH_MODES.map((m) => (
-        <button
+        <MenuItem
           key={m.key}
           disabled={!m.supported}
           onClick={() => onChange(m.key)}
-          className="w-full text-left px-3 py-1.5 text-sm inline-flex items-center gap-1.5 disabled:cursor-not-allowed"
           style={{
             color: m.supported ? "var(--text-primary)" : "var(--text-muted)",
             opacity: m.supported ? 1 : 0.6,
           }}
+          className={m.supported ? undefined : "disabled:cursor-not-allowed"}
         >
           <span className="flex-1">{m.label}</span>
           {m.supported ? (
@@ -274,8 +236,8 @@ function ModeMenu({
           ) : (
             <span className="text-[10px]">尚未支持</span>
           )}
-        </button>
+        </MenuItem>
       ))}
-    </div>
+    </Menu>
   );
 }

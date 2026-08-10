@@ -22,6 +22,7 @@ import type {
   WhiteboardNode,
 } from "@/types";
 import { prefix } from "@/utils/text";
+import { baseName, noteTitleFromFile } from "@/utils/filename";
 
 /** 映射时读取文件内容的注入接口（services/vault 提供实现）。 */
 export interface WhiteboardIo {
@@ -49,10 +50,6 @@ export function inferImageMime(name: string): string {
 
 function isImageExt(name: string): boolean {
   return /\.(png|jpe?g|webp|gif)$/i.test(name);
-}
-
-function noteTitleFromName(name: string): string {
-  return name.replace(/\.md$/i, "");
 }
 
 /** 解析 .canvas JSON（格式损坏抛错，由调用方降级提示）。 */
@@ -83,7 +80,7 @@ export async function mapWhiteboardNodes(
     if (n.type === "file" && n.file) {
       if (/\.md$/i.test(n.file)) {
         const data: TextFileData = {
-          title: noteTitleFromName(n.file),
+          title: noteTitleFromFile(n.file),
           file: n.file,
         };
         let bodyMd = "";
@@ -102,7 +99,7 @@ export async function mapWhiteboardNodes(
           file: n.file,
           mime: inferImageMime(n.file),
           kind: isImageExt(n.file) ? "image" : "file",
-          name: n.file.split("/").pop(),
+          name: baseName(n.file),
         };
         if (data.kind === "image") {
           try {

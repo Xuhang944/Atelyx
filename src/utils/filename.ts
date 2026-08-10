@@ -32,6 +32,28 @@ export function dedupeFilename(name: string, existing: string[]): string {
   return `${stem}-${i}${ext}`;
 }
 
+/** 路径末段文件名（"a/b.md" → "b.md"；根目录文件 → 自身）。 */
+export function baseName(file: string): string {
+  const i = file.lastIndexOf("/");
+  return i >= 0 ? file.slice(i + 1) : file;
+}
+
+/** 去最后一个扩展名（"b.md" → "b"；无扩展名/隐藏文件原样返回）。 */
+export function stripExt(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(0, dot) : name;
+}
+
+/** 笔记显示标题：路径末段文件名去 `.md` 后缀（"a/笔记.md" → "笔记"）。 */
+export function noteTitleFromFile(file: string): string {
+  return stripExt(baseName(file));
+}
+
+/** 表格显示标题：路径末段文件名去 `.atb` 后缀。 */
+export function tableTitleFromFile(file: string): string {
+  return stripExt(baseName(file));
+}
+
 /** 文件相对路径的父目录（"a/b.md" → "a"；根目录文件 → ""）。 */
 export function parentDir(file: string): string {
   const i = file.lastIndexOf("/");

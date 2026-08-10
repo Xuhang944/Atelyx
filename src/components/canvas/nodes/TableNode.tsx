@@ -16,6 +16,7 @@ import type { TableData } from "@/types";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useVaultStore } from "@/stores/vaultStore";
 import { DEFAULT_TABLE_NODE_HEIGHT, DEFAULT_TABLE_NODE_WIDTH } from "@/constants/canvas";
+import { tableTitleFromFile } from "@/utils/filename";
 import { ConnectionFrame } from "./ConnectionFrame";
 
 /** 打开表格窗口事件（detail = { file, title }；页面层 ProjectWorkspacePage 监听）。 */
@@ -35,7 +36,7 @@ export function TableNode({ id, data, width, height }: NodeProps) {
     try {
       const newFile = await useVaultStore.getState().renameTable(file, t);
       // 用去重后的实际标题（同名自动加序号时 ≠ 草稿），与文件内 title/窗口标签保持一致
-      const actualTitle = newFile.split("/").pop()?.replace(/\.atb$/i, "") ?? t;
+      const actualTitle = tableTitleFromFile(newFile);
       useCanvasStore.getState().updateNodeData(id, { title: actualTitle, file: newFile });
     } catch (e) {
       console.error("重命名表格失败", e);

@@ -18,6 +18,7 @@ import { SettingsModal } from "@/components/settings/SettingsModal";
 import { TitleBarControls } from "@/components/common/TitleBarControls";
 import { LayoutTabs } from "@/components/layout/LayoutTabs";
 import { WorkspaceGrid } from "@/components/layout/WorkspaceGrid";
+import { noteTitleFromFile, tableTitleFromFile } from "@/utils/filename";
 import type { FileTreeNode } from "@/types";
 
 export function ProjectWorkspacePage() {
@@ -74,7 +75,7 @@ export function ProjectWorkspacePage() {
       if (newFile) {
         useAppStore.getState().openNote(
           newFile,
-          newFile.split("/").pop()?.replace(/\.md$/i, "") ?? newFile,
+          noteTitleFromFile(newFile),
         );
       } else {
         useAppStore.getState().closeNote();
@@ -90,7 +91,7 @@ export function ProjectWorkspacePage() {
       const newFile =
         lastTableRenameTarget(currentTableFile) ?? lastFolderRenameTarget(currentTableFile);
       if (newFile) {
-        const newTitle = newFile.split("/").pop()?.replace(/\.atb$/i, "") ?? newFile;
+        const newTitle = tableTitleFromFile(newFile);
         useAppStore.getState().openTable(newFile, newTitle);
       } else {
         useAppStore.getState().closeTableSilent();

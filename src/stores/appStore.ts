@@ -23,7 +23,7 @@ import { useChatPanelStore } from "@/stores/chatPanelStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import { markSelfSave, useCanvasStore } from "@/stores/canvasStore";
-import { dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename, siblingPath } from "@/utils/filename";
+import { baseName, dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename, siblingPath, stripExt } from "@/utils/filename";
 import { getAppVersion as getVersionSvc } from "@/services/app";
 import { openInExplorer as openInExplorerSvc, openUrl as openUrlSvc } from "@/services/shell";
 import { pickDirectory as pickDirectorySvc } from "@/services/dialog";
@@ -484,10 +484,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   moveCanvas: async (row, targetDir) => {
     // 保持文件名，目标文件夹同名自动加序号（排除自身 = 同目录移动 no-op）
-    const name = row.file.split("/").pop() ?? `${row.title}.atlx`;
+    const name = baseName(row.file);
     const siblings = get()
       .canvases.filter((c) => parentDir(c.file) === targetDir && c.file !== row.file)
-      .map((c) => c.file.split("/").pop() ?? "");
+      .map((c) => baseName(c.file));
     const safe = dedupeFilename(name, siblings);
     const newFile = targetDir ? `${targetDir}/${safe}` : safe;
     if (newFile === row.file) return row.file;
@@ -577,7 +577,7 @@ export const useAppStore = create<AppState>((set, get) => ({
    * 成功后刷新画布列表与文件树并直接打开新画布。失败返回 null（画布错误条提示）。
    */
   convertWhiteboard: async (file) => {
-    const title = file.split("/").pop()?.replace(/\.canvas$/i, "") ?? "白板";
+    const title = stripExt(baseName(file));
     // 同名自动加序号（同目录现有 .atlx 标题）
     const siblings = get()
       .canvases.filter((c) => parentDir(c.file) === parentDir(file))

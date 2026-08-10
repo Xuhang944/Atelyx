@@ -33,7 +33,6 @@ import {
   Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useClampedMenuPosition } from "@/hooks/useClampedMenuPosition";
 import { useReactFlow } from "@xyflow/react";
 import { useAppStore } from "@/stores/appStore";
 import { useCanvasStore } from "@/stores/canvasStore";
@@ -44,6 +43,8 @@ import { useVaultStore } from "@/stores/vaultStore";
 import { VaultSwitcher } from "@/components/canvas/panels/VaultSwitcher";
 import { FileContextMenu } from "@/components/canvas/panels/FileContextMenu";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
+import { Menu, MenuDivider, MenuItem } from "@/components/common/Menu";
+import { baseName, noteTitleFromFile, stripExt, tableTitleFromFile } from "@/utils/filename";
 import type { CanvasFileRow, FileExplorerSortKey, FileTreeNode } from "@/types";
 
 /** 拖拽负载 MIME，工作区 onDrop 据此识别面板拖来的文件。 */
@@ -91,20 +92,41 @@ function isSortKey(v: FileExplorerSortKey | undefined): v is FileExplorerSortKey
   return SORT_OPTIONS.some((o) => o.key === v);
 }
 
-/** 从 `.md` 文件名还原显示标题：仅去 `.md` 后缀。 */
-function noteTitleFromName(name: string): string {
-  return name.replace(/\.md$/i, "");
-}
-
-/** 从 `.atb` 文件名还原显示标题：仅去 `.atb` 后缀。 */
-function tableTitleFromName(name: string): string {
-  return name.replace(/\.atb$/i, "");
-}
-
 /** 大写文件扩展名（不含英文句号），无扩展名返回空串。 */
 function upperExt(name: string): string {
   const i = name.lastIndexOf(".");
   return i > 0 ? name.slice(i + 1).toUpperCase() : "";
+}
+
+/** 行内编辑输入框（重命名 / 新建草稿共用）：Enter 提交、Esc 取消、失焦提交（挂载自动聚焦）。 */
+function InlineInput({
+  value,
+  onChange,
+  onCommit,
+  onCancel,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onCommit: () => void;
+  onCancel: () => void;
+  placeholder?: string;
+}) {
+  return (
+    <input
+      autoFocus
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onBlur={onCommit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") onCommit();
+        if (e.key === "Escape") onCancel();
+      }}
+      placeholder={placeholder}
+      className="flex-1 bg-transparent border-b border-[var(--accent)] outline-none text-xs"
+      style={{ color: "var(--text-primary)" }}
+    />
+  );
 }
 
 /** 名称切成「数字段 / 非数字段」交替序列（中文字符属非数字段）。 */
@@ -247,31 +269,31 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
       try {
         if (d.kind === "folder") {
           const newDir = await moveFolder(d.file, dir);
-          const newName = newDir.split("/").pop() ?? "";
+          const newName = baseName(newDir);
           if (newName !== d.name) setNotice(`「${d.name}」已存在，已重命名为「${newName}」`);
         } else if (d.kind === "canvas") {
           const row = canvases.find((c) => c.file === d.file);
           if (row) {
             const newFile = await moveCanvas(row, dir);
-            const newName = newFile.split("/").pop() ?? "";
+            const newName = baseName(newFile);
             if (newName !== d.name) setNotice(`「${d.name}」已存在，已重命名为「${newName}」`);
           } else {
             // 外部白板（.canvas）不在画布列表：走通用文件移动（对任意文件生效）
             const newFile = await moveAttachment(d.file, dir);
-            const newName = newFile.split("/").pop() ?? "";
+            const newName = baseName(newFile);
             if (newName !== d.name) setNotice(`「${d.name}」已存在，已重命名为「${newName}」`);
           }
         } else if (d.kind === "note") {
           const newFile = await moveNote(d.file, dir);
-          const newName = newFile.split("/").pop() ?? "";
+          const newName = baseName(newFile);
           if (newName !== d.name) setNotice(`「${d.name}」已存在，已重命名为「${newName}」`);
         } else if (d.kind === "table") {
           const newFile = await moveTable(d.file, dir);
-          const newName = newFile.split("/").pop() ?? "";
+          const newName = baseName(newFile);
           if (newName !== d.name) setNotice(`「${d.name}」已存在，已重命名为「${newName}」`);
         } else {
           const newFile = await moveAttachment(d.file, dir);
-          const newName = newFile.split("/").pop() ?? "";
+          const newName = baseName(newFile);
           if (newName !== d.name) setNotice(`「${d.name}」已存在，已重命名为「${newName}」`);
         }
         // 移动成功：展开目标文件夹及其祖先让文件可见
@@ -323,7 +345,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
         if (hit?.closest<HTMLElement>("[data-chat-input]")) {
           if (d.kind === "note") hint = "作为引用";
         } else if (dir !== null) {
-          hint = dir === "" ? "移到根目录" : `移动到「${dir.split("/").pop()}」`;
+          hint = dir === "" ? "移到根目录" : `移动到「${baseName(dir)}」`;
         } else if (hit?.closest(".react-flow")) {
           if (d.kind === "note") hint = "创建文本节点";
           else if (d.kind === "table") hint = "创建表格节点";
@@ -413,7 +435,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
       kind,
       file: node.path,
       name: node.name,
-      title: kind === "note" ? noteTitleFromName(node.name) : kind === "table" ? tableTitleFromName(node.name) : undefined,
+      title: kind === "note" ? noteTitleFromFile(node.path) : kind === "table" ? tableTitleFromFile(node.path) : undefined,
       startX: e.clientX,
       startY: e.clientY,
       active: false,
@@ -437,7 +459,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
     try {
       const res = await deleteFolder(dir);
       if (res.needsConfirm) {
-        setConfirmDelete({ dir, name: dir.split("/").pop() ?? dir, count: res.itemCount });
+        setConfirmDelete({ dir, name: baseName(dir), count: res.itemCount });
       }
     } catch (err) {
       console.error("删除文件夹失败", err);
@@ -451,19 +473,19 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
       try {
         if (t.kind === "folder") {
           const newDir = await duplicateFolder(t.dir);
-          setNotice(`已创建副本「${newDir.split("/").pop()}」`);
+          setNotice(`已创建副本「${baseName(newDir)}」`);
         } else if (t.kind === "canvas") {
           const title = await duplicateCanvas(t.row);
           setNotice(`已创建副本「${title}」`);
         } else if (t.kind === "note") {
           const newFile = await duplicateNote(t.file);
-          setNotice(`已创建副本「${newFile.split("/").pop()}」`);
+          setNotice(`已创建副本「${baseName(newFile)}」`);
         } else if (t.kind === "table") {
           const newFile = await duplicateTable(t.file);
-          setNotice(`已创建副本「${newFile.split("/").pop()}」`);
+          setNotice(`已创建副本「${baseName(newFile)}」`);
         } else {
           const newFile = await duplicateAttachment(t.file);
-          setNotice(`已创建副本「${newFile.split("/").pop()}」`);
+          setNotice(`已创建副本「${baseName(newFile)}」`);
         }
       } catch (err) {
         console.error("复制失败", err);
@@ -486,11 +508,6 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
   const [menu, setMenu] = useState<{ x: number; y: number; target: MenuTarget } | null>(null);
   // inline 输入（行内重命名 / 新建草稿）
   const [editing, setEditing] = useState<Editing | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (editing) inputRef.current?.focus();
-  }, [editing]);
 
   /** 提交 inline 输入（新建/重命名），返回是否继续保留编辑态。 */
   const commitEditing = async (e: Editing) => {
@@ -506,17 +523,17 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
         if (actual !== v) setNotice(`「${v}」已存在，已重命名为「${actual}」`);
       } else if (e.kind === "note") {
         const newFile = await renameNote(e.file, v);
-        const actualTitle = noteTitleFromName(newFile.split("/").pop() ?? newFile);
+        const actualTitle = noteTitleFromFile(newFile);
         if (actualTitle !== v) setNotice(`「${v}」已存在，已重命名为「${actualTitle}」`);
       } else if (e.kind === "table") {
         const newFile = await renameTable(e.file, v);
-        const actualTitle = tableTitleFromName(newFile.split("/").pop() ?? newFile);
+        const actualTitle = tableTitleFromFile(newFile);
         if (actualTitle !== v) setNotice(`「${v}」已存在，已重命名为「${actualTitle}」`);
       } else if (e.kind === "attachment") {
         await renameAttachment(e.file, v);
       } else if (e.kind === "folder") {
         const actualDir = await renameFolder(e.dir, v);
-        const actualName = actualDir.split("/").pop() ?? actualDir;
+        const actualName = baseName(actualDir);
         if (actualName !== v) setNotice(`「${v}」已存在，已重命名为「${actualName}」`);
       } else if (e.kind === "creating") {
         if (e.type === "canvas") {
@@ -527,7 +544,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
           if (title !== v) setNotice(`「${v}」已存在，已创建为「${title}」`);
         } else if (e.type === "note") {
           const file = await createNote(v, e.dir);
-          const actualTitle = noteTitleFromName(file.split("/").pop() ?? file);
+          const actualTitle = noteTitleFromFile(file);
           if (actualTitle !== v) setNotice(`「${v}」已存在，已创建为「${actualTitle}」`);
         } else if (e.type === "table") {
           const { file, title } = await createTable(v, e.dir);
@@ -566,18 +583,20 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
     const creatingHere =
       editing?.kind === "creating" && editing.dir === parentDir ? (
         <li key="__creating__" className="px-2 pl-6 py-1 flex items-center gap-1">
-          <input
-            ref={inputRef}
+          <InlineInput
             value={editing.value}
-            onChange={(e) => setEditing({ ...editing, value: e.target.value })}
-            onBlur={() => void commitEditing(editing)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void commitEditing(editing);
-              if (e.key === "Escape") setEditing(null);
-            }}
-            placeholder={editing.type === "canvas" ? "画布名称" : editing.type === "note" ? "笔记名称" : editing.type === "table" ? "表格名称" : "文件夹名称"}
-            className="flex-1 bg-transparent border-b border-[var(--accent)] outline-none text-xs"
-            style={{ color: "var(--text-primary)" }}
+            onChange={(v) => setEditing({ ...editing, value: v })}
+            onCommit={() => void commitEditing(editing)}
+            onCancel={() => setEditing(null)}
+            placeholder={
+              editing.type === "canvas"
+                ? "画布名称"
+                : editing.type === "note"
+                  ? "笔记名称"
+                  : editing.type === "table"
+                    ? "表格名称"
+                    : "文件夹名称"
+            }
           />
         </li>
       ) : null;
@@ -595,18 +614,12 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
               <li key={node.path}>
                 {editingThis ? (
                   <div className="flex items-center px-2 py-1 min-h-8" style={indent}>
-                    <input
-                      ref={inputRef}
+                    <InlineInput
                       value={editingThis.value}
-                      onChange={(e) => setEditing({ ...editingThis, value: e.target.value })}
-                      onBlur={() => void commitEditing(editingThis)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") void commitEditing(editingThis);
-                        if (e.key === "Escape") setEditing(null);
-                      }}
+                      onChange={(v) => setEditing({ ...editingThis, value: v })}
+                      onCommit={() => void commitEditing(editingThis)}
+                      onCancel={() => setEditing(null)}
                       placeholder="文件夹名称"
-                      className="flex-1 bg-transparent border-b border-[var(--accent)] outline-none text-xs"
-                      style={{ color: "var(--text-primary)" }}
                     />
                   </div>
                 ) : (
@@ -674,17 +687,11 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
             <li key={node.path}>
               {editingThis ? (
                 <div className="flex items-center px-2 py-1 min-h-8" style={indent}>
-                  <input
-                    ref={inputRef}
+                  <InlineInput
                     value={editingThis.value}
-                    onChange={(e) => setEditing({ ...editingThis, value: e.target.value })}
-                    onBlur={() => void commitEditing(editingThis)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") void commitEditing(editingThis);
-                      if (e.key === "Escape") setEditing(null);
-                    }}
-                    className="flex-1 bg-transparent border-b border-[var(--accent)] outline-none text-xs"
-                    style={{ color: "var(--text-primary)" }}
+                    onChange={(v) => setEditing({ ...editingThis, value: v })}
+                    onCommit={() => void commitEditing(editingThis)}
+                    onCancel={() => setEditing(null)}
                   />
                 </div>
               ) : (
@@ -702,12 +709,12 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
                       // 外部白板：合成行打开（id = 路径 = 运行时身份，只读查看）
                       onOpenCanvasFile({
                         id: node.path,
-                        title: node.name.replace(/\.canvas$/i, ""),
+                        title: stripExt(node.name),
                         file: node.path,
                         updatedAt: node.updatedAt,
                       });
-                    } else if (isNote) onOpenNoteForEdit(node.path, noteTitleFromName(node.name));
-                    else if (isTable) onOpenTableFile(node.path, tableTitleFromName(node.name));
+                    } else if (isNote) onOpenNoteForEdit(node.path, noteTitleFromFile(node.path));
+                    else if (isTable) onOpenTableFile(node.path, tableTitleFromFile(node.path));
                   }}
                   onContextMenu={(e) => {
                     e.preventDefault();
@@ -861,7 +868,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
               setEditing({
                 kind: "folder",
                 dir: folderTarget.dir,
-                value: folderTarget.dir.split("/").pop() ?? "",
+                value: baseName(folderTarget.dir),
               });
               setMenu(null);
             }}
@@ -887,8 +894,8 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
             y={menu.y}
             onRename={() => {
               if (t.kind === "canvas") setEditing({ kind: "canvas", file: t.row.file, value: t.row.title });
-              else if (t.kind === "note") setEditing({ kind: "note", file: t.file, value: noteTitleFromName(t.name) });
-              else if (t.kind === "table") setEditing({ kind: "table", file: t.file, value: tableTitleFromName(t.name) });
+              else if (t.kind === "note") setEditing({ kind: "note", file: t.file, value: noteTitleFromFile(t.file) });
+              else if (t.kind === "table") setEditing({ kind: "table", file: t.file, value: tableTitleFromFile(t.file) });
               else if (t.kind === "attachment") setEditing({ kind: "attachment", file: t.file, value: t.name });
               setMenu(null);
             }}
@@ -954,76 +961,36 @@ function FolderCreateMenu({
   onDelete: () => void;
   onClose: () => void;
 }) {
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
-  // 挂载后按菜单实测尺寸钳制到视口内（防靠近窗口右/下边缘被截断）
-  const { ref: menuRef, pos } = useClampedMenuPosition(x, y);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCloseRef.current();
-    };
-    // pointerdown（非 mousedown）：树行 pointerdown 的 preventDefault 会抑制 mousedown 派发，点行将无法关闭菜单
-    const onDown = (e: PointerEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) onCloseRef.current();
-    };
-    window.addEventListener("keydown", onKey);
-    document.addEventListener("pointerdown", onDown);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      document.removeEventListener("pointerdown", onDown);
-    };
-    // menuRef 为稳定引用（hook 内 useRef），加入依赖仅为消除 exhaustive-deps，不会重挂监听
-  }, [menuRef]);
-
-  const itemClass =
-    "w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)] inline-flex items-center gap-1.5";
-
   return (
-    <div
-      ref={menuRef}
-      className="fixed border rounded shadow-lg py-1 z-50 w-44"
-      style={{
-        left: pos.x,
-        top: pos.y,
-        background: "var(--bg-secondary)",
-        borderColor: "var(--border)",
-        color: "var(--text-primary)",
-      }}
-      onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      <button className={itemClass} onClick={() => onCreate("canvas")}>
+    <Menu x={x} y={y} onClose={onClose} widthClass="w-44" stopPointerDown>
+      <MenuItem onClick={() => onCreate("canvas")}>
         <FileText size={14} /> 新建画布
-      </button>
-      <button className={itemClass} onClick={() => onCreate("note")}>
+      </MenuItem>
+      <MenuItem onClick={() => onCreate("note")}>
         <StickyNote size={14} /> 新建笔记
-      </button>
-      <button className={itemClass} onClick={() => onCreate("table")}>
+      </MenuItem>
+      <MenuItem onClick={() => onCreate("table")}>
         <Table size={14} /> 新建表格
-      </button>
-      <button className={itemClass} onClick={() => onCreate("folder")}>
+      </MenuItem>
+      <MenuItem onClick={() => onCreate("folder")}>
         <FolderPlus size={14} /> 新建文件夹
-      </button>
+      </MenuItem>
       {canManage && (
         <>
-          <hr className="my-1" style={{ borderColor: "var(--border)" }} />
-          <button className={itemClass} onClick={onDuplicate}>
+          <MenuDivider />
+          <MenuItem onClick={onDuplicate}>
             <Copy size={14} /> 创建副本
-          </button>
-          <hr className="my-1" style={{ borderColor: "var(--border)" }} />
-          <button className={itemClass} onClick={onRename}>
+          </MenuItem>
+          <MenuDivider />
+          <MenuItem onClick={onRename}>
             <Pencil size={14} /> 重命名
-          </button>
-          <button
-            onClick={onDelete}
-            className="w-full text-left px-3 py-1.5 text-sm text-[#f87171] hover:bg-red-600 hover:text-white inline-flex items-center gap-1.5"
-          >
+          </MenuItem>
+          <MenuItem onClick={onDelete} danger>
             <Trash2 size={14} /> 删除
-          </button>
+          </MenuItem>
         </>
       )}
-    </div>
+    </Menu>
   );
 }
 
@@ -1041,53 +1008,14 @@ function SortMenu({
   onChange: (key: FileExplorerSortKey) => void;
   onClose: () => void;
 }) {
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
-  // 挂载后按菜单实测尺寸钳制到视口内（防靠近窗口右/下边缘被截断）
-  const { ref: menuRef, pos } = useClampedMenuPosition(x, y);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCloseRef.current();
-    };
-    // pointerdown（非 mousedown）：树行 pointerdown 的 preventDefault 会抑制 mousedown 派发，点行将无法关闭菜单
-    const onDown = (e: PointerEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) onCloseRef.current();
-    };
-    window.addEventListener("keydown", onKey);
-    document.addEventListener("pointerdown", onDown);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      document.removeEventListener("pointerdown", onDown);
-    };
-    // menuRef 为稳定引用（hook 内 useRef），加入依赖仅为消除 exhaustive-deps，不会重挂监听
-  }, [menuRef]);
-
   return (
-    <div
-      ref={menuRef}
-      className="fixed border rounded shadow-lg py-1 z-50 w-44"
-      style={{
-        left: pos.x,
-        top: pos.y,
-        background: "var(--bg-secondary)",
-        borderColor: "var(--border)",
-        color: "var(--text-primary)",
-      }}
-      onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
+    <Menu x={x} y={y} onClose={onClose} widthClass="w-44" stopPointerDown>
       {SORT_OPTIONS.map((o) => (
-        <button
-          key={o.key}
-          onClick={() => onChange(o.key)}
-          className="w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)] inline-flex items-center gap-1.5"
-          style={{ color: "var(--text-primary)" }}
-        >
+        <MenuItem key={o.key} onClick={() => onChange(o.key)}>
           <span className="flex-1">{o.label}</span>
           {value === o.key && <Check size={12} style={{ color: "var(--accent)" }} />}
-        </button>
+        </MenuItem>
       ))}
-    </div>
+    </Menu>
   );
 }

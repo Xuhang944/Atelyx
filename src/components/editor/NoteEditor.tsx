@@ -19,20 +19,18 @@ import {
   REHYPE_PLUGINS,
   markdownComponents,
   remarkSoftLineBreak,
-  vaultPathNoteOf,
-  wikiNoteFileOf,
 } from "@/utils/markdown";
 import { parseFrontmatter, stringifyFrontmatter } from "@/utils/frontmatter";
+import { noteTitleFromFile } from "@/utils/filename";
 import { NotePropertiesView } from "@/components/editor/NotePropertiesView";
 import { MarkdownEditor } from "@/components/editor/MarkdownEditor";
+import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 
 export function NoteEditor({ file }: { file: string }) {
   const readNoteContent = useVaultStore((s) => s.readNoteContent);
   const saveNoteContent = useVaultStore((s) => s.saveNoteContent);
-  /** 全仓库笔记列表：内部链接（`[[名]]`/`[名](路径)`）点击时解析目标文件用。 */
-  const noteList = useVaultStore((s) => s.noteList);
   // 外部修改感知：watcher note 事件 bump 序号（vaultStore.markNoteExternallyEdited），据此重读磁盘
   const externalEditSeq = useVaultStore((s) => s.externalNoteEdits[file] ?? 0);
   const [content, setContent] = useState("");
@@ -262,29 +260,14 @@ export function NoteEditor({ file }: { file: string }) {
     }
   };
 
-  /** `[[wiki 链接]]` 点击（本编辑器不做画布定位）：打开目标笔记（笔记面积显示，与文件面板打开同款）。 */
-  const handleOpenWikiNote = (value: string) => {
-    const hit = wikiNoteFileOf(value, noteList);
-    if (hit) useAppStore.getState().openNote(hit.file, hit.title);
-  };
-  /** `[label](基于仓库的路径)` 点击：命中仓库内笔记则打开。 */
-  const handleOpenVaultPathNote = (href: string) => {
-    const hit = vaultPathNoteOf(href, noteList);
-    if (hit) useAppStore.getState().openNote(hit.file, hit.title);
-  };
-  /** `[名]()` 空路径内部链接点击：快捷新建该笔记并打开（createNote 自带净化 + 防重名）。 */
-  const handleCreateNote = (name: string) => {
-    void useVaultStore
-      .getState()
-      .createNote(name)
-      .then((file) => useAppStore.getState().openNote(file, name))
-      .catch((e) => console.error("创建笔记失败", e));
-  };
+  /** 笔记链接打开/新建（公共接线簇，见 hooks/useVaultLinkHandlers；本编辑器不做画布定位）。 */
+  const { handleOpenWikiNote, isVaultPathNote, handleOpenVaultPathNote, handleCreateNote } =
+    useVaultLinkHandlers();
 
   /** 反链：全仓库 .md 中引用本文档的笔记（自身排除）；索引缓存 + 指纹增量刷新，扫描开销毫秒级。
    * 只在「切换打开的笔记」时扫描——不随仓库文件变化重扫（根除全量风暴），磁盘为真相自愈。
    * 扫描失败静默降级留空，不阻塞编辑。 */
-  const noteName = file.split("/").pop()?.replace(/\.md$/i, "") ?? "";
+  const noteName = noteTitleFromFile(file);
   const [backlinks, setBacklinks] = useState<BacklinkRow[]>([]);
   useEffect(() => {
     if (!noteName) return;
@@ -484,7 +467,7 @@ export function NoteEditor({ file }: { file: string }) {
               isLocatable: () => false,
               onLocate: () => {},
               onOpenNote: handleOpenWikiNote,
-              isVaultPathNote: (href) => vaultPathNoteOf(href, noteList) != null,
+              isVaultPathNote,
               onOpenVaultPathNote: handleOpenVaultPathNote,
               onCreateNote: handleCreateNote,
               onOpenUrl: (url) => void useAppStore.getState().openUrl(url),

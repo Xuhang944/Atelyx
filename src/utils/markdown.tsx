@@ -42,7 +42,7 @@ import type { Schema } from "hast-util-sanitize";
 import rehypeHighlight from "rehype-highlight";
 import rehypeKatex from "rehype-katex";
 import type { Components } from "react-markdown";
-import { sanitizeFilename } from "@/utils/filename";
+import { baseName, sanitizeFilename } from "@/utils/filename";
 
 // ===== micromark syntax：==高亮== / %%注释%% / [[wiki 链接]] =====
 
@@ -395,7 +395,7 @@ export function vaultPathNoteOf(
   while (path.startsWith("/")) path = path.slice(1);
   if (!path) return null;
   if (path.split("/").includes("..")) return null;
-  const basename = path.split("/").pop() ?? "";
+  const basename = baseName(path);
   const ci = (s: string) => s.toLowerCase();
   const hit = noteList.find(
     (n) =>

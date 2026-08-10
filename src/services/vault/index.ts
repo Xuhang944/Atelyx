@@ -9,7 +9,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Edge, Node } from "@xyflow/react";
 import { CANVAS_SCHEMA } from "@/constants/canvas";
-import { dedupeFilename, parentDir, sanitizeFilename } from "@/utils/filename";
+import { baseName, dedupeFilename, parentDir, sanitizeFilename, stripExt } from "@/utils/filename";
 import { mapWhiteboardEdges, mapWhiteboardNodes, parseWhiteboard } from "@/utils/whiteboard";
 import { tableToSnapshotText } from "@/utils/table";
 import { readTableVault } from "@/services/table";
@@ -456,7 +456,7 @@ export async function loadWhiteboardVault(file: string): Promise<RuntimeCanvas> 
   });
   const nodeIds = new Set(nodes.map((n) => n.id));
   const edges = mapWhiteboardEdges(whiteboard.edges, nodeIds);
-  const title = file.split("/").pop()?.replace(/\.canvas$/i, "") ?? file;
+  const title = stripExt(baseName(file));
   return { id: file, title, nodes, edges, messagesByConv: {}, updatedAt: 0 };
 }
 

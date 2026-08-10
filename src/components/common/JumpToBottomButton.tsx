@@ -1,0 +1,27 @@
+/**
+ * 「新消息」回底按钮：滚动区上翻停止跟随后浮现，点击回底恢复跟随。
+ * 对话节点（画布，需 nodrag 防拖拽）与 AI 对话面板共用；追加类经 className 透传。
+ */
+import { ArrowDown } from "lucide-react";
+
+export function JumpToBottomButton({
+  onClick,
+  className,
+}: {
+  onClick: () => void;
+  className?: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`absolute bottom-2 left-1/2 -translate-x-1/2 flex items-center gap-1 text-xs rounded-full px-2.5 py-1 shadow-lg hover:opacity-80 ${className ?? ""}`}
+      style={{
+        background: "var(--bg-secondary)",
+        border: "1px solid var(--border)",
+        color: "var(--text-secondary)",
+      }}
+    >
+      <ArrowDown size={12} /> 新消息
+    </button>
+  );
+}

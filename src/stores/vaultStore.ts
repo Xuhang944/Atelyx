@@ -42,7 +42,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
-import { dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename } from "@/utils/filename";
+import { baseName, dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename } from "@/utils/filename";
 import type { BacklinkRow, DeleteFolderResult, FileTreeNode, RebuildLinksResult, TextData, VaultFileChange } from "@/types";
 
 /**
@@ -303,7 +303,7 @@ function siblingDirNames(dir: string): string[] {
 /** 复制文件为同目录副本（dedupe 防重名 + 刷新树），返回新相对路径。duplicateNote/duplicateAttachment 共用。 */
 async function applyFileDuplicate(file: string): Promise<string> {
   const dir = parentDir(file);
-  const name = dedupeFilename(file.split("/").pop() ?? file, siblingFileNames(dir));
+  const name = dedupeFilename(baseName(file), siblingFileNames(dir));
   const newFile = dir ? `${dir}/${name}` : name;
   await copyVaultFile(file, newFile);
   await useVaultStore.getState().loadFiles();
@@ -460,7 +460,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     // 同名自动加序号（排除自身，改名到原名不重复）
     const newName = dedupeFilename(
       `${base}.md`,
-      siblingFileNames(oldDir).filter((n) => n !== oldFile.split("/").pop()),
+      siblingFileNames(oldDir).filter((n) => n !== baseName(oldFile)),
     );
     const newFile = oldDir ? `${oldDir}/${newName}` : newName;
     if (newFile === oldFile) return newFile;
@@ -470,7 +470,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
 
   moveNote: async (oldFile, targetDir) => {
     // 保持文件名，目标文件夹同名自动加序号（排除自身 = 同目录移动 no-op）
-    const name = oldFile.split("/").pop() ?? oldFile;
+    const name = baseName(oldFile);
     const existing = siblingFileNames(targetDir).filter(
       (n) => (targetDir ? `${targetDir}/${n}` : n) !== oldFile,
     );
@@ -508,7 +508,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
 
   moveAttachment: async (oldFile, targetDir) => {
     // 保持文件名，目标文件夹同名自动加序号（排除自身 = 同目录移动 no-op）
-    const name = oldFile.split("/").pop() ?? oldFile;
+    const name = baseName(oldFile);
     const existing = siblingFileNames(targetDir).filter(
       (n) => (targetDir ? `${targetDir}/${n}` : n) !== oldFile,
     );
@@ -544,7 +544,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     // 同名自动加序号（排除自身，改名到原名不重复）
     const newName = dedupeFilename(
       `${base}.atb`,
-      siblingFileNames(oldDir).filter((n) => n !== oldFile.split("/").pop()),
+      siblingFileNames(oldDir).filter((n) => n !== baseName(oldFile)),
     );
     const newFile = oldDir ? `${oldDir}/${newName}` : newName;
     if (newFile === oldFile) return newFile;
@@ -553,7 +553,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
   },
 
   moveTable: async (oldFile, targetDir) => {
-    const name = oldFile.split("/").pop() ?? oldFile;
+    const name = baseName(oldFile);
     const existing = siblingFileNames(targetDir).filter(
       (n) => (targetDir ? `${targetDir}/${n}` : n) !== oldFile,
     );
@@ -577,7 +577,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     // 读原表 → 重写 title/id 落同目录新文件（「标题即文件名」规范，写盘路径由 title 决定）
     const table = await readTableVault(file);
     const dir = parentDir(file);
-    const name = dedupeFilename(file.split("/").pop() ?? file, siblingFileNames(dir));
+    const name = dedupeFilename(baseName(file), siblingFileNames(dir));
     const newFile = dir ? `${dir}/${name}` : name;
     const newTitle = name.replace(/\.atb$/i, "");
     await writeTableVault(
@@ -627,7 +627,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
 
   moveFolder: async (oldDir, targetDir) => {
     // 保持目录名，目标文件夹同名自动加序号（排除自身 = 同目录移动 no-op）
-    const name = oldDir.split("/").pop() ?? oldDir;
+    const name = baseName(oldDir);
     const existing = siblingDirNames(targetDir).filter(
       (n) => (targetDir ? `${targetDir}/${n}` : n) !== oldDir,
     );
@@ -642,7 +642,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
 
   duplicateFolder: async (dir) => {
     const parent = parentDir(dir);
-    const name = dedupeFilename(dir.split("/").pop() ?? dir, siblingDirNames(parent));
+    const name = dedupeFilename(baseName(dir), siblingDirNames(parent));
     const newDir = parent ? `${parent}/${name}` : name;
     await copyVaultFolder(dir, newDir);
     await get().loadFiles();

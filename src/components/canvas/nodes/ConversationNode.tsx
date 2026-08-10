@@ -1,4 +1,4 @@
-import { ArrowDown, Globe, Loader2, Plus, RefreshCw, Scissors, X } from "lucide-react";
+import { Globe, Loader2, Plus, RefreshCw, Scissors, X } from "lucide-react";
 import { useEffect, useCallback, useMemo, useRef, useState } from "react";
 import { NodeResizeControl, useReactFlow, type NodeProps } from "@xyflow/react";
 import { useShallow } from "zustand/react/shallow";
@@ -20,9 +20,6 @@ import {
 } from "@/utils/text";
 import {
   markdownComponents,
-  vaultPathNoteOf,
-  wikiNoteFileCandidates,
-  wikiNoteFileOf,
 } from "@/utils/markdown";
 import type {
   ConversationData,
@@ -37,7 +34,10 @@ import { ConnectionFrame } from "./ConnectionFrame";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
 import { ChatMessageBubble } from "@/components/common/ChatMessageBubble";
 import { MentionTextarea } from "@/components/common/MentionTextarea";
+import { JumpToBottomButton } from "@/components/common/JumpToBottomButton";
 import { useInlineEdit } from "@/hooks/useInlineEdit";
+import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
+import { useWikiNodeLocate } from "@/hooks/useWikiNodeLocate";
 
 /** 模块级空数组，避免 selector 每次返回新引用导致 React 无限循环。 */
 const EMPTY_MESSAGES: never[] = [];
@@ -577,46 +577,10 @@ export function ConversationNode({ id, width, height }: NodeProps) {
     fitView({ nodes: [{ id: nodeId }], duration: 200, padding: 0.2 });
   }, [fitView]);
 
-  // [[wiki 链接]]：按文件名匹配全仓库同名笔记（任意文件夹），命中则定位
-  const findWikiNodeId = useCallback((value: string): string | null => {
-    const store = useCanvasStore.getState();
-    const noteList = useVaultStore.getState().noteList;
-    for (const candidate of wikiNoteFileCandidates(value)) {
-      const hit = noteList.find((n) => n.name === candidate);
-      if (hit) {
-        const id = store.findTextNoteByFile(hit.file);
-        if (id) return id;
-      }
-    }
-    return null;
-  }, []);
-  const isWikiLocatable = useCallback(
-    (value: string) => findWikiNodeId(value) != null,
-    [findWikiNodeId]
-  );
-  const handleLocateWiki = useCallback((value: string) => {
-    const nodeId = findWikiNodeId(value);
-    if (nodeId) fitView({ nodes: [{ id: nodeId }], duration: 200, padding: 0.2 });
-  }, [findWikiNodeId, fitView]);
-  const handleOpenWikiNote = useCallback((value: string) => {
-    const hit = wikiNoteFileOf(value, useVaultStore.getState().noteList);
-    if (hit) useAppStore.getState().openNote(hit.file, hit.title);
-  }, []);
-  const isVaultPathNote = useCallback(
-    (href: string) => vaultPathNoteOf(href, useVaultStore.getState().noteList) != null,
-    []
-  );
-  const handleOpenVaultPathNote = useCallback((href: string) => {
-    const hit = vaultPathNoteOf(href, useVaultStore.getState().noteList);
-    if (hit) useAppStore.getState().openNote(hit.file, hit.title);
-  }, []);
-  const handleCreateNote = useCallback((name: string) => {
-    void useVaultStore
-      .getState()
-      .createNote(name)
-      .then((file) => useAppStore.getState().openNote(file, name))
-      .catch((e) => console.error("创建笔记失败", e));
-  }, []);
+  // [[wiki 链接]] 定位 + 笔记链接打开/新建（公共接线簇，见 hooks/useWikiNodeLocate、useVaultLinkHandlers）
+  const { isWikiLocatable, handleLocateWiki } = useWikiNodeLocate();
+  const { handleOpenWikiNote, isVaultPathNote, handleOpenVaultPathNote, handleCreateNote } =
+    useVaultLinkHandlers();
 
   // ===== 渲染 =====
 
@@ -840,15 +804,7 @@ export function ConversationNode({ id, width, height }: NodeProps) {
           </div>
         )}
         </div>
-        {showJumpToBottom && (
-          <button
-            onClick={jumpToBottom}
-            className="nodrag absolute bottom-2 left-1/2 -translate-x-1/2 flex items-center gap-1 text-xs rounded-full px-2.5 py-1 shadow-lg hover:opacity-80"
-            style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
-          >
-            <ArrowDown size={12} /> 新消息
-          </button>
-        )}
+        {showJumpToBottom && <JumpToBottomButton onClick={jumpToBottom} className="nodrag" />}
       </div>
 
       {/* 划词浮动菜单（文本提取） */}

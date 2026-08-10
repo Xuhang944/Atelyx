@@ -13,6 +13,7 @@ import { runSearch } from "@/services/search";
 import { WEB_SEARCH_TOOL } from "@/constants/tools";
 import { runStreamExchange, decideCleanup, runAutoNaming } from "./streaming";
 import { prefix, scanMentionHits } from "@/utils/text";
+import { baseName } from "@/utils/filename";
 import { useSettingsStore } from "./settingsStore";
 import { useAppStore } from "./appStore";
 import {
@@ -628,7 +629,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
         try {
           const noteText = await readNote(ref.file);
           if (noteText.trim()) {
-            const name = ref.file.split("/").pop() ?? ref.label;
+            const name = baseName(ref.file);
             const wrapper = `[笔记《${name}》内容]\n${noteText}`;
             finalContent = finalContent.slice(0, start) + wrapper + finalContent.slice(end);
             injectedRefs.push(ref);
@@ -686,7 +687,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
         try {
           const noteText = await readNote(ref.file);
           if (noteText.trim()) {
-            const name = ref.file.split("/").pop() ?? ref.label;
+            const name = baseName(ref.file);
             const wrapper = `[笔记《${name}》内容]\n${noteText}`;
             rebuiltContent = rebuiltContent.slice(0, start) + wrapper + rebuiltContent.slice(end);
           }

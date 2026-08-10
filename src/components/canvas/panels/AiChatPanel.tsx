@@ -16,7 +16,6 @@ const refKeyOfPanelRef = (r: { label: string }) =>
  */
 import {
   AlertCircle,
-  ArrowDown,
   BookMarked,
   Cpu,
   FilePlus,
@@ -36,11 +35,7 @@ import { useChatPanelStore } from "@/stores/chatPanelStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useVaultStore } from "@/stores/vaultStore";
 import { useAutoScrollFollow } from "@/hooks/useAutoScrollFollow";
-import {
-  markdownComponents,
-  vaultPathNoteOf,
-  wikiNoteFileOf,
-} from "@/utils/markdown";
+import { markdownComponents } from "@/utils/markdown";
 import {
   modelDisplayName,
   modelNameAcrossProviders,
@@ -50,6 +45,9 @@ import {
 } from "@/utils/text";
 import { ChatMessageBubble } from "@/components/common/ChatMessageBubble";
 import { MentionTextarea } from "@/components/common/MentionTextarea";
+import { JumpToBottomButton } from "@/components/common/JumpToBottomButton";
+import { noteTitleFromFile } from "@/utils/filename";
+import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
 import type { EditorChatMessage, EditorChatMessageRef } from "@/types";
 
 /** 空消息数组（模块级常量：避免 selector 新引用导致无限重渲染）。 */
@@ -108,32 +106,21 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
     }
   };
   // assistant/user 消息的 Markdown 组件配置：useMemo 稳定化（气泡 memo 生效前提）。
-  // 回调内部实时读 noteList（getState），无需响应 noteList 变化重建
+  // 回调全部来自 useVaultLinkHandlers（useCallback 稳定 + 内部 getState 实时读 noteList），无需响应 noteList 变化重建
+  const { handleOpenWikiNote, isVaultPathNote, handleOpenVaultPathNote, handleCreateNote } =
+    useVaultLinkHandlers();
   const chatMarkdownComponents = useMemo(
     () =>
       markdownComponents({
         isLocatable: () => false,
         onLocate: () => {},
-        onOpenNote: (value) => {
-          const hit = wikiNoteFileOf(value, useVaultStore.getState().noteList);
-          if (hit) useAppStore.getState().openNote(hit.file, hit.title);
-        },
-        isVaultPathNote: (href) =>
-          vaultPathNoteOf(href, useVaultStore.getState().noteList) != null,
-        onOpenVaultPathNote: (href) => {
-          const hit = vaultPathNoteOf(href, useVaultStore.getState().noteList);
-          if (hit) useAppStore.getState().openNote(hit.file, hit.title);
-        },
-        onCreateNote: (name) => {
-          void useVaultStore
-            .getState()
-            .createNote(name)
-            .then((file) => useAppStore.getState().openNote(file, name))
-            .catch((e) => console.error("创建笔记失败", e));
-        },
+        onOpenNote: handleOpenWikiNote,
+        isVaultPathNote,
+        onOpenVaultPathNote: handleOpenVaultPathNote,
+        onCreateNote: handleCreateNote,
         onOpenUrl: (url) => void useAppStore.getState().openUrl(url),
       }),
-    []
+    [handleOpenWikiNote, isVaultPathNote, handleOpenVaultPathNote, handleCreateNote]
   );
   // 气泡操作回调稳定化（memo 生效前提）
   const handleRollback = useCallback(
@@ -197,7 +184,7 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
     if (autoMentionRef.current) removeAutoMention(autoMentionRef.current);
     const ref: EditorChatMessageRef = {
       file: noteFile,
-      label: noteFile.split("/").pop()?.replace(/\.md$/i, "") ?? noteFile,
+      label: noteTitleFromFile(noteFile),
     };
     autoMentionRef.current = ref;
     setMentions((prev) => [...prev, ref]);
@@ -465,15 +452,7 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
             })
           )}
         </div>
-        {showJumpToBottom && (
-          <button
-            onClick={jumpToBottom}
-            className="absolute bottom-2 left-1/2 -translate-x-1/2 flex items-center gap-1 text-xs rounded-full px-2.5 py-1 shadow-lg hover:opacity-80"
-            style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
-          >
-            <ArrowDown size={12} /> 新消息
-          </button>
-        )}
+        {showJumpToBottom && <JumpToBottomButton onClick={jumpToBottom} />}
       </div>
 
       {/* 底部输入区：textarea + 内部底部工具条（左：提示词/模型；右：发送） */}
@@ -486,12 +465,12 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
           <div className="relative">
             <button
               onClick={() => setShowPromptPicker((v) => !v)}
-              title={sysPromptFile ? `系统提示词：${sysPromptFile.split("/").pop()?.replace(/\.md$/i, "")}` : "选择系统提示词（右键笔记注册）"}
+              title={sysPromptFile ? `系统提示词：${noteTitleFromFile(sysPromptFile)}` : "选择系统提示词（右键笔记注册）"}
               className="px-1.5 py-1 rounded text-xs flex items-center gap-1 hover:opacity-80 w-28 min-w-0"
               style={{ color: "var(--text-secondary)" }}
             >
               <BookMarked size={13} className="flex-shrink-0" />
-              <span className="flex-1 min-w-0 truncate">{sysPromptFile ? sysPromptFile.split("/").pop()?.replace(/\.md$/i, "") : "提示词"}</span>
+              <span className="flex-1 min-w-0 truncate">{sysPromptFile ? noteTitleFromFile(sysPromptFile) : "提示词"}</span>
             </button>
             {showPromptPicker && <div className="fixed inset-0 z-40" onClick={() => setShowPromptPicker(false)} />}
             {showPromptPicker && (
