@@ -13,11 +13,10 @@ import {
   STREAM_IDLE_TIMEOUT_MS,
   type ChatParams,
   type ToolCall,
-  type ToolDef,
 } from "@/services/ai/client";
 import { autoTitle, AUTO_NAMING_DELAY_MS } from "@/services/ai/autoTitle";
 import { useSettingsStore } from "./settingsStore";
-import type { ProviderConfig, Role } from "@/types";
+import type { ProviderConfig, Role, ToolDef } from "@/types";
 
 export interface StreamBatch {
   content: string;

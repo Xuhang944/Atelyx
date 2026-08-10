@@ -92,3 +92,5 @@ export type {
 } from "./table";
 
 export type { VaultFileChange } from "./watcher";
+
+export type { ToolDef } from "./tool";

@@ -1,4 +1,4 @@
-import type { Attachment, Role } from "@/types";
+import type { Attachment, Role, ToolDef } from "@/types";
 
 /**
  * OpenAI 兼容协议的客户端。
@@ -9,16 +9,6 @@ import type { Attachment, Role } from "@/types";
 type ContentPart =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string } };
-
-/** OpenAI 兼容 function 定义（联网搜索工具，）。 */
-export interface ToolDef {
-  type: "function";
-  function: {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-  };
-}
 
 /** AI 请求的工具调用（SSE delta 累积完成后的完整形态，OpenAI 规范结构）。 */
 export interface ToolCall {

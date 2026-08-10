@@ -2,7 +2,7 @@
  * AI 对话工具定义（OpenAI 兼容 function calling）。
  * 画布对话节点与 AI 对话面板共用；发送前由调用方按「工具开关 + 搜索源已配置」决定是否携带。
  */
-import type { ToolDef } from "@/services/ai/client";
+import type { ToolDef } from "@/types";
 
 /** 联网搜索工具：AI 自主决定搜索，结果回填上下文。 */
 export const WEB_SEARCH_TOOL: ToolDef = {
