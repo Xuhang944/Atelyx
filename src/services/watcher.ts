@@ -4,7 +4,7 @@
  * 包装 Tauri `listen` 订阅 Rust `watcher.rs` emit 的 `"vault-file-changed"` 事件。
  * 无 invoke 封装（watcher 纯事件推送，无命令入口）。
  *
- * 事件由 `hooks/useVaultFileWatcher` 消费并分发到各 store。
+ * 事件由 `vaultStore.startFileWatcher` 消费并分发到各 store（组件层不直连本 service）。
  */
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { VaultFileChange } from "@/types";

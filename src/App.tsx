@@ -2,9 +2,8 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useVaultStore } from "@/stores/vaultStore";
 import { LoadingScreen } from "@/components/common/LoadingScreen";
-import { useVaultFileWatcher } from "@/hooks/useVaultFileWatcher";
-import { checkAndAutoUpdate } from "@/services/updater";
 
 // 页面 lazy 分割：主包不含 CodeMirror/KaTeX/高亮语言包等重库，LoadingScreen 更快出现。
 // ReactFlowProvider 留在 App 层（页面组件自身的 useReactFlow hooks 需要它在组件外；
@@ -79,9 +78,16 @@ export default function App() {
     applyWindowShape();
   }, [view]);
 
-  // 仓库文件监听：进仓库后全程订阅（工作区）。
-  // vaultSelect 页未开仓库，watcher 未启动，订阅无意义。
-  useVaultFileWatcher(view !== "vaultSelect");
+  // 窗口关闭守卫：先 flush 全部 pending 改动再真正关窗，防 debounce 窗口内丢数据（幂等注册）
+  useEffect(() => {
+    useAppStore.getState().installCloseGuard();
+  }, []);
+
+  // 仓库文件监听：进仓库后全程订阅（工作区），vaultSelect 页未开仓库 watcher 未启动，订阅无意义。
+  // 订阅副作用归 vaultStore（分层：组件不直连 service），view 切换时启停（store 内幂等）
+  useEffect(() => {
+    useVaultStore.getState().startFileWatcher(view !== "vaultSelect");
+  }, [view]);
 
   // 应用挂载：init 登记最近仓库（首启建默认仓库），loadSettings 重置运行时配置，
   // selectVault 进入仓库后由 loadVaultConfig 填充仓库级配置（AI 供应商/主题/搜索源 + keychain key）。
@@ -101,9 +107,10 @@ export default function App() {
       if (autoEnterRoot) {
         await useAppStore.getState().selectVault(autoEnterRoot);
       }
-      // 自动更新（应用级，global.json）：开启时启动静默检查一次，失败静默跳过
+      // 自动更新（应用级，global.json）：开启时启动静默检查一次，失败静默跳过。
+      // 走 store 包装（runAutoUpdate 内部先 flush 全部 pending 改动再检查安装，重启不丢数据）
       if (useAppStore.getState().autoUpdate) {
-        void checkAndAutoUpdate().catch(() => {});
+        void useAppStore.getState().runAutoUpdate();
       }
     })().finally(async () => {
       settled = true;

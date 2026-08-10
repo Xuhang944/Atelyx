@@ -36,12 +36,14 @@ import {
   renameTableVault,
   writeTableVault,
 } from "@/services/table";
-import { markSelfSave, useCanvasStore } from "@/stores/canvasStore";
+import { subscribeVaultFileChanges } from "@/services/watcher";
+import { isSelfSaveEcho, markSelfSave, useCanvasStore } from "@/stores/canvasStore";
 import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useTableStore } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import { dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename } from "@/utils/filename";
-import type { BacklinkRow, DeleteFolderResult, FileTreeNode, RebuildLinksResult, TextData } from "@/types";
+import type { BacklinkRow, DeleteFolderResult, FileTreeNode, RebuildLinksResult, TextData, VaultFileChange } from "@/types";
 
 /**
  * 文本节点 `.md` 文件名约定：`<sanitized-title>.md`（标题即文件名，无 id 后缀）。
@@ -90,6 +92,13 @@ export function lastFolderRenameTarget(file: string): string | null {
 
 /** loadFiles 并发守卫：递增序号，仅最后一次发起者的扫描结果落盘（后台填充与 watcher 触发并发时防旧结果覆盖）。 */
 let loadFilesSeq = 0;
+
+/** 文件监听订阅状态（startFileWatcher 幂等启停用）。
+ * watcherGen = 订阅代数：每次启/停递增，在途订阅完成时校验代数一致才保留——
+ * 防「enable → disable → enable」竞态下旧订阅结果覆盖新订阅、前一个 unlisten 丢失泄漏（双监听常驻）。 */
+let watcherActive = false;
+let watcherUnlisten: (() => void) | undefined;
+let watcherGen = 0;
 
 /**
  * renameNote/moveNote 共用核心：pendingRename 记录 + 服务调用 + 自写抑制 + 乐观锁基准 +
@@ -412,6 +421,11 @@ interface VaultFileState {
   externalNoteEdits: Record<string, number>;
   /** watcher 收到 `.md` 外部变化事件时 bump 序号（软件内重命名旧路径事件由调用方跳过）。 */
   markNoteExternallyEdited: (file: string) => void;
+  /**
+   * 仓库文件监听启停（幂等）：订阅 Rust watcher 事件并按 kind 分发到各 store。
+   * 工作区挂载时 enable（App.tsx 调），回启动页 disable。分层：订阅副作用归 store，组件不直连 service。
+   */
+  startFileWatcher: (enabled: boolean) => void;
 }
 
 export const useVaultStore = create<VaultFileState>((set, get) => ({
@@ -643,6 +657,9 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     if (!node || node.type !== "text") return;
     const d = node.data as unknown as TextData;
     if (d.file) return; // 已是笔记节点
+    // 结构转换（画布内文本 → 笔记节点）入 undo 栈：Ctrl+Z 可还原为画布内文本节点。
+    // 已知语义：撤销只回滚内存态，不删除已落盘的 .md 文件（文件残留由用户手动清理）
+    canvasState.pushUndo();
     // createNote 生成文件名（title 净化 + 同目录去重）并建空文件；再写正文；成功后节点转笔记引用
     const file = await get().createNote(d.title || "未命名");
     try {
@@ -673,4 +690,98 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     set((s) => ({
       externalNoteEdits: { ...s.externalNoteEdits, [file]: (s.externalNoteEdits[file] ?? 0) + 1 },
     })),
+
+  startFileWatcher: (enabled) => {
+    // 幂等：同一状态重复调用不动作（App 的 view effect 可能多次触发相同值）
+    if (enabled === watcherActive) return;
+    if (!enabled) {
+      watcherGen++;
+      watcherUnlisten?.();
+      watcherUnlisten = undefined;
+      watcherActive = false;
+      return;
+    }
+    watcherActive = true;
+    const gen = ++watcherGen;
+    // 订阅是异步的（listen 往返），期间若被 disable/重新 enable（gen 已递增），
+    // 完成时按代数丢弃本次订阅——否则旧订阅覆盖 watcherUnlisten 导致前一个泄漏常驻
+    void (async () => {
+      const unlisten = await subscribeVaultFileChanges((c: VaultFileChange) => {
+        if (c.kind === "canvas") {
+          const store = useCanvasStore.getState();
+          // 按文件路径匹配当前画布（画布任意文件夹存放，路径即磁盘身份）；
+          // 文件夹重命名期间旧路径删除事件：canvasFile 尚未 remap（Rust 移动目录可能慢于 300ms debounce），
+          // 跳过重读防误触 reloadFromDisk 读已不存在的旧路径
+          if (
+            c.path === store.canvasFile &&
+            !isSelfSaveEcho() &&
+            !isPendingFolderRenameOldPath(c.path)
+          ) {
+            if (store.dirty) {
+              // 本地有未保存改动：自动重载会丢改动，改为冲突提示让用户决策
+              useCanvasStore.setState({ conflictPending: true });
+            } else {
+              // 无未保存改动：安全自动重载磁盘最新内容
+              void useCanvasStore.getState().reloadFromDisk();
+            }
+          }
+          // 外部新建/删除/重命名画布：刷新画布列表 + 文件树（.atlx 行随文件变化增删改名）。
+          // 自写回放（isSelfSaveEcho）跳过：画布 CRUD 已在 appStore 内主动刷新两数据源，
+          // 纯自动保存只改 mtime、树行不显示时间，无需重扫全仓库
+          if (!isSelfSaveEcho()) {
+            void useAppStore.getState().loadList();
+            void get().loadFiles();
+          }
+          return;
+        }
+
+        if (c.kind === "note") {
+          // 软件内重命名期间旧路径的删除事件：file 引用已由 renameNote 同步，
+          // 跳过重读防误标文件缺失；新路径创建事件正常刷新（同步后节点 file 已指向新路径，命中即刷新）
+          if (!isPendingRenameOldPath(c.path) && !isPendingFolderRenameOldPath(c.path)) {
+            void useCanvasStore.getState().refreshTextContent(c.path);
+            // NoteEditor 感知外部修改：无本地改动实时刷新、有改动提示冲突
+            get().markNoteExternallyEdited(c.path);
+          }
+          void get().loadFiles();
+          return;
+        }
+
+        if (c.kind === "table") {
+          // 与 canvas 事件同策略：当前打开的表格被外部修改 → 无脏静默重载、有脏冲突提示
+          // （软件内重命名/自写回放跳过，防误触发）
+          const store = useTableStore.getState();
+          if (
+            c.path === store.tableFile &&
+            !isSelfSaveEcho() &&
+            !isPendingRenameOldPath(c.path) &&
+            !isPendingFolderRenameOldPath(c.path)
+          ) {
+            if (store.dirty) {
+              useTableStore.setState({ conflictPending: true });
+            } else {
+              void useTableStore.getState().reloadFromDisk();
+            }
+          }
+          // 画布上引用该表格的节点：silent 刷新快照（与 note 事件刷新 text 节点对称）
+          if (!isPendingRenameOldPath(c.path) && !isPendingFolderRenameOldPath(c.path)) {
+            void useCanvasStore.getState().refreshTableContent(c.path);
+          }
+          void get().loadFiles();
+          return;
+        }
+
+        // attachment
+        if (!isPendingRenameOldPath(c.path) && !isPendingFolderRenameOldPath(c.path)) {
+          void useCanvasStore.getState().refreshMediaContent(c.path);
+        }
+        void get().loadFiles();
+      });
+      if (gen !== watcherGen) {
+        unlisten();
+      } else {
+        watcherUnlisten = unlisten;
+      }
+    })();
+  },
 }));
