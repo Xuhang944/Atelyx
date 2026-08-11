@@ -165,18 +165,11 @@ export interface DirNames {
   attachments: string;
 }
 
-/** 仓库级配置（.atelyx/config.json，不含 API key）。 */
+/** 仓库级配置（.atelyx/config.json，不含 API key）。
+ * 主题/强调色/字号/字体/自动恢复开关为应用级（global.json，见 GlobalConfig）。 */
 export interface VaultConfig {
-  /** 仓库级主题。缺失时默认 "dark"。 */
-  theme?: ThemeMode;
-  /** 仓库级强调色（hex，如 `#d4af37`；缺省 = 默认金色）。 */
-  accentColor?: string;
   /** 仓库级默认模型（从仓库内已配置供应商的全部模型中选择；缺省 = 未指定，跟随默认的对话请求报错提示）。 */
   model?: string;
-  /** 仓库级界面基础字号（px，覆盖 :root font-size；缺省 = 18）。 */
-  fontSize?: number;
-  /** 仓库级界面字体（CSS font-family 值；缺省 = system-ui 默认）。 */
-  fontFamily?: string;
   /** 文件面板排序方式（缺省 = 前端默认 mtime-desc）。 */
   fileExplorerSort?: FileExplorerSortKey;
   /** 兼容字段：仓库三根目录名（自由文件夹结构不使用；仅兼容读取旧配置）。 */
@@ -194,8 +187,6 @@ export interface VaultConfig {
   syncKeys?: boolean;
   /** 宽松换行：开启时预览模式单个换行符渲染为换行；关闭时按 Markdown 标准视为空格。缺省 = true。 */
   softLineBreak?: boolean;
-  /** 进入仓库时自动恢复上次打开的文件（画布/笔记窗口）。缺省 = true（开启）。 */
-  autoRestoreFiles?: boolean;
   /** 话题自动命名开关（缺省 = false 不启用）。 */
   autoNamingEnabled?: boolean;
   /** 话题自动命名模型（缺省 = 跟随默认模型；指定后命名用该模型，如 `{ providerId, model }`——话题命名一般用小模型）。 */
@@ -255,7 +246,8 @@ export interface GlobalSearchConfig {
 }
 
 /**
- * 全局配置（app_data_dir/global.json）——**最近仓库列表 + 自动更新开关**（应用级配置）。
+ * 全局配置（app_data_dir/global.json）——**应用级配置**：最近仓库列表 + 自动更新开关 +
+ * 界面外观（主题/强调色/字号/字体）+ 自动恢复上次打开文件。
  * AI 供应商 / 搜索源已仓库化（`.atelyx/config.json` 的 `VaultConfig.providers/search`）；
  * 应用级 UI 使用状态（布局/上次打开文件/展开）走 `app_data_dir/ui-state.json`；
  * 不含 API key（key 仅存 keychain，条目按仓库隔离，见安全红线）。
@@ -265,6 +257,16 @@ export interface GlobalConfig {
   recentVaults: RecentVault[];
   /** 自动检查更新（应用级）：开启后每次启动应用静默检查新版本并自动安装。缺省 = false（关闭）。 */
   autoUpdate?: boolean;
+  /** 应用级主题模式（"system" = 跟随系统，由页面层解析 prefers-color-scheme）。缺省 = "dark"。 */
+  theme?: ThemeMode;
+  /** 应用级强调色（hex，如 `#d4af37`；缺省 = 默认金色）。 */
+  accentColor?: string;
+  /** 应用级界面基础字号（px，覆盖 :root font-size；缺省 = 18）。 */
+  fontSize?: number;
+  /** 应用级界面字体（CSS font-family 值；缺省 = system-ui 默认）。 */
+  fontFamily?: string;
+  /** 进入仓库时自动恢复上次打开的文件（画布/笔记/表格）。缺省 = true（开启）。 */
+  autoRestoreFiles?: boolean;
 }
 
 // ===== 外部白板格式（.canvas JSON，只读查看/转换为画布用）=====

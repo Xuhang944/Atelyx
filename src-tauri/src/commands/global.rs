@@ -1,6 +1,7 @@
 //! 全局配置命令（应用级数据）。
 //!
-//! 读写 `app_data_dir/global.json`：**最近打开仓库列表 + 自动更新开关**（应用级配置）。
+//! 读写 `app_data_dir/global.json`：**应用级配置**——最近打开仓库列表 + 自动更新开关 +
+//! 界面外观（主题/强调色/字号/字体）+ 自动恢复上次打开文件。
 //! AI 供应商 / 搜索源已仓库化（`vault.rs` 的 `VaultConfig.providers/search`），
 //! 不再由本文件承载；API key 永不落文件（仅存 keychain，见 `commands/keychain.rs`）——
 //! 旧 `ai`/`search`/`device_id` 字段读回时被 serde 忽略（未知字段），不再写回。
@@ -26,15 +27,31 @@ pub struct RecentVault {
     pub last_opened_at: i64,
 }
 
-/// 全局配置根结构（**最近仓库列表 + 自动更新开关**；旧 ai/search/deviceId 字段读回时被忽略）。
+/// 全局配置根结构（**应用级**：最近仓库列表 + 自动更新开关 + 界面外观（主题/强调色/字号/字体）+
+/// 自动恢复上次打开文件；旧 ai/search/deviceId 字段读回时被忽略）。
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GlobalConfig {
     #[serde(default)]
     pub recent_vaults: Vec<RecentVault>,
     /// 自动检查更新（应用级）：开启后每次启动应用静默检查新版本并自动安装。缺省 None = 关闭。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_update: Option<bool>,
+    /// 应用级主题："light" | "dark" | "system"。缺失时前端默认 "dark"。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+    /// 应用级强调色（hex，如 "#d4af37"；缺省 = 默认金色）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent_color: Option<String>,
+    /// 应用级界面基础字号（px，覆盖 :root font-size；缺省 = 18）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_size: Option<f64>,
+    /// 应用级界面字体（CSS font-family，缺省 = system-ui 默认）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_family: Option<String>,
+    /// 进入仓库时自动恢复上次打开的文件。缺省 None = true（前端默认）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_restore_files: Option<bool>,
 }
 
 fn global_config_path(app: &AppHandle) -> Result<PathBuf, String> {

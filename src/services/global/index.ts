@@ -2,12 +2,13 @@
  * 全局配置 service。
  *
  * 读写 `app_data_dir/global.json`，对应 Rust `commands/global.rs`。
- * 承载：最近打开仓库列表 + 自动更新开关（主题等仓库级配置已移入各仓库；
+ * 承载：最近打开仓库列表 + 自动更新开关 + 应用级界面外观（主题/强调色/字号/字体）+
+ * 自动恢复上次打开文件（AI 供应商/搜索源等仓库级配置走各仓库 `.atelyx/config.json`；
  * 应用级 UI 使用状态走 `services/uiState` 的 `app_data_dir/ui-state.json`）。
  * recentVaults 的去重/排序/截断逻辑在此层维护（Rust 只做整文件读写）。
  *
  * **写入走 `updateGlobalConfig`（read-modify-write + 串行化）**，勿直接 `writeGlobalConfig`：
- * global.json 现由 appStore（recentVaults）与自动更新开关共同写入，
+ * global.json 现由 appStore（recentVaults/自动更新开关）与 settingsStore（界面外观/自动恢复）共同写入，
  * 直接整体写会覆盖对方字段。`updateGlobalConfig` 只 patch 顶层字段，且通过模块级
  * promise 链串行化，避免并发 read-modify-write 丢更新。
  */
@@ -66,7 +67,7 @@ function serialized<T>(fn: () => Promise<T>): Promise<T> {
 
 /**
  * Read-modify-write global.json：读当前值 → 浅合并 patch 顶层字段 → 写回。
- * 串行化保证并发调用不丢更新。`patch.ai` / `patch.theme` / `patch.recentVaults`
+ * 串行化保证并发调用不丢更新。`patch.theme` / `patch.recentVaults`
  * 整体替换对应字段（不做深合并），调用方传完整子对象。
  */
 export async function updateGlobalConfig(patch: Partial<GlobalConfig>): Promise<void> {

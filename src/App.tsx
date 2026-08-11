@@ -33,9 +33,9 @@ export default function App() {
   const init = useAppStore((s) => s.init);
   const loadSettings = useSettingsStore((s) => s.load);
   const theme = useSettingsStore((s) => s.theme);
-  const fontSize = useSettingsStore((s) => s.vaultConfig?.fontSize);
-  const fontFamily = useSettingsStore((s) => s.vaultConfig?.fontFamily);
-  const accentColor = useSettingsStore((s) => s.vaultConfig?.accentColor);
+  const fontSize = useSettingsStore((s) => s.fontSize);
+  const fontFamily = useSettingsStore((s) => s.fontFamily);
+  const accentColor = useSettingsStore((s) => s.accentColor);
 
   /** 初始化未完成前渲染加载屏（循环扫光进度条），完成后按 view 渲染启动页/工作区。 */
   const [booting, setBooting] = useState(true);
@@ -57,14 +57,14 @@ export default function App() {
     document.documentElement.classList.toggle("dark", effectiveTheme === "dark");
   }, [effectiveTheme]);
 
-  // 字体（仓库级）：覆盖 :root font-size / font-family，空值回默认（CSS 默认）
+  // 字体（应用级）：覆盖 :root font-size / font-family，空值回默认（CSS 默认）
   useEffect(() => {
     const root = document.documentElement;
     root.style.fontSize = fontSize ? `${fontSize}px` : "";
     root.style.fontFamily = fontFamily ?? "";
   }, [fontSize, fontFamily]);
 
-  // 强调色（仓库级）：覆盖 --accent 系列变量，空值回默认金色；深/浅主题共用同一份
+  // 强调色（应用级）：覆盖 --accent 系列变量，空值回默认金色；深/浅主题共用同一份
   // （:root 与 :root.dark 均不单独定义 accent，inline style 优先级最高对两主题同时生效）
   useEffect(() => {
     const root = document.documentElement;
@@ -106,8 +106,8 @@ export default function App() {
     useVaultStore.getState().startFileWatcher(view !== "vaultSelect");
   }, [view]);
 
-  // 应用挂载：init 登记最近仓库（首启建默认仓库），loadSettings 重置运行时配置，
-  // selectVault 进入仓库后由 loadVaultConfig 填充仓库级配置（AI 供应商/主题/搜索源 + keychain key）。
+  // 应用挂载：init 登记最近仓库（首启建默认仓库），loadSettings 加载应用级外观配置，
+  // selectVault 进入仓库后由 loadVaultConfig 填充仓库级配置（AI 供应商/搜索源 + keychain key）。
   // 记住上次所在仓库：init 返回非 null 时跳过启动页直接进入。
   useEffect(() => {
     // 预载工作区页面 chunk（lazy 在首次渲染才触发加载，booting 期间先编译/加载，切换无感）

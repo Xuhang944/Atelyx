@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { getApiKey, setApiKey, deleteApiKey } from "@/services/keychain";
 import { readPromptNotes, readVaultConfig, writePromptNotes, writeVaultConfig } from "@/services/vault";
 import { fetchProviderModels } from "@/services/ai/client";
+import { readGlobalConfig, updateGlobalConfig } from "@/services/global";
 import { useAppStore } from "@/stores/appStore";
 import type {
   AiConfig,
@@ -19,27 +20,37 @@ import { remapDirPrefix } from "@/utils/filename";
 import { createPersistController } from "@/utils/persist";
 
 /**
- * 设置 store（配置全部仓库化）。
+ * 设置 store（供应商/搜索源等仓库化，界面外观应用级）。
  *
- * 单一配置层（`.atelyx/config.json`）：AI 供应商 + 默认模型 +
- * 主题 + 搜索源 + 字体/排序等全部按仓库独立；API key 默认走 keychain 条目
+ * 仓库级配置（`.atelyx/config.json`）：AI 供应商 + 默认模型 + 搜索源 +
+ * 文件面板排序/排除文件夹/附件文件夹等按仓库独立；API key 默认走 keychain 条目
  * `provider-<vaultId>-<providerId>`（**按仓库隔离**）；开启 `syncKeys`
  * （「API key 随仓库保存」，多设备同步）后 key 明文随 config.json 落盘。
- * `global.json` 只存最近仓库列表。
+ * 应用级配置（`app_data_dir/global.json`，随 `updateGlobalConfig` 落盘）：主题 +
+ * 强调色 + 字号/字体 + 自动恢复上次打开文件，跨仓库共享。
  *
  * 解析链（画布对话节点 / AI 对话面板共用 `resolveChatTarget`）：
  * 选定 {providerId, model}（无 = 跟随仓库默认）→ 供应商缺失报错不静默回落；
  * 未选定 = 仓库默认模型（vaultConfig.model，反查所属供应商），未配置默认模型报错；
  * 选定供应商但未选模型 = 供应商首个模型（models[0]）。
  *
- * 加载时机：selectVault → loadVaultConfig（读 config.json；syncKeys 关时从 keychain 填充 key，开时直读 config 内 key）；无仓库时状态为空。
+ * 加载时机：应用挂载 load（读 global.json 填充应用级外观）；
+ * selectVault → loadVaultConfig（读 config.json；syncKeys 关时从 keychain 填充 key，开时直读 config 内 key）；无仓库时状态为空。
  */
 
 interface SettingsState {
   /** 运行时 AI 配置（providers 含 key，从 keychain 填充）。 */
   config: AiConfig;
-  /** 仓库级主题模式（"system" = 跟随系统，由页面层解析 prefers-color-scheme）。 */
+  /** 应用级主题模式（"system" = 跟随系统，由页面层解析 prefers-color-scheme；存 global.json）。 */
   theme: ThemeMode;
+  /** 应用级强调色（hex；undefined = 默认金色，存 global.json）。 */
+  accentColor?: string;
+  /** 应用级界面基础字号（px；undefined = 默认 18，存 global.json）。 */
+  fontSize?: number;
+  /** 应用级界面字体（CSS font-family；undefined = 系统默认，存 global.json）。 */
+  fontFamily?: string;
+  /** 进入仓库时自动恢复上次打开的文件（应用级，存 global.json；缺省 true = 开启）。 */
+  autoRestoreFiles: boolean;
   /** 当前仓库级覆盖；null = 未打开仓库。 */
   vaultConfig: VaultConfig | null;
   /** 搜索源配置（仓库级，无 key；Tavily key 运行时从 keychain 读）。 */
@@ -50,11 +61,11 @@ interface SettingsState {
   promptNotes: string[];
   loaded: boolean;
 
-  /** 应用挂载时调用：重置运行时状态（配置已仓库化，无仓库上下文时为空）。 */
+  /** 应用挂载时调用：读 global.json 填充应用级外观（主题/强调色/字号/字体/自动恢复），重置仓库级运行时状态。 */
   load: () => Promise<void>;
-  /** 打开仓库后读 `.atelyx/config.json`（主题/AI 供应商/搜索源等仓库级配置）+ keychain 填充 key。由 appStore.selectVault 调用。 */
+  /** 打开仓库后读 `.atelyx/config.json`（AI 供应商/搜索源等仓库级配置）+ keychain 填充 key。由 appStore.selectVault 调用。 */
   loadVaultConfig: () => Promise<void>;
-  /** 返回仓库选择页时清空仓库级状态（配置/主题回默认）。由 appStore.backToVaultSelect 调用。 */
+  /** 返回仓库选择页时清空仓库级状态（应用级外观保留）。由 appStore.backToVaultSelect 调用。 */
   clearVaultConfig: () => void;
   /** 设搜索源（仓库级，写 .atelyx/config.json）。 */
   setSearchConfig: (patch: Partial<GlobalSearchConfig>) => Promise<void>;
@@ -92,13 +103,13 @@ interface SettingsState {
   setAutoNamingEnabled: (enabled: boolean) => Promise<void>;
   /** 设话题自动命名模型（null = 跟随默认模型；话题命名一般用小模型）。 */
   setAutoNamingModel: (model: { providerId: string; model: string } | null) => Promise<void>;
-  /** 设仓库级界面基础字号（undefined = 跟随默认 18px）。 */
-  setVaultFontSize: (size: number | undefined) => Promise<void>;
-  /** 设仓库级界面字体（undefined = 跟随系统默认）。 */
-  setVaultFontFamily: (family: string | undefined) => Promise<void>;
-  /** 切换主题（仓库级，写入 .atelyx/config.json）。 */
+  /** 设应用级界面基础字号（undefined = 跟随默认 18px，写 global.json）。 */
+  setFontSize: (size: number | undefined) => Promise<void>;
+  /** 设应用级界面字体（undefined = 跟随系统默认，写 global.json）。 */
+  setFontFamily: (family: string | undefined) => Promise<void>;
+  /** 切换主题（应用级，写 global.json）。 */
   toggleTheme: () => Promise<void>;
-  /** 设仓库级强调色（hex；undefined = 恢复默认金色，写入 .atelyx/config.json）。 */
+  /** 设应用级强调色（hex；undefined = 恢复默认金色，写 global.json）。 */
   setAccentColor: (color: string | undefined) => Promise<void>;
   /** 文件面板排序方式（仓库级）。 */
   setFileExplorerSort: (sortKey: FileExplorerSortKey) => Promise<void>;
@@ -108,7 +119,7 @@ interface SettingsState {
   setAttachmentFolder: (folder: string | undefined) => Promise<void>;
   /** 设置宽松换行（仓库级）：开启时预览模式单个换行符渲染为换行（缺省 true）。 */
   setSoftLineBreak: (enabled: boolean) => Promise<void>;
-  /** 设置进入仓库时是否自动恢复上次打开的文件（仓库级；缺省 true = 开启）。 */
+  /** 设置进入仓库时是否自动恢复上次打开的文件（应用级；缺省 true = 开启，写 global.json）。 */
   setAutoRestoreFiles: (enabled: boolean) => Promise<void>;
   /** 注册/注销系统提示词笔记（数组含该路径则移除，否则添加；写 .atelyx/prompt-notes.json）。 */
   togglePromptNote: (file: string) => Promise<void>;
@@ -183,19 +194,15 @@ function persistDebounced(): void {
   persistCtl.schedule();
 }
 
-/** 写仓库级配置前剔除 undefined，保持 .atelyx/config.json 干净（providers 空数组不落盘）。 */
+/** 写仓库级配置前剔除 undefined，保持 .atelyx/config.json 干净（providers 空数组不落盘；
+ * 主题/强调色/字号/字体/自动恢复为应用级，不在此承载）。 */
 function cleanVaultConfig(vc: VaultConfig): VaultConfig {
   const out: VaultConfig = {};
-  if (vc.theme !== undefined) out.theme = vc.theme;
-  if (vc.accentColor !== undefined) out.accentColor = vc.accentColor;
   if (vc.model !== undefined) out.model = vc.model;
-  if (vc.fontSize !== undefined) out.fontSize = vc.fontSize;
-  if (vc.fontFamily !== undefined) out.fontFamily = vc.fontFamily;
   if (vc.fileExplorerSort !== undefined) out.fileExplorerSort = vc.fileExplorerSort;
   if (vc.excludeFolders !== undefined) out.excludeFolders = vc.excludeFolders;
   if (vc.attachmentFolder !== undefined) out.attachmentFolder = vc.attachmentFolder;
   if (vc.softLineBreak !== undefined) out.softLineBreak = vc.softLineBreak;
-  if (vc.autoRestoreFiles !== undefined) out.autoRestoreFiles = vc.autoRestoreFiles;
   if (vc.autoNamingEnabled !== undefined) out.autoNamingEnabled = vc.autoNamingEnabled;
   if (vc.autoNamingModel !== undefined) out.autoNamingModel = vc.autoNamingModel;
   // 仓库级 AI 配置（无 key）与仓库稳定 ID 必须保留：否则写盘后供应商/搜索源丢失，
@@ -211,6 +218,10 @@ function cleanVaultConfig(vc: VaultConfig): VaultConfig {
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   config: DEFAULT_AI_CONFIG,
   theme: "dark",
+  accentColor: undefined,
+  fontSize: undefined,
+  fontFamily: undefined,
+  autoRestoreFiles: true,
   vaultConfig: null,
   searchConfig: { provider: "tavily", searxngUrl: "" },
   tavilyKey: "",
@@ -218,10 +229,30 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   loaded: false,
 
   load: async () => {
-    // 配置已全部仓库化：无仓库上下文时仅重置运行时状态（进入仓库后由 loadVaultConfig 填充）
+    // 应用级外观（主题/强调色/字号/字体/自动恢复）从 global.json 读一次，跨仓库共享；
+    // 仓库级配置（供应商/搜索源等）无仓库上下文时为空，进入仓库后由 loadVaultConfig 填充
+    let theme: ThemeMode = "dark";
+    let accentColor: string | undefined;
+    let fontSize: number | undefined;
+    let fontFamily: string | undefined;
+    let autoRestoreFiles = true;
+    try {
+      const cfg = await readGlobalConfig();
+      if (cfg.theme === "light" || cfg.theme === "dark" || cfg.theme === "system") theme = cfg.theme;
+      accentColor = cfg.accentColor;
+      fontSize = cfg.fontSize;
+      fontFamily = cfg.fontFamily;
+      autoRestoreFiles = cfg.autoRestoreFiles ?? true;
+    } catch (e) {
+      console.error("读取外观配置失败", e);
+    }
     set({
       config: DEFAULT_AI_CONFIG,
-      theme: "dark",
+      theme,
+      accentColor,
+      fontSize,
+      fontFamily,
+      autoRestoreFiles,
       searchConfig: { provider: "tavily", searxngUrl: "" },
       tavilyKey: "",
       promptNotes: [],
@@ -276,8 +307,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         searchConfig,
         tavilyKey,
         promptNotes,
-        // 仓库主题；非法值（手改 config.json）退化为深色。"system" 原样保留（页面层解析）
-        theme: vc.theme === "light" || vc.theme === "dark" || vc.theme === "system" ? vc.theme : "dark",
       });
     } catch (e) {
       console.error("读取仓库级配置失败", e);
@@ -287,7 +316,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   clearVaultConfig: () =>
     set({
       vaultConfig: null,
-      theme: "dark",
       config: DEFAULT_AI_CONFIG,
       searchConfig: { provider: "tavily", searxngUrl: "" },
       tavilyKey: "",
@@ -441,42 +469,33 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
   },
 
-  setVaultFontSize: async (size) => {
-    const base = get().vaultConfig ?? {};
-    const vc: VaultConfig = { ...base, fontSize: size };
-    set({ vaultConfig: vc });
+  setFontSize: async (size) => {
+    set({ fontSize: size });
     try {
-      await writeVaultConfig(cleanVaultConfig(vc));
+      await updateGlobalConfig({ fontSize: size });
     } catch (e) {
-      console.error("保存仓库级配置失败", e);
+      console.error("保存字号配置失败", e);
     }
   },
 
-  setVaultFontFamily: async (family) => {
-    const base = get().vaultConfig ?? {};
-    const vc: VaultConfig = { ...base, fontFamily: family };
-    set({ vaultConfig: vc });
+  setFontFamily: async (family) => {
+    set({ fontFamily: family });
     try {
-      await writeVaultConfig(cleanVaultConfig(vc));
+      await updateGlobalConfig({ fontFamily: family });
     } catch (e) {
-      console.error("保存仓库级配置失败", e);
+      console.error("保存字体配置失败", e);
     }
   },
 
-  /** 切换主题模式：light → dark → system 循环（跟随系统 = 按系统外观实时解析）。 */
+  /** 切换主题模式：light → dark → system 循环（跟随系统 = 按系统外观实时解析）。应用级，写 global.json。 */
   toggleTheme: async () => {
     const next: ThemeMode =
       get().theme === "light" ? "dark" : get().theme === "dark" ? "system" : "light";
     set({ theme: next });
-    // 主题仓库化：写入 .atelyx/config.json（设置入口只在工作区，必有当前仓库）
-    if (get().vaultConfig) {
-      const vc: VaultConfig = { ...get().vaultConfig, theme: next };
-      set({ vaultConfig: vc });
-      try {
-        await writeVaultConfig(cleanVaultConfig(vc));
-      } catch (e) {
-        console.error("保存仓库级配置失败", e);
-      }
+    try {
+      await updateGlobalConfig({ theme: next });
+    } catch (e) {
+      console.error("保存主题配置失败", e);
     }
   },
 
@@ -491,16 +510,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
   },
 
-  /** 设仓库级强调色（undefined = 恢复默认金色；只接受合法 hex 格式）。 */
+  /** 设应用级强调色（undefined = 恢复默认金色；只接受合法 hex 格式）。 */
   setAccentColor: async (color) => {
     if (color !== undefined && !/^#[0-9a-fA-F]{6}$/.test(color)) return;
-    const base = get().vaultConfig ?? {};
-    const vc: VaultConfig = { ...base, accentColor: color };
-    set({ vaultConfig: vc });
+    set({ accentColor: color });
     try {
-      await writeVaultConfig(cleanVaultConfig(vc));
+      await updateGlobalConfig({ accentColor: color });
     } catch (e) {
-      console.error("保存仓库级配置失败", e);
+      console.error("保存强调色配置失败", e);
     }
   },
 
@@ -528,13 +545,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   setAutoRestoreFiles: async (enabled) => {
-    const base = get().vaultConfig ?? {};
-    const vc: VaultConfig = { ...base, autoRestoreFiles: enabled };
-    set({ vaultConfig: vc });
+    set({ autoRestoreFiles: enabled });
     try {
-      await writeVaultConfig(cleanVaultConfig(vc));
+      await updateGlobalConfig({ autoRestoreFiles: enabled });
     } catch (e) {
-      console.error("保存仓库级配置失败", e);
+      console.error("保存自动恢复配置失败", e);
     }
   },
 

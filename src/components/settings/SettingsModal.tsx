@@ -68,10 +68,15 @@ const ACCENT_PRESETS = [
 
 export function SettingsModal({ onClose }: { onClose: () => void }) {
   const vaultConfig = useSettingsStore((s) => s.vaultConfig);
+  // 应用级外观（跨仓库共享，global.json）：强调色 / 字号 / 字体 / 自动恢复（theme/toggleTheme 在下方声明）
+  const accentColor = useSettingsStore((s) => s.accentColor);
+  const fontSize = useSettingsStore((s) => s.fontSize);
+  const fontFamily = useSettingsStore((s) => s.fontFamily);
+  const autoRestoreFiles = useSettingsStore((s) => s.autoRestoreFiles);
   // 仓库内设置（仓库级，七 tab）：通用 / 模型供应商 / 模型服务 / 联网搜索 / 文件与路径 / 编辑器 / 关于
   const [tab, setTab] = useState<Tab>("general");
-  /** 强调色取色器草稿：取色器拖动连续触发 onChange，防抖 200ms 后落盘（避免每帧一次 config 原子写）。 */
-  const [accentDraft, setAccentDraft] = useState(vaultConfig?.accentColor ?? DEFAULT_ACCENT);
+  /** 强调色取色器草稿：取色器拖动连续触发 onChange，防抖 200ms 后落盘（避免每帧一次配置原子写）。 */
+  const [accentDraft, setAccentDraft] = useState(accentColor ?? DEFAULT_ACCENT);
   const accentTimerRef = useRef<number | null>(null);
   const commitAccentDraft = (v: string) => {
     setAccentDraft(v);
@@ -113,8 +118,8 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const toggleTheme = useSettingsStore((s) => s.toggleTheme);
   const setAccentColor = useSettingsStore((s) => s.setAccentColor);
   const setVaultModel = useSettingsStore((s) => s.setVaultModel);
-  const setVaultFontSize = useSettingsStore((s) => s.setVaultFontSize);
-  const setVaultFontFamily = useSettingsStore((s) => s.setVaultFontFamily);
+  const setFontSize = useSettingsStore((s) => s.setFontSize);
+  const setFontFamily = useSettingsStore((s) => s.setFontFamily);
   const setExcludeFolders = useSettingsStore((s) => s.setExcludeFolders);
   const setAttachmentFolder = useSettingsStore((s) => s.setAttachmentFolder);
   const setSoftLineBreak = useSettingsStore((s) => s.setSoftLineBreak);
@@ -126,8 +131,6 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const setAutoNamingModel = useSettingsStore((s) => s.setAutoNamingModel);
   /** 宽松换行：缺省开启（单个换行渲染为换行）。 */
   const softLineBreak = vaultConfig?.softLineBreak ?? true;
-  /** 自动恢复上次打开的文件：缺省开启。 */
-  const autoRestoreFiles = vaultConfig?.autoRestoreFiles ?? true;
   /** 话题自动命名：缺省不启用（下拉「不启用」项）。 */
   const autoNamingEnabled = vaultConfig?.autoNamingEnabled ?? false;
   /** 话题自动命名模型（缺省 = 跟随默认模型）。 */
@@ -160,28 +163,24 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
 
   // 字号用本地草稿 + blur 提交：受控 + 范围校验会拒绝输入中间态（如敲 "1" 准备输 15）导致无法输入
   const [fontSizeDraft, setFontSizeDraft] = useState(
-    vaultConfig?.fontSize !== undefined ? String(vaultConfig.fontSize) : "",
+    fontSize !== undefined ? String(fontSize) : "",
   );
   useEffect(() => {
-    setFontSizeDraft(
-      vaultConfig?.fontSize !== undefined ? String(vaultConfig.fontSize) : "",
-    );
-  }, [vaultConfig?.fontSize]);
+    setFontSizeDraft(fontSize !== undefined ? String(fontSize) : "");
+  }, [fontSize]);
 
   /** blur/Enter 提交字号；非法值回滚为当前配置值。 */
   const commitFontSize = () => {
     const v = fontSizeDraft.trim();
     if (v === "") {
-      void setVaultFontSize(undefined);
+      void setFontSize(undefined);
       return;
     }
     const n = parseFloat(v);
     if (!isNaN(n) && n >= 12 && n <= 20) {
-      void setVaultFontSize(n);
+      void setFontSize(n);
     } else {
-      setFontSizeDraft(
-        vaultConfig?.fontSize !== undefined ? String(vaultConfig.fontSize) : "",
-      );
+      setFontSizeDraft(fontSize !== undefined ? String(fontSize) : "");
     }
   };
 
@@ -282,10 +281,10 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             {tab === "general" ? (
               /* ===== 通用面板 ===== */
               <section className="flex-1 p-5 overflow-auto space-y-4">
-                {/* 主题模式（仓库级） */}
+                {/* 主题模式（应用级，跨仓库共享） */}
                 <SettingCard
                   title="主题模式"
-                  description="浅色 / 深色 / 跟随系统（仅当前仓库生效）"
+                  description="浅色 / 深色 / 跟随系统"
                 >
                   <button
                     onClick={toggleTheme}
@@ -314,7 +313,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                   </button>
                 </SettingCard>
 
-                {/* 强调色（仓库级）：预设色板 + 取色器 + 恢复默认；空值 = 默认金色 */}
+                {/* 强调色（应用级）：预设色板 + 取色器 + 恢复默认；空值 = 默认金色 */}
                 <SettingCard
                   title="强调色"
                   description="界面强调色（按钮 / 选中高亮 / 画布箭头）"
@@ -322,7 +321,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                   <div className="flex items-center gap-2">
                     <div className="flex items-center gap-1.5">
                       {ACCENT_PRESETS.map((c) => {
-                        const active = vaultConfig?.accentColor?.toLowerCase() === c;
+                        const active = accentColor?.toLowerCase() === c;
                         return (
                           <button
                             key={c}
@@ -361,7 +360,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                   </div>
                 </SettingCard>
 
-                {/* 字体大小（仓库级） */}
+                {/* 字体大小（应用级） */}
                 <SettingCard
                   title="字体大小"
                   description="界面字号；留空 = 18"
@@ -387,11 +386,11 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                   />
                 </SettingCard>
 
-                {/* 字体（仓库级） */}
+                {/* 字体（应用级） */}
                 <SettingCard title="字体" description="界面字体">
                   <DropdownSelect
-                    value={vaultConfig?.fontFamily ?? ""}
-                    onChange={(v) => void setVaultFontFamily(v || undefined)}
+                    value={fontFamily ?? ""}
+                    onChange={(v) => void setFontFamily(v || undefined)}
                     options={FONT_OPTIONS}
                     className="text-sm rounded px-2 py-1 max-w-[220px]"
                     style={{
@@ -402,10 +401,10 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                   />
                 </SettingCard>
 
-                {/* 自动恢复上次打开的文件（仓库级）：进入仓库时恢复上次打开的画布/笔记窗口 */}
+                {/* 自动恢复上次打开的文件（应用级）：进入仓库时恢复上次打开的画布/笔记窗口 */}
                 <SettingCard
                   title="自动恢复上次打开的文件"
-                  description="进入仓库时恢复上次打开的画布 / 笔记"
+                  description="进入仓库时恢复上次打开的文件"
                 >
                   <ToggleSwitch
                     checked={autoRestoreFiles}

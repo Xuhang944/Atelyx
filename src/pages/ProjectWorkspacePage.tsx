@@ -41,7 +41,7 @@ export function ProjectWorkspacePage() {
   const lastCanvasFile = useUiStateStore((s) => s.lastCanvasFile);
   const lastNoteFile = useUiStateStore((s) => s.lastNoteFile);
   const lastTableFile = useUiStateStore((s) => s.lastTableFile);
-  const autoRestoreFiles = useSettingsStore((s) => s.vaultConfig?.autoRestoreFiles ?? true);
+  const autoRestoreFiles = useSettingsStore((s) => s.autoRestoreFiles);
 
   // 当前打开的文件状态与激活布局（面积网格渲染入口）
   const activeLayoutId = useUiStateStore((s) => s.activeLayoutId);

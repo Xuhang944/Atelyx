@@ -575,6 +575,7 @@ pub struct VaultSearchConfig {
 
 /// 仓库级配置（默认**不含 API key**——key 走 keychain，条目按仓库隔离；
 /// 仅 `syncKeys` 开启时 providers/search 落盘 key 字段，随仓库同步多设备）。
+/// 主题/强调色/字号/字体/自动恢复开关为应用级（`commands/global.rs` 的 `GlobalConfig`）。
 /// serde 类型层守边界：未开启时前端剥离 key 字段再写盘；
 /// `skip_serializing_if` 让无覆盖字段不落盘，保持 config.json 干净（{} = 无覆盖）。
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -595,20 +596,8 @@ pub struct VaultConfig {
     /// 缺省 false = key 仅存本机 keychain（按仓库隔离）。开启有泄露风险（仓库被公开/云盘共享）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_keys: Option<bool>,
-    /// 仓库级主题："light" | "dark"。缺失时前端默认 "dark"。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub theme: Option<String>,
-    /// 仓库级强调色（hex，如 "#d4af37"；缺省 = 默认金色）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accent_color: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_explorer_sort: Option<String>,
-    /// 仓库级界面基础字号（px，与前端 VaultConfig.fontSize 对齐；缺字段会丢设置）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub font_size: Option<f64>,
-    /// 仓库级界面字体（CSS font-family，与前端 VaultConfig.fontFamily 对齐）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub font_family: Option<String>,
     /// 兼容字段：仓库三根目录名（自由文件夹结构不使用，仅兼容读取旧配置）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dir_names: Option<DirNames>,
@@ -625,9 +614,6 @@ pub struct VaultConfig {
     /// 宽松换行：开启时预览模式单个换行符渲染为换行；关闭时按 Markdown 标准视为空格。缺省 = true（前端默认）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub soft_line_break: Option<bool>,
-    /// 进入仓库时自动恢复上次打开的文件。缺省 = true（前端默认）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_restore_files: Option<bool>,
     /// 话题自动命名开关（缺省 true = 开启）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_naming_enabled: Option<bool>,
