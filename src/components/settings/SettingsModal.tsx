@@ -19,6 +19,7 @@ import { ProviderSettingsSection } from "@/components/settings/ProviderSettingsS
 import { AboutSection } from "@/components/settings/AboutSection";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
+import { ToggleSwitch } from "@/components/common/ToggleSwitch";
 import { modelNameAcrossProviders } from "@/utils/text";
 
 type Tab =
@@ -51,6 +52,8 @@ const FONT_OPTIONS: { label: string; value: string }[] = [
   { label: "衬线", value: "Georgia, 'Times New Roman', serif" },
   { label: "等宽", value: "Consolas, 'Courier New', monospace" },
 ];
+/** 话题自动命名下拉「跟随默认模型」哨兵值（与任何模型 id 区分；空串 = 不启用）。 */
+const AUTO_NAMING_DEFAULT = "__default__";
 
 export function SettingsModal({ onClose }: { onClose: () => void }) {
   const vaultConfig = useSettingsStore((s) => s.vaultConfig);
@@ -97,8 +100,8 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const softLineBreak = vaultConfig?.softLineBreak ?? true;
   /** 自动恢复上次打开的文件：缺省开启。 */
   const autoRestoreFiles = vaultConfig?.autoRestoreFiles ?? true;
-  /** 话题自动命名：缺省开启。 */
-  const autoNamingEnabled = vaultConfig?.autoNamingEnabled ?? true;
+  /** 话题自动命名：缺省不启用（下拉「不启用」项）。 */
+  const autoNamingEnabled = vaultConfig?.autoNamingEnabled ?? false;
   /** 话题自动命名模型（缺省 = 跟随默认模型）。 */
   const autoNamingModelValue = vaultConfig?.autoNamingModel?.model ?? "";
 
@@ -251,27 +254,11 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             {tab === "general" ? (
               /* ===== 通用面板 ===== */
               <section className="flex-1 p-5 overflow-auto space-y-4">
-                <div
-                  className="flex items-center justify-between p-3 rounded-lg border"
-                  style={{
-                    background: "var(--bg-primary)",
-                    borderColor: "var(--border)",
-                  }}
+                {/* 主题模式（仓库级） */}
+                <SettingCard
+                  title="主题模式"
+                  description="浅色 / 深色 / 跟随系统（仅当前仓库生效）"
                 >
-                  <div>
-                    <div
-                      className="text-sm font-medium"
-                      style={{ color: "var(--text-primary)" }}
-                    >
-                      主题模式
-                    </div>
-                    <div
-                      className="text-xs mt-0.5"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      浅色 / 深色 / 跟随系统（仅当前仓库生效）
-                    </div>
-                  </div>
                   <button
                     onClick={toggleTheme}
                     title="切换主题模式（浅色 → 深色 → 跟随系统）"
@@ -297,30 +284,13 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                       }}
                     />
                   </button>
-                </div>
+                </SettingCard>
 
                 {/* 字体大小（仓库级） */}
-                <div
-                  className="flex items-center justify-between p-3 rounded-lg border gap-3"
-                  style={{
-                    background: "var(--bg-primary)",
-                    borderColor: "var(--border)",
-                  }}
+                <SettingCard
+                  title="字体大小"
+                  description="界面字号；留空 = 18"
                 >
-                  <div className="flex-shrink-0">
-                    <div
-                      className="text-sm font-medium"
-                      style={{ color: "var(--text-primary)" }}
-                    >
-                      字体大小
-                    </div>
-                    <div
-                      className="text-xs mt-0.5"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      界面字号；留空 = 18
-                    </div>
-                  </div>
                   <input
                     type="number"
                     min={12}
@@ -340,30 +310,10 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                       border: "1px solid var(--input-border)",
                     }}
                   />
-                </div>
+                </SettingCard>
 
                 {/* 字体（仓库级） */}
-                <div
-                  className="flex items-center justify-between p-3 rounded-lg border gap-3"
-                  style={{
-                    background: "var(--bg-primary)",
-                    borderColor: "var(--border)",
-                  }}
-                >
-                  <div className="flex-shrink-0">
-                    <div
-                      className="text-sm font-medium"
-                      style={{ color: "var(--text-primary)" }}
-                    >
-                      字体
-                    </div>
-                    <div
-                      className="text-xs mt-0.5"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      界面字体
-                    </div>
-                  </div>
+                <SettingCard title="字体" description="界面字体">
                   <DropdownSelect
                     value={vaultConfig?.fontFamily ?? ""}
                     onChange={(v) => void setVaultFontFamily(v || undefined)}
@@ -375,100 +325,43 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                       border: "1px solid var(--input-border)",
                     }}
                   />
-                </div>
+                </SettingCard>
 
                 {/* 自动恢复上次打开的文件（仓库级）：进入仓库时恢复上次打开的画布/笔记窗口 */}
-                <div
-                  className="flex items-start justify-between p-3 rounded-lg border gap-3"
-                  style={{
-                    background: "var(--bg-primary)",
-                    borderColor: "var(--border)",
-                  }}
+                <SettingCard
+                  title="自动恢复上次打开的文件"
+                  description="进入仓库时恢复上次打开的画布 / 笔记"
                 >
-                  <div>
-                    <div
-                      className="text-sm font-medium"
-                      style={{ color: "var(--text-primary)" }}
-                    >
-                      自动恢复上次打开的文件
-                    </div>
-                    <div
-                      className="text-xs mt-0.5"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      进入仓库时恢复上次打开的画布 / 笔记
-                    </div>
-                  </div>
-                  <input
-                    type="checkbox"
+                  <ToggleSwitch
                     checked={autoRestoreFiles}
-                    onChange={(e) => void setAutoRestoreFiles(e.target.checked)}
-                    className="w-4 h-4 mt-0.5 flex-shrink-0"
+                    onChange={(v) => void setAutoRestoreFiles(v)}
                     title="自动恢复上次打开的文件"
                   />
-                </div>
+                </SettingCard>
 
                 {/* 自动更新（应用级，global.json）：开启后启动时静默检查新版本并自动安装 */}
-                <div
-                  className="flex items-start justify-between p-3 rounded-lg border gap-3"
-                  style={{
-                    background: "var(--bg-primary)",
-                    borderColor: "var(--border)",
-                  }}
+                <SettingCard
+                  title="自动更新"
+                  description="启动时自动检查新版本并安装；关闭 = 不联网检查"
                 >
-                  <div>
-                    <div
-                      className="text-sm font-medium"
-                      style={{ color: "var(--text-primary)" }}
-                    >
-                      自动更新
-                    </div>
-                    <div
-                      className="text-xs mt-0.5"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      启动时自动检查新版本并安装；关闭 = 不联网检查
-                    </div>
-                  </div>
-                  <input
-                    type="checkbox"
+                  <ToggleSwitch
                     checked={autoUpdate}
-                    onChange={(e) => void setAutoUpdate(e.target.checked)}
-                    className="w-4 h-4 mt-0.5 flex-shrink-0"
+                    onChange={(v) => void setAutoUpdate(v)}
                     title="自动更新"
                   />
-                </div>
+                </SettingCard>
 
                 {/* API key 随仓库保存（仓库级）：开 = key 明文随 config.json 同步多设备；关 = 仅存本机钥匙串 */}
-                <div
-                  className="flex items-start justify-between p-3 rounded-lg border gap-3"
-                  style={{
-                    background: "var(--bg-primary)",
-                    borderColor: "var(--border)",
-                  }}
+                <SettingCard
+                  title="API key 随仓库保存"
+                  description="key 随仓库同步共用；仓库公开/共享时可能泄露"
                 >
-                  <div>
-                    <div
-                      className="text-sm font-medium"
-                      style={{ color: "var(--text-primary)" }}
-                    >
-                      API key 随仓库保存
-                    </div>
-                    <div
-                      className="text-xs mt-0.5"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      key 随仓库同步共用；仓库公开/共享时可能泄露
-                    </div>
-                  </div>
-                  <input
-                    type="checkbox"
+                  <ToggleSwitch
                     checked={!!vaultConfig?.syncKeys}
-                    onChange={(e) => void setSyncKeys(e.target.checked)}
-                    className="w-4 h-4 mt-0.5 flex-shrink-0"
+                    onChange={(v) => void setSyncKeys(v)}
                     title="API key 随仓库保存"
                   />
-                </div>
+                </SettingCard>
               </section>
             ) : tab === "providers" ? (
               /* ===== 模型供应商：仓库级供应商管理（多模型 + 测试连通性） ===== */
@@ -517,7 +410,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                   />
                 </div>
 
-                {/* 话题自动命名：开关 + 模型选择（留空 = 跟随默认模型；话题命名一般用小模型） */}
+                {/* 话题自动命名：下拉选择（不启用 / 跟随默认模型 / 指定模型；话题命名一般用小模型） */}
                 <div
                   className="flex items-center justify-between p-3 rounded-lg border gap-3"
                   style={{
@@ -536,47 +429,47 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                       className="text-xs mt-0.5"
                       style={{ color: "var(--text-muted)" }}
                     >
-                      首轮对话后自动生成简短标题；留空 = 跟随默认模型
+                      首轮对话后自动生成简短标题；「不启用」= 关闭自动命名
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <DropdownSelect
-                      value={autoNamingModelValue}
-                      disabled={!autoNamingEnabled}
-                      onChange={(v) => {
-                        const m = v;
-                        if (!m) {
-                          void setAutoNamingModel(null);
-                          return;
-                        }
-                        // 存量值（供应商被删/改模型）选不到 → 清空回退默认模型
-                        const p = config.providers.find((x) =>
-                          x.models.some((mm) => mm.id === m),
+                  <DropdownSelect
+                    value={autoNamingEnabled ? autoNamingModelValue || AUTO_NAMING_DEFAULT : ""}
+                    onChange={(v) => {
+                      if (!v) {
+                        void setAutoNamingEnabled(false);
+                        return;
+                      }
+                      if (v === AUTO_NAMING_DEFAULT) {
+                        void setAutoNamingEnabled(true).then(() =>
+                          setAutoNamingModel(null),
                         );
-                        void setAutoNamingModel(p ? { providerId: p.id, model: m } : null);
-                      }}
-                      options={[
-                        { value: "", label: "跟随默认模型" },
-                        ...autoNamingChoices.map((m) => ({
-                          value: m,
-                          label: modelNameAcrossProviders(config.providers, m),
-                        })),
-                      ]}
-                      className="text-sm rounded px-2 py-1 w-[200px] flex-shrink-0"
-                      style={{
-                        color: "var(--text-secondary)",
-                        background: "var(--input-bg)",
-                        border: "1px solid var(--input-border)",
-                      }}
-                    />
-                    <input
-                      type="checkbox"
-                      checked={autoNamingEnabled}
-                      onChange={(e) => void setAutoNamingEnabled(e.target.checked)}
-                      className="w-4 h-4 mt-0.5 flex-shrink-0"
-                      title="话题自动命名"
-                    />
-                  </div>
+                        return;
+                      }
+                      // 存量值（供应商被删/改模型）选不到 → 清空回退跟随默认模型
+                      const p = config.providers.find((x) =>
+                        x.models.some((mm) => mm.id === v),
+                      );
+                      void setAutoNamingEnabled(true).then(() =>
+                        setAutoNamingModel(
+                          p ? { providerId: p.id, model: v } : null,
+                        ),
+                      );
+                    }}
+                    options={[
+                      { value: "", label: "不启用" },
+                      { value: AUTO_NAMING_DEFAULT, label: "跟随默认模型" },
+                      ...autoNamingChoices.map((m) => ({
+                        value: m,
+                        label: modelNameAcrossProviders(config.providers, m),
+                      })),
+                    ]}
+                    className="text-sm rounded px-2 py-1 w-[200px] flex-shrink-0"
+                    style={{
+                      color: "var(--text-secondary)",
+                      background: "var(--input-bg)",
+                      border: "1px solid var(--input-border)",
+                    }}
+                  />
                 </div>
 
                 {/* 输入建议（未实现，占位） */}
@@ -622,7 +515,11 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             ) : tab === "files" ? (
               /* ===== 文件与路径面板（仓库级） ===== */
               <section className="flex-1 p-5 overflow-auto space-y-4">
-                <Field label="排除文件夹（英文逗号分隔）">
+                {/* 排除文件夹：逗号分隔；不显示在文件面板、不参与监听 */}
+                <SettingCard
+                  title="排除文件夹"
+                  description="不显示在文件面板、不参与监听；修改后重开仓库生效"
+                >
                   <input
                     value={excludeDraft}
                     onChange={(e) => setExcludeDraft(e.target.value)}
@@ -632,21 +529,19 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                         (e.target as HTMLInputElement).blur();
                     }}
                     placeholder="如：Archive, templates"
-                    className="w-full text-sm rounded px-2 py-1 outline-none focus:ring-1 focus:ring-[var(--accent)]"
+                    className="w-[260px] text-sm rounded px-2 py-1 outline-none focus:ring-1 focus:ring-[var(--accent)]"
                     style={{
                       color: "var(--text-secondary)",
                       background: "var(--input-bg)",
                       border: "1px solid var(--input-border)",
                     }}
                   />
-                  <p
-                    className="text-[11px] mt-1"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    不显示在文件面板、不参与监听；修改后重开仓库生效
-                  </p>
-                </Field>
-                <Field label="附件文件夹（相对仓库根，留空 = 根目录）">
+                </SettingCard>
+                {/* 附件文件夹：粘贴 / 拖入的附件导入到此文件夹（留空 = 根目录） */}
+                <SettingCard
+                  title="附件文件夹"
+                  description="粘贴 / 拖入的附件导入到此文件夹；修改后重开仓库生效"
+                >
                   <input
                     value={attachmentDraft}
                     onChange={(e) => setAttachmentDraft(e.target.value)}
@@ -656,20 +551,14 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                         (e.target as HTMLInputElement).blur();
                     }}
                     placeholder="如：assets 或 素材/图片"
-                    className="w-full text-sm rounded px-2 py-1 outline-none focus:ring-1 focus:ring-[var(--accent)]"
+                    className="w-[260px] text-sm rounded px-2 py-1 outline-none focus:ring-1 focus:ring-[var(--accent)]"
                     style={{
                       color: "var(--text-secondary)",
                       background: "var(--input-bg)",
                       border: "1px solid var(--input-border)",
                     }}
                   />
-                  <p
-                    className="text-[11px] mt-1"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    粘贴 / 拖入的附件导入到此文件夹；修改后重开仓库生效
-                  </p>
-                </Field>
+                </SettingCard>
               </section>
             ) : tab === "about" ? (
               /* ===== 关于面板：Logo + 版本号 + 检查更新 ===== */
@@ -677,66 +566,53 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             ) : (
               /* ===== 编辑器面板（仓库级） ===== */
               <section className="flex-1 p-5 overflow-auto space-y-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div
-                      className="text-sm font-medium"
-                      style={{ color: "var(--text-primary)" }}
-                    >
-                      宽松换行
-                    </div>
-                    <p
-                      className="text-xs mt-1"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      单个换行显示为换行；关闭 = 按 Markdown 标准需空行换行
-                    </p>
-                  </div>
-                  <input
-                    type="checkbox"
+                {/* 宽松换行：仅渲染层生效，编辑模式始终原文 */}
+                <SettingCard
+                  title="宽松换行"
+                  description="单个换行显示为换行；关闭 = 按 Markdown 标准需空行换行"
+                >
+                  <ToggleSwitch
                     checked={softLineBreak}
-                    onChange={(e) => void setSoftLineBreak(e.target.checked)}
-                    className="w-4 h-4 mt-0.5 flex-shrink-0"
+                    onChange={(v) => void setSoftLineBreak(v)}
                     title="宽松换行"
                   />
-                </div>
+                </SettingCard>
 
                 {/* 内部链接：一键重建为标准 Markdown 写法（批量改写，需确认） */}
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <div
-                      className="text-sm font-medium"
-                      style={{ color: "var(--text-primary)" }}
-                    >
-                      内部链接
-                    </div>
-                    <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-                      一键重建全仓库笔记的内部链接为标准 Markdown 写法「[名](基于仓库的路径)」；
-                      指向不存在笔记的链接转为空路径，点击可快捷新建。批量改写不可撤销。
-                    </p>
-                    {rebuilding ? (
-                      <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-                        重建中…
-                      </p>
-                    ) : rebuildState ? (
-                      <p
-                        className="text-xs mt-1"
-                        style={{ color: rebuildState.error ? "#f87171" : "var(--text-muted)" }}
-                      >
-                        {rebuildState.error ?? rebuildState.message}
-                      </p>
-                    ) : null}
-                  </div>
+                <SettingCard
+                  title="内部链接"
+                  description={
+                    <span>
+                  一键统一全仓库笔记的链接为标准 Markdown 写法；批量改写不可撤销。
+                      {rebuilding && <span className="block mt-1">重建中…</span>}
+                      {rebuildState && (
+                        <span
+                          className="block mt-1"
+                          style={{
+                            color: rebuildState.error
+                              ? "#f87171"
+                              : undefined,
+                          }}
+                        >
+                          {rebuildState.error ?? rebuildState.message}
+                        </span>
+                      )}
+                    </span>
+                  }
+                >
                   <button
                     className="px-3 py-1.5 text-xs rounded border flex-shrink-0 hover:opacity-80 disabled:opacity-50"
-                    style={{ borderColor: "var(--border)", color: "var(--text-primary)" }}
+                    style={{
+                      borderColor: "#f87171",
+                      color: "#f87171",
+                    }}
                     disabled={rebuilding}
                     onClick={() => setRebuildConfirm(true)}
                     title="批量改写仓库内全部 .md 的链接写法"
                   >
                     重建内部链接
                   </button>
-                </div>
+                </SettingCard>
               </section>
             )}
           </div>
@@ -745,7 +621,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
       {rebuildConfirm && (
         <ConfirmDialog
           title="重建内部链接"
-          description="将批量改写仓库内全部 .md 笔记的链接写法，统一为标准 Markdown「[名](基于仓库的路径)」。此操作不可撤销，建议先确认重要笔记已保存。"
+          description="将批量改写仓库内全部 .md 笔记的链接写法，统一为标准 Markdown「[名](基于仓库的路径)」。此操作不可撤销，建议先确认重要笔记已备份！"
           confirmText="开始重建"
           onConfirm={runRebuild}
           onCancel={() => setRebuildConfirm(false)}
@@ -765,107 +641,101 @@ function SearchConfigSection() {
   useEffect(() => setKeyDraft(tavilyKey), [tavilyKey]);
 
   return (
-    <section
-      className="flex-1 p-5 overflow-auto"
-      style={{ borderColor: "var(--border)" }}
-    >
-      <h3
-        className="text-sm font-medium mb-1"
-        style={{ color: "var(--text-primary)" }}
-      >
-        搜索源（AI 联网搜索）
-      </h3>
-      <p className="text-xs mb-3" style={{ color: "var(--text-muted)" }}>
-        AI 联网搜索使用；Tavily key 默认存本机钥匙串。
-      </p>
-      <div className="space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
-            搜索服务
-          </span>
-          <DropdownSelect
-            value={searchConfig.provider}
-            onChange={(v) =>
-              void setSearchConfig({
-                provider: v as "tavily" | "searxng",
-              })
-            }
-            options={[
-              { value: "tavily", label: "Tavily API" },
-              { value: "searxng", label: "SearXNG 自建实例" },
-            ]}
-            className="text-sm rounded px-2 py-1"
+    <section className="flex-1 p-5 overflow-auto space-y-4">
+      {/* 搜索服务：AI 联网搜索使用的服务商 */}
+      <SettingCard title="搜索服务" description="AI 联网搜索使用的服务商">
+        <DropdownSelect
+          value={searchConfig.provider}
+          onChange={(v) =>
+            void setSearchConfig({
+              provider: v as "tavily" | "searxng",
+            })
+          }
+          options={[
+            { value: "tavily", label: "Tavily API" },
+            { value: "searxng", label: "SearXNG 自建实例" },
+          ]}
+          className="text-sm rounded px-2 py-1"
+          style={{
+            color: "var(--text-primary)",
+            background: "var(--input-bg)",
+            border: "1px solid var(--input-border)",
+          }}
+        />
+      </SettingCard>
+      {searchConfig.provider === "tavily" ? (
+        <SettingCard
+          title="Tavily API Key"
+          description="默认存本机钥匙串，不进仓库文件"
+        >
+          <input
+            type="password"
+            value={keyDraft}
+            onChange={(e) => setKeyDraft(e.target.value)}
+            onBlur={() => void setTavilyKey(keyDraft.trim())}
+            placeholder="tvly-..."
+            className="text-sm rounded px-2 py-1 outline-none w-[260px]"
             style={{
               color: "var(--text-primary)",
               background: "var(--input-bg)",
               border: "1px solid var(--input-border)",
             }}
           />
-        </div>
-        {searchConfig.provider === "tavily" ? (
-          <div className="flex items-center justify-between gap-3">
-            <span
-              className="text-sm flex-shrink-0"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              Tavily API Key
-            </span>
-            <input
-              type="password"
-              value={keyDraft}
-              onChange={(e) => setKeyDraft(e.target.value)}
-              onBlur={() => void setTavilyKey(keyDraft.trim())}
-              placeholder="tvly-..."
-              className="text-sm rounded px-2 py-1 outline-none w-[260px]"
-              style={{
-                color: "var(--text-primary)",
-                background: "var(--input-bg)",
-                border: "1px solid var(--input-border)",
-              }}
-            />
-          </div>
-        ) : (
-          <div className="flex items-center justify-between gap-3">
-            <span
-              className="text-sm flex-shrink-0"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              SearXNG URL
-            </span>
-            <input
-              type="url"
-              value={searchConfig.searxngUrl}
-              onChange={(e) =>
-                void setSearchConfig({ searxngUrl: e.target.value })
-              }
-              placeholder="https://searx.example.com"
-              className="text-sm rounded px-2 py-1 outline-none w-[260px]"
-              style={{
-                color: "var(--text-primary)",
-                background: "var(--input-bg)",
-                border: "1px solid var(--input-border)",
-              }}
-            />
-          </div>
-        )}
-      </div>
+        </SettingCard>
+      ) : (
+        <SettingCard title="SearXNG URL" description="自建实例的访问地址">
+          <input
+            type="url"
+            value={searchConfig.searxngUrl}
+            onChange={(e) =>
+              void setSearchConfig({ searxngUrl: e.target.value })
+            }
+            placeholder="https://searx.example.com"
+            className="text-sm rounded px-2 py-1 outline-none w-[260px]"
+            style={{
+              color: "var(--text-primary)",
+              background: "var(--input-bg)",
+              border: "1px solid var(--input-border)",
+            }}
+          />
+        </SettingCard>
+      )}
     </section>
   );
 }
 
-function Field({
-  label,
+/** 设置项卡片（设置页统一样式基准）：左侧标题 + 描述，右侧控件；align 控制行对齐（输入类居中 / 开关类顶对齐）。 */
+function SettingCard({
+  title,
+  description,
+  align = "center",
   children,
 }: {
-  label: string;
+  title: string;
+  description: React.ReactNode;
+  align?: "center" | "start";
   children: React.ReactNode;
 }) {
   return (
-    <label className="block">
-      <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-        {label}
-      </span>
-      <div className="mt-1">{children}</div>
-    </label>
+    <div
+      className={`flex items-${align === "start" ? "start" : "center"} justify-between p-3 rounded-lg border gap-3`}
+      style={{
+        background: "var(--bg-primary)",
+        borderColor: "var(--border)",
+      }}
+    >
+      <div className="min-w-0">
+        <div
+          className="text-sm font-medium"
+          style={{ color: "var(--text-primary)" }}
+        >
+          {title}
+        </div>
+        <div className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
+          {description}
+        </div>
+      </div>
+      <div className="flex-shrink-0">{children}</div>
+    </div>
   );
 }

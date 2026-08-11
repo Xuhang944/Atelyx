@@ -194,7 +194,7 @@ export interface VaultConfig {
   softLineBreak?: boolean;
   /** 进入仓库时自动恢复上次打开的文件（画布/笔记窗口）。缺省 = true（开启）。 */
   autoRestoreFiles?: boolean;
-  /** 话题自动命名开关（缺省 = true 开启）。 */
+  /** 话题自动命名开关（缺省 = false 不启用）。 */
   autoNamingEnabled?: boolean;
   /** 话题自动命名模型（缺省 = 跟随默认模型；指定后命名用该模型，如 `{ providerId, model }`——话题命名一般用小模型）。 */
   autoNamingModel?: { providerId: string; model: string };

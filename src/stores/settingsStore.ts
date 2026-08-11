@@ -88,7 +88,7 @@ interface SettingsState {
   removeProvider: (id: string) => Promise<void>;
   /** 设仓库级默认模型（null = 未配置——跟随默认的对话请求会报错提示）。 */
   setVaultModel: (model: string | null) => Promise<void>;
-  /** 开关话题自动命名（仓库级；缺省开启）。 */
+  /** 开关话题自动命名（仓库级；缺省不启用）。 */
   setAutoNamingEnabled: (enabled: boolean) => Promise<void>;
   /** 设话题自动命名模型（null = 跟随默认模型；话题命名一般用小模型）。 */
   setAutoNamingModel: (model: { providerId: string; model: string } | null) => Promise<void>;
@@ -292,12 +292,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }),
 
   // 话题自动命名模型解析：设置页指定（autoNamingModel）→ 仓库默认模型（vaultConfig.model）；
-  // 开关未配置视为开启（缺省 true），显式关闭返回 null（画布/面板自动命名共用，一次定义）；
+  // 未配置视为不启用（缺省关闭），显式开启（autoNamingEnabled === true）才命名（画布/面板自动命名共用，一次定义）；
   // ignoreToggle = 重新命名（用户显式请求，独立于自动命名开关）。
   resolveAutoNamingModel: (ignoreToggle) => {
     const s = get();
     const vault = s.vaultConfig;
-    if (vault?.autoNamingEnabled === false && !ignoreToggle) return null;
+    if (vault?.autoNamingEnabled !== true && !ignoreToggle) return null;
     const named = vault?.autoNamingModel;
     const modelId = named?.model || vault?.model;
     if (!modelId) return null;
