@@ -117,7 +117,7 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
   const openTable = useAppStore((s) => s.openTable);
   const convertWhiteboard = useAppStore((s) => s.convertWhiteboard);
   const focusedAreaId = useUiStateStore((s) => s.focusedAreaId);
-  const { screenToFlowPosition, fitView, zoomIn, zoomOut, setCenter } = useReactFlow();
+  const { screenToFlowPosition, fitView, zoomIn, zoomOut, setCenter, setViewport } = useReactFlow();
 
   const [showGrid, setShowGrid] = useState(true);
   // 网格吸附开关（左下角按钮组磁铁按钮切换，默认开）
@@ -140,6 +140,30 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
   useEffect(() => {
     if (canvasFile && useCanvasStore.getState().canvasFile !== canvasFile) load(canvasFile);
   }, [canvasFile, load]);
+
+  // 画布加载完成（首次打开/切换画布 loading true→false；面积重挂时 load 不执行、
+  // loading 恒 false，挂载即走此分支）→ 恢复该画布上次视口位置；本次运行未打开过
+  // （无缓存视口，如重启后首次打开）→ 自动适应视图。fitView prop 仅初次挂载生效，
+  // 切画布不重挂实例，需手动触发
+  const canvasLoading = useCanvasStore((s) => s.loading);
+  const prevLoadingRef = useRef(true);
+  useEffect(() => {
+    if (canvasLoading) {
+      prevLoadingRef.current = true;
+      return;
+    }
+    if (prevLoadingRef.current) {
+      prevLoadingRef.current = false;
+      // 占位面积（无画布）没有视口可恢复/适应，跳过
+      if (!canvasFile) return;
+      const t = setTimeout(() => {
+        const vp = viewportCache.get(canvasFile);
+        if (vp) setViewport(vp);
+        else fitView({ duration: 200, padding: 0.15 });
+      }, 50);
+      return () => clearTimeout(t);
+    }
+  }, [canvasLoading, fitView, setViewport, canvasFile]);
 
   // ReactFlow 容器 ref：取画布区中心坐标（底部工具栏/文件面板建节点时落点）
   const flowWrapperRef = useRef<HTMLDivElement>(null);
