@@ -310,6 +310,12 @@ async function applyFileDuplicate(file: string): Promise<string> {
   return newFile;
 }
 
+/** 笔记编辑器保存状态（面积 header 展示用；仅挂载中的编辑器写入、卸载清除）。 */
+export type NoteSaveStatus = {
+  state: "idle" | "saving" | "saved" | "error";
+  loadError: boolean;
+};
+
 interface VaultFileState {
   /** 全仓库文件树（递归，跳过隐藏/排除目录与 `.tmp`）。 */
   tree: FileTreeNode[];
@@ -421,6 +427,20 @@ interface VaultFileState {
   externalNoteEdits: Record<string, number>;
   /** watcher 收到 `.md` 外部变化事件时 bump 序号（软件内重命名旧路径事件由调用方跳过）。 */
   markNoteExternallyEdited: (file: string) => void;
+  /** 笔记编辑器保存状态（file → 状态；面积 header 读取，编辑器卸载/切文件时清除）。 */
+  noteSaveStates: Record<string, NoteSaveStatus>;
+  /** 更新笔记编辑器保存状态（null = 清除）。 */
+  setNoteSaveState: (file: string, status: NoteSaveStatus | null) => void;
+  /** 笔记编辑器冲突状态（file → 是否冲突；面积 header 读取，编辑器卸载/切文件时清除）。 */
+  noteConflicts: Record<string, boolean>;
+  /** 更新笔记编辑器冲突状态（false = 清除）。 */
+  setNoteConflict: (file: string, conflict: boolean) => void;
+  /** 笔记冲突解决请求（file → 递增序号 + 解决方式；面积 header 按钮发请求，NoteEditor 订阅执行）。 */
+  noteConflictResolveReq: Record<string, { seq: number; keepLocal: boolean }>;
+  /** 请求解决笔记冲突（keepLocal = 保留本地并保存；false = 重新加载丢弃本地）。 */
+  resolveNoteConflict: (file: string, keepLocal: boolean) => void;
+  /** 清除笔记冲突解决请求（编辑器卸载时调用，防残留）。 */
+  clearNoteConflictResolveReq: (file: string) => void;
   /**
    * 仓库文件监听启停（幂等）：订阅 Rust watcher 事件并按 kind 分发到各 store。
    * 工作区挂载时 enable（App.tsx 调），回启动页 disable。分层：订阅副作用归 store，组件不直连 service。
@@ -690,6 +710,45 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     set((s) => ({
       externalNoteEdits: { ...s.externalNoteEdits, [file]: (s.externalNoteEdits[file] ?? 0) + 1 },
     })),
+
+  noteSaveStates: {},
+
+  setNoteSaveState: (file, status) =>
+    set((s) => {
+      if (status === null) {
+        const next = { ...s.noteSaveStates };
+        delete next[file];
+        return { noteSaveStates: next };
+      }
+      return { noteSaveStates: { ...s.noteSaveStates, [file]: status } };
+    }),
+
+  noteConflicts: {},
+
+  setNoteConflict: (file, conflict) =>
+    set((s) => {
+      const next = { ...s.noteConflicts };
+      if (conflict) next[file] = true;
+      else delete next[file];
+      return { noteConflicts: next };
+    }),
+
+  noteConflictResolveReq: {},
+
+  resolveNoteConflict: (file, keepLocal) =>
+    set((s) => ({
+      noteConflictResolveReq: {
+        ...s.noteConflictResolveReq,
+        [file]: { seq: (s.noteConflictResolveReq[file]?.seq ?? 0) + 1, keepLocal },
+      },
+    })),
+
+  clearNoteConflictResolveReq: (file) =>
+    set((s) => {
+      const next = { ...s.noteConflictResolveReq };
+      delete next[file];
+      return { noteConflictResolveReq: next };
+    }),
 
   startFileWatcher: (enabled) => {
     // 幂等：同一状态重复调用不动作（App 的 view effect 可能多次触发相同值）

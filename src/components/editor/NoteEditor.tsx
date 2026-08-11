@@ -1,16 +1,16 @@
 /**
  * 无画布时的 `.md` 笔记编辑器（未打开画布时单击笔记打开）。
  *
- * 占据主编辑区（画布位置）：顶部文件名 + 保存状态条，正文 textarea。
+ * 占据主编辑区（画布位置）：顶部文件操作条，正文 textarea。
  * - 加载：进入时读笔记正文（切换笔记重读）；加载完成前用户已输入则保留输入（不覆盖正在打的字）。
  * - 保存：输入 debounce 500ms 自动写回 `.md`；卸载/切走时 flush 未落盘输入（不静默丢弃）；
- *   写入完成时若已有更新输入则保持「保存中…」，避免误报「已自动保存」。
+ *   写入完成时若已有更新输入则保持「保存中…」，避免误报「已自动保存」；状态写 vaultStore 由面积 header 展示。
  * - 分层：走 vaultStore（readNoteContent / saveNoteContent），不直调 service。
  */
 import { Check, MoreHorizontal, Pencil } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { useVaultStore, lastFolderRenameTarget, lastNoteRenameTarget } from "@/stores/vaultStore";
+import { useVaultStore, lastFolderRenameTarget, lastNoteRenameTarget, type NoteSaveStatus } from "@/stores/vaultStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
 import type { BacklinkRow } from "@/types";
@@ -26,16 +26,17 @@ import { NotePropertiesView } from "@/components/editor/NotePropertiesView";
 import { MarkdownEditor } from "@/components/editor/MarkdownEditor";
 import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
 
-type SaveState = "idle" | "saving" | "saved" | "error";
+type SaveState = NoteSaveStatus["state"];
 
 export function NoteEditor({ file }: { file: string }) {
   const readNoteContent = useVaultStore((s) => s.readNoteContent);
   const saveNoteContent = useVaultStore((s) => s.saveNoteContent);
   // 外部修改感知：watcher note 事件 bump 序号（vaultStore.markNoteExternallyEdited），据此重读磁盘
   const externalEditSeq = useVaultStore((s) => s.externalNoteEdits[file] ?? 0);
+  // 保存状态存 vaultStore（面积 header 展示；本组件只写不持）
+  const noteSaveStatus = useVaultStore((s) => s.noteSaveStates[file]);
+  const loadError = noteSaveStatus?.loadError ?? false;
   const [content, setContent] = useState("");
-  const [saveState, setSaveState] = useState<SaveState>("idle");
-  const [loadError, setLoadError] = useState(false);
   /** 编辑 / 预览切换（默认预览：打开即渲染；双击预览内容切回编辑；标题栏已显示文件名故顶部条不再重复）。 */
   const [preview, setPreview] = useState(true);
   /** 源码模式：编辑区显示完整 Markdown 源码 textarea；不勾选 = 实时预览编辑（CodeMirror）。 */
@@ -44,14 +45,22 @@ export function NoteEditor({ file }: { file: string }) {
   const [showMenu, setShowMenu] = useState(false);
   /** 非用户编辑的 content 更新序号（加载完成/外部刷新/冲突重载时递增），MarkdownEditor 据此同步正文。 */
   const [editorSyncSeq, setEditorSyncSeq] = useState(0);
-  /** 外部修改冲突：本地有未保存改动 + 磁盘已被外部改过。提示用户选择，期间暂停自动保存防覆盖。 */
-  const [conflict, setConflict] = useState(false);
+  /** 外部修改冲突：本地有未保存改动 + 磁盘已被外部改过。状态存 vaultStore 由面积 header 展示，期间暂停自动保存防覆盖。 */
   const conflictRef = useRef(false);
-  const setConflictState = (v: boolean) => {
-    conflictRef.current = v;
-    setConflict(v);
-  };
+  const setConflictState = useCallback(
+    (v: boolean) => {
+      conflictRef.current = v;
+      useVaultStore.getState().setNoteConflict(file, v);
+    },
+    [file],
+  );
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 保存状态写 store（面积 header 展示；组件不持 state）。 */
+  const setSaveStatus = useCallback(
+    (state: SaveState, isLoadError = false) =>
+      useVaultStore.getState().setNoteSaveState(file, { state, loadError: isLoadError }),
+    [file],
+  );
   /** 最新输入（卸载时 flush 用，避免闭包拿到过期内容）。 */
   const contentRef = useRef("");
   /** 加载完成前用户是否已输入：输入优先，加载结果不覆盖正在打的字。 */
@@ -91,8 +100,7 @@ export function NoteEditor({ file }: { file: string }) {
     setContent("");
     // 编辑模式：清空编辑器（防加载窗口内旧笔记内容被误写到新文件，见 MarkdownEditor 同步机制）
     setEditorSyncSeq((s) => s + 1);
-    setSaveState("idle");
-    setLoadError(false);
+    setSaveStatus("idle");
     dirtyRef.current = false;
     void readNoteContent(file)
       .then((c) => {
@@ -109,13 +117,16 @@ export function NoteEditor({ file }: { file: string }) {
       })
       .catch(() => {
         // 加载失败：若用户已输入（dirty），输入会随 debounce 写盘，保留编辑界面而非换错误页
-        if (!cancelled && !dirtyRef.current) setLoadError(true);
+        if (!cancelled && !dirtyRef.current) setSaveStatus("idle", true);
       });
     return () => {
       cancelled = true;
-      // 卸载/切走：flush 未落盘的输入（debounce 窗口内不静默丢弃）。
+      // 卸载/切走：清除保存/冲突状态（面积 header 随视图不显示），再 flush 未落盘的输入（debounce 窗口内不静默丢弃）。
       // 组件已卸载不能再 setState，fire-and-forget 写盘即可。
       // 冲突未决时跳过：外部已修改且未明确选择，不覆盖外部修改（提示条已告知）
+      useVaultStore.getState().setNoteSaveState(file, null);
+      useVaultStore.getState().setNoteConflict(file, false);
+      useVaultStore.getState().clearNoteConflictResolveReq(file);
       if (conflictRef.current) return;
       if (timerRef.current) {
         clearTimeout(timerRef.current);
@@ -132,7 +143,7 @@ export function NoteEditor({ file }: { file: string }) {
         }
       }
     };
-  }, [file, readNoteContent, saveNoteContent]);
+  }, [file, readNoteContent, saveNoteContent, setSaveStatus]);
 
   // 外部修改感知：磁盘内容 ≠ 最后写盘基准 = 真实外部变化（自写回放磁盘 = 基准，天然跳过）。
   // 无本地改动 → 静默刷新为磁盘最新（实时同步）；有本地改动 → 冲突提示 + 暂停自动保存，防覆盖外部修改
@@ -154,7 +165,7 @@ export function NoteEditor({ file }: { file: string }) {
           setContent(disk);
           contentRef.current = disk;
           lastSavedRef.current = disk;
-          setSaveState("idle");
+          setSaveStatus("idle");
           // 编辑模式：外部静默刷新同步编辑器
           setEditorSyncSeq((s) => s + 1);
         }
@@ -165,10 +176,10 @@ export function NoteEditor({ file }: { file: string }) {
     return () => {
       cancelled = true;
     };
-  }, [externalEditSeq, file, readNoteContent]);
+  }, [externalEditSeq, file, readNoteContent, setSaveStatus, setConflictState]);
 
   /** 冲突「重新加载」：丢弃本地改动，恢复磁盘最新内容并解除冲突。 */
-  const reloadFromDisk = () => {
+  const reloadFromDisk = useCallback(() => {
     void readNoteContent(file)
       .then((disk) => {
         if (!mountedRef.current) return;
@@ -177,15 +188,15 @@ export function NoteEditor({ file }: { file: string }) {
         lastSavedRef.current = disk;
         dirtyRef.current = false;
         setConflictState(false);
-        setSaveState("idle");
+        setSaveStatus("idle");
         // 编辑模式：冲突「重新加载」同步编辑器
         setEditorSyncSeq((s) => s + 1);
       })
       .catch(() => {});
-  };
+  }, [file, readNoteContent, setConflictState, setSaveStatus]);
 
   /** 冲突「保留本地并保存」：用户明确选择用本地内容覆盖外部修改。 */
-  const saveLocalOverExternal = () => {
+  const saveLocalOverExternal = useCallback(() => {
     const v = contentRef.current;
     setConflictState(false);
     const seq = ++saveSeqRef.current;
@@ -194,12 +205,28 @@ export function NoteEditor({ file }: { file: string }) {
         lastSavedRef.current = v;
         // 保存期间又输入了（新 seq 已接管）：dirty 保持 true，防后续外部修改静默覆盖正在打的字
         if (seq === saveSeqRef.current) dirtyRef.current = false;
-        if (mountedRef.current && seq === saveSeqRef.current) setSaveState("saved");
+        if (mountedRef.current && seq === saveSeqRef.current) setSaveStatus("saved");
       })
       .catch(() => {
-        if (mountedRef.current) setSaveState("error");
+        if (mountedRef.current) setSaveStatus("error");
       });
-  };
+  }, [file, saveNoteContent, setConflictState, setSaveStatus]);
+
+  /** 面积 header 冲突条按钮 → vaultStore 序号请求 → 本组件订阅执行（与 externalNoteEdits 同构）。
+   * 首帧以当前序号为基线：只响应本实例挂载后发出的请求（防处理卸载前残留请求）。 */
+  const resolveReq = useVaultStore((s) => s.noteConflictResolveReq[file]);
+  const processedResolveSeqRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (processedResolveSeqRef.current === undefined) {
+      processedResolveSeqRef.current = resolveReq?.seq ?? 0;
+      return;
+    }
+    const cur = resolveReq?.seq ?? 0;
+    if (cur <= processedResolveSeqRef.current) return;
+    processedResolveSeqRef.current = cur;
+    if (resolveReq?.keepLocal) saveLocalOverExternal();
+    else reloadFromDisk();
+  }, [resolveReq, reloadFromDisk, saveLocalOverExternal]);
 
   const handleChange = (v: string) => {
     dirtyRef.current = true;
@@ -207,7 +234,7 @@ export function NoteEditor({ file }: { file: string }) {
     setContent(v);
     // 冲突中：仅更新本地内容，暂停自动保存（等用户选「重新加载」或「保留本地并保存」，防静默覆盖外部修改）
     if (conflictRef.current) return;
-    setSaveState("saving");
+    setSaveStatus("saving");
     if (timerRef.current) clearTimeout(timerRef.current);
     const seq = ++saveSeqRef.current;
     timerRef.current = setTimeout(() => {
@@ -225,16 +252,16 @@ export function NoteEditor({ file }: { file: string }) {
               lastSavedRef.current = v;
               // 保存完成且无新输入：无未保存改动（dirtyRef 重置，后续外部修改恢复静默刷新语义）
               if (seq === saveSeqRef.current) dirtyRef.current = false;
-              // 期间又有新输入（新定时器已接管）→ 不显示「已自动保存」；组件已卸载不再 setState
-              if (mountedRef.current && seq === saveSeqRef.current) setSaveState("saved");
+              // 期间又有新输入（新定时器已接管）→ 不显示「已自动保存」；组件已卸载不再写状态
+              if (mountedRef.current && seq === saveSeqRef.current) setSaveStatus("saved");
             })
             .catch(() => {
-              if (mountedRef.current) setSaveState("error");
+              if (mountedRef.current) setSaveStatus("error");
             });
         })
         .catch(() => {
           // 写盘前读磁盘失败：文件可能已被外部删除，放弃写盘（不覆盖不重建），提示保存失败
-          if (mountedRef.current && seq === saveSeqRef.current) setSaveState("error");
+          if (mountedRef.current && seq === saveSeqRef.current) setSaveStatus("error");
         });
     }, 500);
   };
@@ -295,25 +322,11 @@ export function NoteEditor({ file }: { file: string }) {
 
   return (
     <div ref={editorRootRef} className="h-full flex flex-col" style={{ background: "var(--bg-primary)" }}>
-      {/* 顶部条：左侧保存状态（文件名由标题栏窗口标签显示）+ 右侧编辑/预览切换 */}
+      {/* 顶部条：右侧编辑/预览切换（保存状态已移至面积 header） */}
       <div
         className="px-3 py-1 flex items-center gap-1.5 text-xs flex-shrink-0 select-none"
         style={{ borderBottom: "1px solid var(--border)", color: "var(--text-muted)" }}
       >
-        <span
-          className="flex-shrink-0 truncate"
-          style={{ color: saveState === "error" ? "#f87171" : "var(--text-muted)" }}
-        >
-          {loadError
-            ? "读取失败"
-            : saveState === "saving"
-              ? "保存中…"
-              : saveState === "error"
-                ? "保存失败"
-                : saveState === "saved"
-                  ? "已自动保存"
-                  : ""}
-        </span>
         <span className="ml-auto flex items-center gap-2 flex-shrink-0">
           {/* 预览模式提示：显示在切换按钮左侧 */}
           {preview && (
@@ -380,33 +393,6 @@ export function NoteEditor({ file }: { file: string }) {
           </span>
         </span>
       </div>
-
-      {/* 外部修改冲突提示条：本地有未保存改动且磁盘已被外部修改。期间自动保存已暂停，
-          需用户明确选择「重新加载」（丢弃本地）或「保留本地并保存」（覆盖外部修改），防静默覆盖 */}
-      {conflict && (
-        <div
-          className="px-3 py-1 flex items-center gap-2 text-xs flex-shrink-0 select-none"
-          style={{ background: "rgba(248,113,113,0.12)", color: "#f87171", borderBottom: "1px solid var(--border)" }}
-        >
-          <span className="flex-1 truncate">外部已修改此文件，保存将覆盖外部修改</span>
-          <button
-            onClick={reloadFromDisk}
-            className="px-1.5 py-0.5 rounded border hover:opacity-80 flex-shrink-0"
-            style={{ borderColor: "#f87171" }}
-            title="丢弃本地改动，加载外部最新内容"
-          >
-            重新加载
-          </button>
-          <button
-            onClick={saveLocalOverExternal}
-            className="px-1.5 py-0.5 rounded border hover:opacity-80 flex-shrink-0"
-            style={{ borderColor: "#f87171" }}
-            title="用本地内容覆盖外部修改并立即保存"
-          >
-            保留本地并保存
-          </button>
-        </div>
-      )}
 
       {/* 属性区：渲染/实时预览编辑模式内嵌编辑器顶部（可点击编辑）；
           源码模式由 textarea 显示 YAML 原文，不重复显示；格式错误时也显示（错误条 + 源码模式修复入口） */}

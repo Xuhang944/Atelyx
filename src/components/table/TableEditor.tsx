@@ -1,7 +1,7 @@
 /**
  * 多维表格编辑器（表格视图）。
  *
- * 布局：工具条（保存状态 / 冲突条 / 视图切换 / 导出）→ 表格主体（行号列 + 列头 + 类型化单元格）→
+ * 布局：工具条（视图切换 / 导出；冲突/错误/保存状态在面积 header）→ 表格主体（行号列 + 列头 + 类型化单元格）→
  * 行尾「+ 新行」→ 底部横向滑动条 → 状态栏（列自动计算，整格点击选类型 + 实时结果）。
  *
  * 交互要点：
@@ -14,10 +14,10 @@
  *   （`ColumnMenu`/`RowMenu`/`SelectAllMenu`）提供列宽/行高自适应与左右插入字段。
  * - 状态栏：每列整格 hover 高亮可点击（未设置留空），弹出计算类型菜单（固定向上弹出，
  *   底边贴点击位置不遮住点击处）；已设置列居中显示「类型 + 结果」。
- * - 保存状态/冲突提示镜像画布窗口（冲突条「重新加载（丢弃本地）/ 保留本地并保存」）。
+ * - 冲突/错误/保存状态在面积 header 展示（`AreaFrame` 读 tableStore）。
  * - 弹层菜单（字段/列/行/整表/状态栏）见 `TableMenus.tsx`。
  */
-import { FileOutput, GripVertical, MoreHorizontal, MoveDiagonal, Plus, Sigma, X } from "lucide-react";
+import { FileOutput, GripVertical, MoreHorizontal, MoveDiagonal, Plus, Sigma } from "lucide-react";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
@@ -43,16 +43,10 @@ import {
 } from "@/constants/table";
 import type { TableField, TableRow } from "@/types";
 
-/** 保存状态文本（镜像画布窗口状态区）。 */
-const SAVE_TEXT = { saving: "保存中…", saved: "已自动保存" } as const;
-
 /** 表格编辑器：areaId 用于聚焦判定（覆盖编辑键盘监听门控，同画布快捷键惯例）。 */
 export function TableEditor({ areaId }: { areaId: string }) {
   const fields = useTableStore((s) => s.fields);
   const rows = useTableStore((s) => s.rows);
-  const saving = useTableStore((s) => s.saving);
-  const conflictPending = useTableStore((s) => s.conflictPending);
-  const error = useTableStore((s) => s.error);
   const selection = useTableStore((s) => s.selection);
   const selectRow = useTableStore((s) => s.selectRow);
   const selectCell = useTableStore((s) => s.selectCell);
@@ -60,8 +54,6 @@ export function TableEditor({ areaId }: { areaId: string }) {
   const selectAll = useTableStore((s) => s.selectAll);
   const triggerOverwrite = useTableStore((s) => s.triggerOverwrite);
   const focusedAreaId = useUiStateStore((s) => s.focusedAreaId);
-  const resolveConflict = useTableStore((s) => s.resolveConflict);
-  const clearError = useTableStore((s) => s.clearError);
   const addRow = useTableStore((s) => s.addRow);
   const view = useTableStore((s) => s.view);
   const setView = useTableStore((s) => s.setView);
@@ -320,52 +312,11 @@ export function TableEditor({ areaId }: { areaId: string }) {
 
   return (
     <div className="h-full flex flex-col" style={{ background: "var(--bg-primary)" }}>
-      {/* 工具条 */}
+      {/* 工具条（冲突/错误/保存状态均在面积 header） */}
       <div
         className="flex items-center gap-2 px-3 py-1.5 border-b flex-shrink-0 text-xs"
         style={{ borderColor: "var(--border)", color: "var(--text-secondary)" }}
       >
-        <span className="flex-shrink-0">{saving ? SAVE_TEXT.saving : SAVE_TEXT.saved}</span>
-        {conflictPending && (
-          <span
-            className="flex items-center gap-1.5 px-1.5 py-0.5 rounded flex-shrink-0"
-            style={{ color: "#f59e0b", background: "rgba(245,158,11,0.1)" }}
-          >
-            表格与外部修改冲突（本地有未保存改动）
-            <button
-              onClick={() => void resolveConflict(false)}
-              className="px-1 rounded hover:opacity-80"
-              style={{ background: "rgba(245,158,11,0.2)", color: "#f59e0b" }}
-              title="丢弃本地改动，加载磁盘最新内容"
-            >
-              重新加载（丢弃本地）
-            </button>
-            <button
-              onClick={() => void resolveConflict(true)}
-              className="px-1 rounded hover:opacity-80"
-              style={{ background: "rgba(245,158,11,0.2)", color: "#f59e0b" }}
-              title="用本地内容覆盖磁盘（外部改动丢失）"
-            >
-              保留本地并保存
-            </button>
-          </span>
-        )}
-        {error && (
-          <span
-            className="flex items-center gap-1.5 px-1.5 py-0.5 rounded flex-shrink-0"
-            style={{ color: "#f87171", background: "rgba(248,113,113,0.1)" }}
-          >
-            <span className="truncate max-w-[260px]">{error}</span>
-            <button
-              onClick={() => clearError()}
-              className="px-1 rounded hover:opacity-80"
-              style={{ background: "rgba(248,113,113,0.2)", color: "#f87171" }}
-              aria-label="关闭错误提示"
-            >
-              <X size={12} />
-            </button>
-          </span>
-        )}
         <span className="flex-1" />
         {/* 视图切换：表格 / 时间线（内存态不持久化） */}
         <div className="flex items-center rounded border flex-shrink-0" style={{ borderColor: "var(--border)" }}>

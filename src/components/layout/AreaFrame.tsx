@@ -9,6 +9,10 @@
 import { ChevronDown, FileText, Files, Info, LayoutTemplate, Palette, Search, Sparkles, Table as TableIcon, X } from "lucide-react";
 import { memo, useState, type ReactNode } from "react";
 import { useUiStateStore } from "@/stores/uiStateStore";
+import { useCanvasStore } from "@/stores/canvasStore";
+import { useTableStore } from "@/stores/tableStore";
+import { useVaultStore } from "@/stores/vaultStore";
+import { useAppStore } from "@/stores/appStore";
 import { useDismissOnOutside } from "@/hooks/useDismissOnOutside";
 import { AreaPlaceholder } from "@/components/layout/AreaPlaceholder";
 import { CanvasView } from "@/components/layout/views/CanvasView";
@@ -30,6 +34,208 @@ const VIEW_META: Record<ViewKind, { label: string; icon: ReactNode }> = {
   aichat: { label: "AI 对话", icon: <Sparkles size={13} /> },
   empty: { label: "空面积", icon: <LayoutTemplate size={13} /> },
 };
+
+/** 画布面积 header 状态指示（无当前画布不显示；冲突 > 错误 > 保存状态）。 */
+function CanvasStatusIndicator() {
+  const canvasId = useCanvasStore((s) => s.canvasId);
+  const canvasFile = useAppStore((s) => s.currentCanvasFile);
+  const loading = useCanvasStore((s) => s.loading);
+  const saving = useCanvasStore((s) => s.saving);
+  const readOnly = useCanvasStore((s) => s.readOnly);
+  const conflictPending = useCanvasStore((s) => s.conflictPending);
+  const mergeFromDisk = useCanvasStore((s) => s.mergeFromDisk);
+  const reloadFromDisk = useCanvasStore((s) => s.reloadFromDisk);
+  const error = useCanvasStore((s) => s.error);
+  const clearError = useCanvasStore((s) => s.clearError);
+  const load = useCanvasStore((s) => s.load);
+  if (!canvasId) return null;
+  if (conflictPending) {
+    return (
+      <span
+        className="flex items-center gap-1 px-1.5 py-0.5 rounded flex-shrink-0"
+        style={{ color: "#f59e0b", background: "rgba(245,158,11,0.1)" }}
+      >
+        <span className="truncate max-w-[150px]">画布与外部修改冲突</span>
+        <button
+          onClick={() => void mergeFromDisk()}
+          className="px-1 rounded hover:opacity-80"
+          style={{ background: "rgba(245,158,11,0.2)", color: "#f59e0b" }}
+          title="以磁盘为基底保留本地新增内容（重叠以磁盘为准）"
+        >
+          合并
+        </button>
+        <button
+          onClick={() => void reloadFromDisk()}
+          className="px-1 rounded hover:opacity-80"
+          style={{ background: "rgba(245,158,11,0.2)", color: "#f59e0b" }}
+          title="丢弃本地改动，加载磁盘最新内容"
+        >
+          重载
+        </button>
+      </span>
+    );
+  }
+  if (error) {
+    return (
+      <span
+        className="flex items-center gap-1 px-1.5 py-0.5 rounded flex-shrink-0"
+        style={{ color: "#f87171", background: "rgba(248,113,113,0.1)" }}
+      >
+        <span className="truncate max-w-[160px]">{error}</span>
+        {error === "加载画布失败，请重试" && canvasFile && (
+          <button
+            onClick={() => void load(canvasFile)}
+            className="px-1 rounded hover:opacity-80"
+            style={{ background: "rgba(248,113,113,0.2)", color: "#f87171" }}
+          >
+            重试
+          </button>
+        )}
+        <button
+          onClick={() => clearError()}
+          className="px-1 rounded hover:opacity-80"
+          style={{ background: "rgba(248,113,113,0.2)", color: "#f87171" }}
+          aria-label="关闭错误提示"
+        >
+          <X size={12} />
+        </button>
+      </span>
+    );
+  }
+  return (
+    <span className="flex-shrink-0 text-xs" style={{ color: "var(--text-muted)" }}>
+      {loading ? "加载中…" : saving ? "保存中…" : readOnly ? "只读（外部白板格式）" : "已自动保存"}
+    </span>
+  );
+}
+
+/** 表格面积 header 状态指示（无当前表格不显示；冲突 > 错误 > 保存状态）。 */
+function TableStatusIndicator() {
+  const currentTableFile = useAppStore((s) => s.currentTableFile);
+  const saving = useTableStore((s) => s.saving);
+  const conflictPending = useTableStore((s) => s.conflictPending);
+  const resolveConflict = useTableStore((s) => s.resolveConflict);
+  const error = useTableStore((s) => s.error);
+  const clearError = useTableStore((s) => s.clearError);
+  if (!currentTableFile) return null;
+  if (conflictPending) {
+    return (
+      <span
+        className="flex items-center gap-1 px-1.5 py-0.5 rounded flex-shrink-0"
+        style={{ color: "#f59e0b", background: "rgba(245,158,11,0.1)" }}
+      >
+        <span className="truncate max-w-[150px]">表格与外部修改冲突</span>
+        <button
+          onClick={() => void resolveConflict(false)}
+          className="px-1 rounded hover:opacity-80"
+          style={{ background: "rgba(245,158,11,0.2)", color: "#f59e0b" }}
+          title="丢弃本地改动，加载磁盘最新内容"
+        >
+          重新加载
+        </button>
+        <button
+          onClick={() => void resolveConflict(true)}
+          className="px-1 rounded hover:opacity-80"
+          style={{ background: "rgba(245,158,11,0.2)", color: "#f59e0b" }}
+          title="用本地内容覆盖磁盘（外部改动丢失）"
+        >
+          保留本地
+        </button>
+      </span>
+    );
+  }
+  if (error) {
+    return (
+      <span
+        className="flex items-center gap-1 px-1.5 py-0.5 rounded flex-shrink-0"
+        style={{ color: "#f87171", background: "rgba(248,113,113,0.1)" }}
+      >
+        <span className="truncate max-w-[160px]">{error}</span>
+        <button
+          onClick={() => clearError()}
+          className="px-1 rounded hover:opacity-80"
+          style={{ background: "rgba(248,113,113,0.2)", color: "#f87171" }}
+          aria-label="关闭错误提示"
+        >
+          <X size={12} />
+        </button>
+      </span>
+    );
+  }
+  return (
+    <span className="flex-shrink-0 text-xs" style={{ color: "var(--text-muted)" }}>
+      {saving ? "保存中…" : "已自动保存"}
+    </span>
+  );
+}
+
+/** 笔记面积 header 状态指示（无当前笔记不显示；冲突 > 保存状态）。 */
+function NoteStatusIndicator() {
+  const currentNoteFile = useAppStore((s) => s.currentNoteFile);
+  const conflict = useVaultStore((s) => (currentNoteFile ? s.noteConflicts[currentNoteFile] : false));
+  const status = useVaultStore((s) => (currentNoteFile ? s.noteSaveStates[currentNoteFile] : undefined));
+  const resolveNoteConflict = useVaultStore((s) => s.resolveNoteConflict);
+  if (!currentNoteFile) return null;
+  if (conflict) {
+    return (
+      <span
+        className="flex items-center gap-1 px-1.5 py-0.5 rounded flex-shrink-0"
+        style={{ color: "#f59e0b", background: "rgba(245,158,11,0.1)" }}
+      >
+        <span className="truncate max-w-[150px]">外部已修改此文件</span>
+        <button
+          onClick={() => resolveNoteConflict(currentNoteFile, false)}
+          className="px-1 rounded hover:opacity-80"
+          style={{ background: "rgba(245,158,11,0.2)", color: "#f59e0b" }}
+          title="丢弃本地改动，加载外部最新内容"
+        >
+          重新加载
+        </button>
+        <button
+          onClick={() => resolveNoteConflict(currentNoteFile, true)}
+          className="px-1 rounded hover:opacity-80"
+          style={{ background: "rgba(245,158,11,0.2)", color: "#f59e0b" }}
+          title="用本地内容覆盖外部修改并立即保存"
+        >
+          保留本地
+        </button>
+      </span>
+    );
+  }
+  if (!status) return null;
+  const text = status.loadError
+    ? "读取失败"
+    : status.state === "saving"
+      ? "保存中…"
+      : status.state === "error"
+        ? "保存失败"
+        : status.state === "saved"
+          ? "已自动保存"
+          : null;
+  if (!text) return null;
+  return (
+    <span
+      className="flex-shrink-0 text-xs"
+      style={{ color: status.loadError || status.state === "error" ? "#f87171" : "var(--text-muted)" }}
+    >
+      {text}
+    </span>
+  );
+}
+
+/** 按视图类型分派状态指示（view 变化 = 子组件类型切换，各子组件 hooks 固定）。 */
+function AreaStatusIndicator({ view }: { view: ViewKind }) {
+  switch (view) {
+    case "canvas":
+      return <CanvasStatusIndicator />;
+    case "table":
+      return <TableStatusIndicator />;
+    case "note":
+      return <NoteStatusIndicator />;
+    default:
+      return null;
+  }
+}
 
 export const AreaFrame = memo(function AreaFrame({
   node,
@@ -135,6 +341,9 @@ export const AreaFrame = memo(function AreaFrame({
         </div>
 
         <div className="flex-1" />
+
+        {/* 状态指示（冲突 > 错误 > 保存状态；编辑器视图，无文件/其他视图不显示） */}
+        <AreaStatusIndicator view={node.view} />
 
         {/* 关闭 = 合并到相邻面积（最后一个面积不可关闭） */}
         {areaCount > 1 && (

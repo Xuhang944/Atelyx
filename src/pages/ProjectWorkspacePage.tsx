@@ -1,14 +1,13 @@
 /**
  * 工作区页面（Blender 式可自定义布局）。
  *
- * 全局 chrome：标题栏（仓库名 + 布局 tabs + 画布状态区 + 右操作区（设置/全屏/窗口控制））。
+ * 全局 chrome：标题栏（仓库名 + 布局 tabs + 右操作区（设置/全屏/窗口控制））。
  * 面积网格由 `WorkspaceGrid` 按激活布局渲染，
  * 文件打开/关闭/恢复联动在此层（跨 store 一致性），视图渲染全在面积内部。
  */
-import { Maximize, Settings, X } from "lucide-react";
+import { Maximize, Settings } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useAppStore } from "@/stores/appStore";
-import { useCanvasStore } from "@/stores/canvasStore";
 import { useChatPanelStore } from "@/stores/chatPanelStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTableStore } from "@/stores/tableStore";
@@ -23,19 +22,6 @@ import type { FileTreeNode } from "@/types";
 
 export function ProjectWorkspacePage() {
   const [showSettings, setShowSettings] = useState(false);
-
-  // 标题栏画布状态区（画布开着即显示；面积网格内画布面积可能不存在，状态区在全局 chrome）
-  const canvasId = useAppStore((s) => s.currentCanvasId);
-  const canvasFile = useAppStore((s) => s.currentCanvasFile);
-  const loading = useCanvasStore((s) => s.loading);
-  const saving = useCanvasStore((s) => s.saving);
-  const readOnly = useCanvasStore((s) => s.readOnly);
-  const canvasError = useCanvasStore((s) => s.error);
-  const clearError = useCanvasStore((s) => s.clearError);
-  const conflictPending = useCanvasStore((s) => s.conflictPending);
-  const reloadFromDisk = useCanvasStore((s) => s.reloadFromDisk);
-  const mergeFromDisk = useCanvasStore((s) => s.mergeFromDisk);
-  const loadCanvas = useCanvasStore((s) => s.load);
 
   const toggleFullscreen = useAppStore((s) => s.toggleFullscreen);
   const minimizeWindow = useAppStore((s) => s.minimizeWindow);
@@ -177,7 +163,7 @@ export function ProjectWorkspacePage() {
       style={{ background: "var(--bg-primary)" }}
     >
       <div className="flex-1 flex flex-col min-h-0">
-        {/* 标题栏横条：仓库名 + 布局 tabs → ml-auto 状态区 → 右操作区（设置/全屏/窗口控制，常驻） */}
+        {/* 标题栏横条：仓库名 + 布局 tabs → 右操作区（设置/全屏/窗口控制，常驻） */}
         <div
           className="h-9 flex items-center gap-1 pl-1 pr-1 flex-shrink-0 select-none"
           style={{ background: "var(--bg-secondary)", borderBottom: "1px solid var(--border)" }}
@@ -185,69 +171,8 @@ export function ProjectWorkspacePage() {
         >
           <LayoutTabs />
 
-            {/* 画布状态区（ml-auto 贴右操作区左侧；画布开着即显示，切笔记不遗漏冲突/错误提示） */}
-            <div className="ml-auto flex items-center gap-1.5 flex-shrink-0 px-1" data-tauri-drag-region>
-              {canvasId && (
-                <span className="flex-shrink-0 text-xs">
-                  {loading ? "加载中…" : saving ? "保存中…" : readOnly ? "只读（外部白板格式）" : "已自动保存"}
-                </span>
-              )}
-              {canvasId && conflictPending && (
-                <span
-                  className="flex items-center gap-1.5 px-1.5 py-0.5 rounded flex-shrink-0"
-                  style={{ color: "#f59e0b", background: "rgba(245,158,11,0.1)" }}
-                >
-                  画布与外部修改冲突（本地有未保存改动）
-                  <button
-                    onClick={(e) => { e.stopPropagation(); void mergeFromDisk(); }}
-                    className="px-1 rounded hover:opacity-80"
-                    style={{ background: "rgba(245,158,11,0.2)", color: "#f59e0b" }}
-                    title="以磁盘为基底保留本地新增内容（重叠以磁盘为准）"
-                    data-tauri-drag-region="false"
-                  >
-                    合并
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); void reloadFromDisk(); }}
-                    className="px-1 rounded hover:opacity-80"
-                    style={{ background: "rgba(245,158,11,0.2)", color: "#f59e0b" }}
-                    data-tauri-drag-region="false"
-                  >
-                    重载（丢弃本地）
-                  </button>
-                </span>
-              )}
-              {canvasId && canvasError && (
-                <span
-                  className="flex items-center gap-1.5 px-1.5 py-0.5 rounded flex-shrink-0"
-                  style={{ color: "#f87171", background: "rgba(248,113,113,0.1)" }}
-                >
-                  <span className="truncate max-w-[220px]">{canvasError}</span>
-                  {canvasError === "加载画布失败，请重试" && canvasFile && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); void loadCanvas(canvasFile); }}
-                      className="px-1 rounded hover:opacity-80"
-                      style={{ background: "rgba(248,113,113,0.2)", color: "#f87171" }}
-                      data-tauri-drag-region="false"
-                    >
-                      重试
-                    </button>
-                  )}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); clearError(); }}
-                    className="px-1 rounded hover:opacity-80"
-                    style={{ background: "rgba(248,113,113,0.2)", color: "#f87171" }}
-                    aria-label="关闭错误提示"
-                    data-tauri-drag-region="false"
-                  >
-                    <X size={12} />
-                  </button>
-                </span>
-              )}
-            </div>
-
-            {/* 右操作区（常驻）：设置 + 全屏 */}
-            <div className="flex-shrink-0 flex items-center" data-tauri-drag-region>
+            {/* 右操作区（常驻）：设置 + 全屏（ml-auto 贴右缘，窗口控制在其后） */}
+            <div className="ml-auto flex-shrink-0 flex items-center" data-tauri-drag-region>
               <button
                 onClick={(e) => { e.stopPropagation(); setShowSettings(true); }}
                 className="w-8 h-8 flex items-center justify-center rounded-md hover:opacity-80"
