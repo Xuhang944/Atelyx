@@ -169,6 +169,8 @@ export interface DirNames {
 export interface VaultConfig {
   /** 仓库级主题。缺失时默认 "dark"。 */
   theme?: ThemeMode;
+  /** 仓库级强调色（hex，如 `#d4af37`；缺省 = 默认金色）。 */
+  accentColor?: string;
   /** 仓库级默认模型（从仓库内已配置供应商的全部模型中选择；缺省 = 未指定，跟随默认的对话请求报错提示）。 */
   model?: string;
   /** 仓库级界面基础字号（px，覆盖 :root font-size；缺省 = 18）。 */

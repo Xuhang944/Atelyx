@@ -121,7 +121,7 @@ function ProviderCard({
         active ? "" : "hover:bg-[var(--hover)]"
       }`}
       style={{
-        background: active ? "rgba(212,175,55,0.12)" : "var(--bg-primary)",
+        background: active ? "color-mix(in srgb, var(--accent) 12%, transparent)" : "var(--bg-primary)",
         borderColor: active ? "var(--accent)" : "var(--border)",
       }}
     >

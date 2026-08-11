@@ -275,7 +275,7 @@ export function TableEditor({ areaId }: { areaId: string }) {
   const cellSelected = (rowId: string, fieldId: string): boolean =>
     selection?.kind === "cell" && selection.rowId === rowId && selection.fieldId === fieldId;
   /** 行/列/整表的淡金背景（列选中作用于表头与数据单元格）。 */
-  const highlightBg = (highlighted: boolean) => (highlighted ? "rgba(212,175,55,0.08)" : undefined);
+  const highlightBg = (highlighted: boolean) => (highlighted ? "color-mix(in srgb, var(--accent) 8%, transparent)" : undefined);
 
   // ===== 底部横向滑动条 + 状态栏：与表格横向滚动双向同步（常显；宽度 = 表格总宽 + 边框余量）=====
   const bottomScrollRef = useRef<HTMLDivElement>(null);
@@ -353,7 +353,7 @@ export function TableEditor({ areaId }: { areaId: string }) {
             });
           }}
           className="flex items-center gap-1 px-2 py-1 rounded transition-colors"
-          style={{ color: exported ? "var(--accent)" : "var(--text-secondary)", background: exported ? "rgba(212,175,55,0.15)" : undefined }}
+          style={{ color: exported ? "var(--accent)" : "var(--text-secondary)", background: exported ? "color-mix(in srgb, var(--accent) 15%, transparent)" : undefined }}
           title="导出为 xlsx"
         >
           <FileOutput size={13} /> {exported ? "已导出" : "导出 xlsx"}
@@ -412,7 +412,7 @@ export function TableEditor({ areaId }: { areaId: string }) {
                   key={f.id}
                   className="border-b border-r align-middle px-1.5 py-1 sticky top-0 z-10 group relative"
                   style={{
-                    background: colHighlighted(f.id) ? "rgba(212,175,55,0.08)" : "var(--bg-secondary)",
+                    background: colHighlighted(f.id) ? "color-mix(in srgb, var(--accent) 8%, transparent)" : "var(--bg-secondary)",
                     borderColor: "var(--border)",
                   }}
                   onClick={() => selectField(f.id)}

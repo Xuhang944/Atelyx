@@ -598,6 +598,9 @@ pub struct VaultConfig {
     /// 仓库级主题："light" | "dark"。缺失时前端默认 "dark"。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// 仓库级强调色（hex，如 "#d4af37"；缺省 = 默认金色）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent_color: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_explorer_sort: Option<String>,
     /// 仓库级界面基础字号（px，与前端 VaultConfig.fontSize 对齐；缺字段会丢设置）

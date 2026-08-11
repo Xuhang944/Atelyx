@@ -78,7 +78,7 @@ export function MentionTextarea({
               key={i}
               className="inline rounded"
               style={{
-                background: "rgba(212,175,55,0.22)",
+                background: "color-mix(in srgb, var(--accent) 22%, transparent)",
                 boxShadow: "inset 0 0 0 1px var(--accent)",
                 color: "var(--accent)",
               }}

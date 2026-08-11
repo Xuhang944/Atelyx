@@ -54,7 +54,7 @@ export function ConnectionFrame({ topType }: Props) {
         className="pointer-events-none absolute rounded-2xl"
         style={{
           inset: -GAP,
-          border: "1.5px dashed rgba(212,175,55,0.4)",
+          border: "1.5px dashed color-mix(in srgb, var(--accent) 40%, transparent)",
         }}
       />
       {/* 下层 handle（先渲染被上层覆盖；终点命中上层 handle 优先） */}

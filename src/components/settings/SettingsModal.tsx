@@ -1,17 +1,19 @@
 import {
   Bot,
+  Check,
   ChevronLeft,
   ChevronRight,
   FolderTree,
   Info,
   PenLine,
+  RotateCcw,
   Search,
   Server,
   Settings,
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
 import { useVaultStore } from "@/stores/vaultStore";
@@ -21,6 +23,7 @@ import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
 import { ToggleSwitch } from "@/components/common/ToggleSwitch";
 import { modelNameAcrossProviders } from "@/utils/text";
+import { DEFAULT_ACCENT, foregroundFor } from "@/utils/color";
 
 type Tab =
   | "general"
@@ -54,11 +57,35 @@ const FONT_OPTIONS: { label: string; value: string }[] = [
 ];
 /** 话题自动命名下拉「跟随默认模型」哨兵值（与任何模型 id 区分；空串 = 不启用）。 */
 const AUTO_NAMING_DEFAULT = "__default__";
+/** 强调色预设色板（600/700 阶深色系：白字对比 ≥ 5:1，金色默认由「恢复默认」按钮回归；取色器可自由选色）。 */
+const ACCENT_PRESETS = [
+  "#2563eb",
+  "#0d9488",
+  "#7c3aed",
+  "#dc2626",
+  "#15803d",
+];
 
 export function SettingsModal({ onClose }: { onClose: () => void }) {
   const vaultConfig = useSettingsStore((s) => s.vaultConfig);
   // 仓库内设置（仓库级，七 tab）：通用 / 模型供应商 / 模型服务 / 联网搜索 / 文件与路径 / 编辑器 / 关于
   const [tab, setTab] = useState<Tab>("general");
+  /** 强调色取色器草稿：取色器拖动连续触发 onChange，防抖 200ms 后落盘（避免每帧一次 config 原子写）。 */
+  const [accentDraft, setAccentDraft] = useState(vaultConfig?.accentColor ?? DEFAULT_ACCENT);
+  const accentTimerRef = useRef<number | null>(null);
+  const commitAccentDraft = (v: string) => {
+    setAccentDraft(v);
+    if (accentTimerRef.current !== null) window.clearTimeout(accentTimerRef.current);
+    accentTimerRef.current = window.setTimeout(() => {
+      accentTimerRef.current = null;
+      void setAccentColor(v);
+    }, 200);
+  };
+  useEffect(() => {
+    return () => {
+      if (accentTimerRef.current !== null) window.clearTimeout(accentTimerRef.current);
+    };
+  }, []);
   /** 左侧 tab 栏折叠状态（折叠后仅显示图标）。 */
   const [tabsCollapsed, setTabsCollapsed] = useState(false);
   /** 重建内部链接：确认弹窗 / 执行中 / 内联结果（编辑器 tab）。 */
@@ -84,6 +111,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   };
   const theme = useSettingsStore((s) => s.theme);
   const toggleTheme = useSettingsStore((s) => s.toggleTheme);
+  const setAccentColor = useSettingsStore((s) => s.setAccentColor);
   const setVaultModel = useSettingsStore((s) => s.setVaultModel);
   const setVaultFontSize = useSettingsStore((s) => s.setVaultFontSize);
   const setVaultFontFamily = useSettingsStore((s) => s.setVaultFontFamily);
@@ -284,6 +312,53 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                       }}
                     />
                   </button>
+                </SettingCard>
+
+                {/* 强调色（仓库级）：预设色板 + 取色器 + 恢复默认；空值 = 默认金色 */}
+                <SettingCard
+                  title="强调色"
+                  description="界面强调色（按钮 / 选中高亮 / 画布箭头）"
+                >
+                  <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
+                      {ACCENT_PRESETS.map((c) => {
+                        const active = vaultConfig?.accentColor?.toLowerCase() === c;
+                        return (
+                          <button
+                            key={c}
+                            onClick={() => {
+                              setAccentDraft(c);
+                              void setAccentColor(c);
+                            }}
+                            title={`强调色 ${c}`}
+                            className="w-5 h-5 rounded-full flex items-center justify-center transition hover:scale-110 flex-shrink-0"
+                            style={{ background: c }}
+                          >
+                            {active && <Check size={11} style={{ color: foregroundFor(c) }} />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <input
+                      type="color"
+                      value={accentDraft}
+                      onChange={(e) => commitAccentDraft(e.target.value)}
+                      title="自定义颜色"
+                      className="w-6 h-6 rounded cursor-pointer bg-transparent p-0 border-0"
+                    />
+                    <button
+                      onClick={() => {
+                        setAccentDraft(DEFAULT_ACCENT);
+                        void setAccentColor(undefined);
+                      }}
+                      title="恢复默认金色"
+                      className="flex items-center gap-1 text-xs rounded px-1.5 py-1 hover:bg-[var(--hover)] flex-shrink-0"
+                      style={{ color: "var(--text-secondary)" }}
+                    >
+                      <RotateCcw size={12} />
+                      恢复默认
+                    </button>
+                  </div>
                 </SettingCard>
 
                 {/* 字体大小（仓库级） */}

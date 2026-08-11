@@ -109,7 +109,7 @@ export function FieldMenu({
               onClose();
             }}
             className="px-2 py-0.5 rounded text-xs"
-            style={{ background: "rgba(212,175,55,0.15)", color: "var(--accent)" }}
+            style={{ background: "color-mix(in srgb, var(--accent) 15%, transparent)", color: "var(--accent)" }}
           >
             确定
           </button>
@@ -351,7 +351,7 @@ export function AddFieldMenu({ x, y, onClose }: { x: number; y: number; onClose:
             onClose();
           }}
           className="px-2 py-0.5 rounded text-xs"
-          style={{ background: "rgba(212,175,55,0.15)", color: "var(--accent)" }}
+          style={{ background: "color-mix(in srgb, var(--accent) 15%, transparent)", color: "var(--accent)" }}
         >
           添加
         </button>

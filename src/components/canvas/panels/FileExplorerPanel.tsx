@@ -628,7 +628,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
                     style={{
                       ...indent,
                       // 拖拽悬停目标高亮（金色底），提示可放入移动
-                      background: dropDir === node.path ? "rgba(212,175,55,0.25)" : undefined,
+                      background: dropDir === node.path ? "color-mix(in srgb, var(--accent) 25%, transparent)" : undefined,
                     }}
                     data-dir={node.path}
                     onPointerDown={(e) => startPotentialDrag(e, node)}
@@ -699,7 +699,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
                   className="flex items-center gap-1 px-2 py-1 min-h-8 cursor-default rounded-md hover:bg-[var(--hover)]"
                   style={{
                     ...indent,
-                    background: active ? "rgba(212,175,55,0.2)" : undefined,
+                    background: active ? "color-mix(in srgb, var(--accent) 20%, transparent)" : undefined,
                   }}
                   data-file={node.path}
                   onPointerDown={(e) => startPotentialDrag(e, node)}
@@ -815,7 +815,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
       <div
         className="flex-1 overflow-auto py-1 px-2"
         data-dir=""
-        style={{ background: dropDir === "" ? "rgba(212,175,55,0.25)" : undefined }}
+        style={{ background: dropDir === "" ? "color-mix(in srgb, var(--accent) 25%, transparent)" : undefined }}
         onContextMenu={(e) => {
           e.preventDefault();
           e.stopPropagation();

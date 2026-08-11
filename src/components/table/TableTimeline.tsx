@@ -191,7 +191,7 @@ export function TableTimeline() {
             }
           }}
           className="w-8 h-8 flex items-center justify-center rounded-full transition-colors"
-          style={{ background: "rgba(212,175,55,0.15)", color: "var(--accent)" }}
+          style={{ background: "color-mix(in srgb, var(--accent) 15%, transparent)", color: "var(--accent)" }}
           title={playing ? "暂停" : finished ? "重播" : "播放"}
         >
           {playing ? <Pause size={15} /> : <Play size={15} className="ml-0.5" />}
@@ -254,7 +254,7 @@ export function TableTimeline() {
                   style={{
                     width: cardWidthAt(durations[i], hasDurationField),
                     border: `1px solid ${isCurrent ? "var(--accent)" : "var(--border)"}`,
-                    background: isSelected ? "rgba(212,175,55,0.12)" : "var(--bg-secondary)",
+                    background: isSelected ? "color-mix(in srgb, var(--accent) 12%, transparent)" : "var(--bg-secondary)",
                     outline: isCurrent ? "1px solid var(--accent)" : undefined,
                   }}
                   title={`行 ${i + 1} · ${durations[i]} 秒`}

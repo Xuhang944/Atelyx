@@ -158,7 +158,7 @@ export function GroupNode({ id, data, width, height, selected }: NodeProps) {
             width: 10,
             height: 10,
             background: "#fff",
-            border: "2px solid #d4af37",
+            border: "2px solid var(--accent)",
             borderRadius: 2,
             cursor: "nwse-resize",
           }}

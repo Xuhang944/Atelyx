@@ -980,7 +980,7 @@ export function ConversationNode({ id, width, height }: NodeProps) {
           width: 10,
           height: 10,
           background: "#fff",
-          border: "2px solid #d4af37",
+          border: "2px solid var(--accent)",
           borderRadius: 2,
           cursor: "nwse-resize",
         }}

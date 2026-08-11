@@ -37,14 +37,15 @@
 
   --highlight-bg: #f1f5f9;
   --highlight-text: #1e293b;
-  --highlight-code: #b8962e;
+  /* 代码块关键字色 / 内部链接色：跟随强调色（hover 档，浅/深主题统一） */
+  --highlight-code: var(--accent-hover);
   --table-border: #e2e8f0;
   --table-header-bg: #f1f5f9;
 
   /* Markdown 扩展语法：==高亮== / [[wiki 链接]] / callout */
   --mark-bg: #fff3a3;
   --mark-color: #1f2937;
-  --link-internal: #b8962e;
+  --link-internal: var(--accent-hover);
   --callout-bg: rgba(15, 23, 42, 0.04);
   /* 代码块底色（独立于行内 code 的 --highlight-bg；深色主题下需与卡片 #252526 区分） */
   --code-bg: #f1f5f9;
@@ -77,7 +78,8 @@
 
   --highlight-bg: #252526;
   --highlight-text: #dcdcdc;
-  --highlight-code: #569cd6;
+  /* 代码块关键字色：深色底需亮化强调色（暗化版对比不足），浅色主题继承 :root */
+  --highlight-code: color-mix(in srgb, var(--accent) 55%, white);
   --table-border: #333333;
   --table-header-bg: #2a2d2e;
 
@@ -97,7 +99,7 @@
 :root {
   --xy-edge-stroke-default: #94a3b8;
   --xy-edge-stroke-width-default: 1;
-  --xy-edge-stroke-selected-default: #d4af37;
+  --xy-edge-stroke-selected-default: var(--accent);
   --xy-connectionline-stroke-default: #94a3b8;
   --xy-connectionline-stroke-width-default: 1;
   --xy-attribution-background-color-default: rgba(200, 200, 200, 0.5);
@@ -111,8 +113,8 @@
   --xy-node-border-default: 1px solid #e2e8f0;
   --xy-node-background-color-default: #ffffff;
   --xy-node-boxshadow-hover-default: 0 1px 4px 1px rgba(0, 0, 0, 0.08);
-  --xy-node-boxshadow-selected-default: 0 0 0 0.5px #d4af37;
-  --xy-handle-background-color-default: #d4af37;
+  --xy-node-boxshadow-selected-default: 0 0 0 0.5px var(--accent);
+  --xy-handle-background-color-default: var(--accent);
   --xy-handle-border-color-default: #ffffff;
   --xy-selection-background-color-default: rgba(124, 58, 237, 0.08);
   --xy-selection-border-default: 1px dotted rgba(124, 58, 237, 0.6);
@@ -128,7 +130,7 @@
 
 :root.dark {
   --xy-edge-stroke-default: #555;
-  --xy-edge-stroke-selected-default: #d4af37;
+  --xy-edge-stroke-selected-default: var(--accent);
   --xy-connectionline-stroke-default: #666;
   --xy-attribution-background-color-default: rgba(50, 50, 50, 0.5);
   --xy-minimap-background-color-default: #2a2d2e;
@@ -140,8 +142,8 @@
   --xy-node-border-default: 1px solid #333333;
   --xy-node-background-color-default: #252526;
   --xy-node-boxshadow-hover-default: 0 1px 4px 1px rgba(0, 0, 0, 0.3);
-  --xy-node-boxshadow-selected-default: 0 0 0 0.5px #d4af37;
-  --xy-handle-background-color-default: #d4af37;
+  --xy-node-boxshadow-selected-default: 0 0 0 0.5px var(--accent);
+  --xy-handle-background-color-default: var(--accent);
   --xy-handle-border-color-default: #1e1e1e;
   --xy-selection-background-color-default: rgba(124, 58, 237, 0.12);
   --xy-selection-border-default: 1px dotted rgba(124, 58, 237, 0.6);
@@ -560,7 +562,7 @@ input[type="number"]::-webkit-inner-spin-button {
   background: linear-gradient(
     100deg,
     transparent 20%,
-    rgba(212, 175, 55, 0.3) 50%,
+    color-mix(in srgb, var(--accent) 30%, transparent) 50%,
     transparent 80%
   );
   background-size: 220% 100%;

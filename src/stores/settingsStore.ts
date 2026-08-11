@@ -98,6 +98,8 @@ interface SettingsState {
   setVaultFontFamily: (family: string | undefined) => Promise<void>;
   /** 切换主题（仓库级，写入 .atelyx/config.json）。 */
   toggleTheme: () => Promise<void>;
+  /** 设仓库级强调色（hex；undefined = 恢复默认金色，写入 .atelyx/config.json）。 */
+  setAccentColor: (color: string | undefined) => Promise<void>;
   /** 文件面板排序方式（仓库级）。 */
   setFileExplorerSort: (sortKey: FileExplorerSortKey) => Promise<void>;
   /** 设置文件面板排除的文件夹名列表（仓库级；空数组 = 无排除）。 */
@@ -185,6 +187,7 @@ function persistDebounced(): void {
 function cleanVaultConfig(vc: VaultConfig): VaultConfig {
   const out: VaultConfig = {};
   if (vc.theme !== undefined) out.theme = vc.theme;
+  if (vc.accentColor !== undefined) out.accentColor = vc.accentColor;
   if (vc.model !== undefined) out.model = vc.model;
   if (vc.fontSize !== undefined) out.fontSize = vc.fontSize;
   if (vc.fontFamily !== undefined) out.fontFamily = vc.fontFamily;
@@ -480,6 +483,19 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setFileExplorerSort: async (sortKey) => {
     const base = get().vaultConfig ?? {};
     const vc: VaultConfig = { ...base, fileExplorerSort: sortKey };
+    set({ vaultConfig: vc });
+    try {
+      await writeVaultConfig(cleanVaultConfig(vc));
+    } catch (e) {
+      console.error("保存仓库级配置失败", e);
+    }
+  },
+
+  /** 设仓库级强调色（undefined = 恢复默认金色；只接受合法 hex 格式）。 */
+  setAccentColor: async (color) => {
+    if (color !== undefined && !/^#[0-9a-fA-F]{6}$/.test(color)) return;
+    const base = get().vaultConfig ?? {};
+    const vc: VaultConfig = { ...base, accentColor: color };
     set({ vaultConfig: vc });
     try {
       await writeVaultConfig(cleanVaultConfig(vc));

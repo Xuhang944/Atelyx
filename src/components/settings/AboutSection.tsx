@@ -53,7 +53,7 @@ export function AboutSection() {
           className="absolute -inset-8 rounded-full"
           style={{
             background:
-              "radial-gradient(circle, rgba(212,175,55,0.10), transparent 65%)",
+              "radial-gradient(circle, color-mix(in srgb, var(--accent) 10%, transparent), transparent 65%)",
           }}
         />
         <img

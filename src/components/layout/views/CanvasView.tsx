@@ -433,7 +433,7 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
             <button
               onClick={() => void convertWhiteboard(canvasFile)}
               className="inline-flex items-center gap-1 px-2 py-0.5 rounded transition-colors"
-              style={{ background: "rgba(212,175,55,0.15)", color: "var(--accent)" }}
+              style={{ background: "color-mix(in srgb, var(--accent) 15%, transparent)", color: "var(--accent)" }}
               title="生成同目录 .atlx 画布副本并打开（原文件保留）"
             >
               <FileOutput size={13} /> 转换为画布

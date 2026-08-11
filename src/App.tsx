@@ -3,6 +3,7 @@ import { ReactFlowProvider } from "@xyflow/react";
 import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useVaultStore } from "@/stores/vaultStore";
+import { darkenHex, foregroundFor } from "@/utils/color";
 import { LoadingScreen } from "@/components/common/LoadingScreen";
 
 // 页面 lazy 分割：主包不含 CodeMirror/KaTeX/高亮语言包等重库，LoadingScreen 更快出现。
@@ -34,6 +35,7 @@ export default function App() {
   const theme = useSettingsStore((s) => s.theme);
   const fontSize = useSettingsStore((s) => s.vaultConfig?.fontSize);
   const fontFamily = useSettingsStore((s) => s.vaultConfig?.fontFamily);
+  const accentColor = useSettingsStore((s) => s.vaultConfig?.accentColor);
 
   /** 初始化未完成前渲染加载屏（循环扫光进度条），完成后按 view 渲染启动页/工作区。 */
   const [booting, setBooting] = useState(true);
@@ -61,6 +63,21 @@ export default function App() {
     root.style.fontSize = fontSize ? `${fontSize}px` : "";
     root.style.fontFamily = fontFamily ?? "";
   }, [fontSize, fontFamily]);
+
+  // 强调色（仓库级）：覆盖 --accent 系列变量，空值回默认金色；深/浅主题共用同一份
+  // （:root 与 :root.dark 均不单独定义 accent，inline style 优先级最高对两主题同时生效）
+  useEffect(() => {
+    const root = document.documentElement;
+    if (accentColor && /^#[0-9a-fA-F]{6}$/.test(accentColor)) {
+      root.style.setProperty("--accent", accentColor);
+      root.style.setProperty("--accent-hover", darkenHex(accentColor));
+      root.style.setProperty("--accent-fg", foregroundFor(accentColor));
+    } else {
+      root.style.removeProperty("--accent");
+      root.style.removeProperty("--accent-hover");
+      root.style.removeProperty("--accent-fg");
+    }
+  }, [accentColor]);
 
   // 全局屏蔽浏览器默认右键菜单：未定义自定义菜单的区域无任何反应。
   // 已定义自定义菜单的区域（画布空白/节点/消息区/文件面板行等）自行 preventDefault，不受影响。

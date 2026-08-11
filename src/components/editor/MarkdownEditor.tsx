@@ -86,7 +86,7 @@ const editorTheme = EditorView.theme({
   ".cm-cursor": { borderLeftColor: "var(--accent)", borderLeftWidth: "1.5px" },
   "&.cm-focused": { outline: "none" },
   ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection": {
-    backgroundColor: "rgba(212, 175, 55, 0.25)",
+    backgroundColor: "color-mix(in srgb, var(--accent) 25%, transparent)",
   },
   ".cm-gutters": { display: "none" },
 });
