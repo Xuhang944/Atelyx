@@ -113,7 +113,7 @@
   --xy-node-border-default: 1px solid #e2e8f0;
   --xy-node-background-color-default: #ffffff;
   --xy-node-boxshadow-hover-default: 0 1px 4px 1px rgba(0, 0, 0, 0.08);
-  --xy-node-boxshadow-selected-default: 0 0 0 0.5px var(--accent);
+  --xy-node-boxshadow-selected-default: none;
   --xy-handle-background-color-default: var(--accent);
   --xy-handle-border-color-default: #ffffff;
   --xy-selection-background-color-default: rgba(124, 58, 237, 0.08);
@@ -142,7 +142,7 @@
   --xy-node-border-default: 1px solid #333333;
   --xy-node-background-color-default: #252526;
   --xy-node-boxshadow-hover-default: 0 1px 4px 1px rgba(0, 0, 0, 0.3);
-  --xy-node-boxshadow-selected-default: 0 0 0 0.5px var(--accent);
+  --xy-node-boxshadow-selected-default: none;
   --xy-handle-background-color-default: var(--accent);
   --xy-handle-border-color-default: #1e1e1e;
   --xy-selection-background-color-default: rgba(124, 58, 237, 0.12);
@@ -157,24 +157,27 @@
   --xy-edge-label-color-default: #dcdcdc;
 }
 
-/* ===== 节点连接边框（ConnectionFrame）：四边透明长条 handle，hover 高亮可拉区域 ===== */
+/* ===== 节点连接边框（ConnectionFrame）：四边透明长条 handle，拉线指示由 SVG 虚线膨胀承担 ===== */
 .conn-strip {
   background: transparent !important;
   border: none !important;
   border-radius: 0 !important;
 }
-.conn-strip:hover {
-  background: rgba(124, 58, 237, 0.14) !important;
-}
 
 /* ===== Base ===== */
-html, body, #root {
+html,
+body,
+#root {
   height: 100%;
   margin: 0;
 }
 
 :root {
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
   font-size: 18px;
   line-height: 1.5;
 }
@@ -197,9 +200,37 @@ body {
   width: auto;
   background-color: transparent;
   border: none;
+  /* 组主体指针穿透：wrapper 自身也不命中。注意 React Flow 的
+     `.react-flow__node.draggable { pointer-events: all }` 特异性更高，
+     必须 !important 压掉（否则点击组中心命中 wrapper 本体：选中 + 抓手 + 可拖动）。
+     点击落到下层：不选中组、按下可直接从组内开始框选组中节点；
+     标题栏/handle/resize 手柄经下方规则恢复可命中 */
+  pointer-events: none !important;
+}
+.react-flow__node-group header,
+.react-flow__node-group .conn-strip,
+.react-flow__node-group .react-flow__resize-control {
+  pointer-events: auto;
 }
 
-
+/* ===== 节点选中反馈 ===== */
+/* 选中反馈由 ConnectionFrame 外圈圆角矩形承担（虚线 → 实线 + 金色发光），
+   故此处不额外加 wrapper 阴影（--xy-node-boxshadow-selected-* 已置 none） */
+/* 分组选中不提升层级：React Flow 默认选中 zIndex +1000（calculateZ），会把组盖到所有节点之上；
+   group 是背景容器，永远垫底（selected 仅保留金色边框反馈，不遮挡上层节点） */
+.react-flow__node-group.selected {
+  z-index: -1 !important;
+}
+/* 框选矩形金色主题化（覆盖默认紫色变量） */
+.react-flow__selection {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 65%, transparent);
+}
+/* 画布空白区域光标保持默认：开启 selectionOnDrag 后 pane 恒带 .selection class，
+   其默认 cursor:pointer（手型）是 Shift 临时框选场景的，常开框选应显示默认光标 */
+.react-flow__pane.selection {
+  cursor: default;
+}
 
 /* ===== Controls ===== */
 .react-flow__controls {
@@ -207,7 +238,7 @@ body {
   border: 1px solid var(--border) !important;
   border-radius: 8px !important;
   overflow: hidden !important;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.12) !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12) !important;
 }
 .react-flow__controls-button {
   background: var(--bg-secondary) !important;
@@ -293,7 +324,8 @@ body {
   @apply bg-transparent p-0;
   color: var(--highlight-text);
 }
-.markdown-body ul, .markdown-body ol {
+.markdown-body ul,
+.markdown-body ol {
   padding-left: 1.25em;
   margin: 0.25em 0;
 }
@@ -387,7 +419,8 @@ body {
 .markdown-body table {
   @apply border-collapse w-full my-1 text-xs;
 }
-.markdown-body th, .markdown-body td {
+.markdown-body th,
+.markdown-body td {
   @apply px-2 py-1;
   border: 1px solid var(--table-border);
 }
@@ -546,7 +579,8 @@ textarea {
   @apply rounded px-2 py-1.5 text-sm;
   color: var(--text-primary);
 }
-input::placeholder, textarea::placeholder {
+input::placeholder,
+textarea::placeholder {
   color: var(--input-placeholder);
 }
 input[type="text"]:focus,
@@ -571,8 +605,12 @@ input[type="number"]::-webkit-inner-spin-button {
 /* ===== 思考过程折叠块等待动画 ===== */
 /* 折叠标题强调色扫光：accent 光带在整行高度内从左到右扫过（流式中思考进行时启用） */
 @keyframes thinking-sweep {
-  from { background-position: 220% 0; }
-  to { background-position: -120% 0; }
+  from {
+    background-position: 220% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
 }
 .thinking-sweep-bar {
   position: absolute;
@@ -589,11 +627,14 @@ input[type="number"]::-webkit-inner-spin-button {
   animation: thinking-sweep 1.6s linear infinite;
 }
 
-
 /* 启动加载屏：循环扫光进度条（indeterminate） */
 @keyframes sweep-slide {
-  from { transform: translateX(-100%); }
-  to { transform: translateX(300%); }
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
 }
 .sweep-track {
   width: 240px;

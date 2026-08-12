@@ -19,7 +19,6 @@ import {
   readNote,
   recordNoteDiskContent,
   renameCanvasVault,
-  importAttachmentVault,
   isKnownNoteDiskContent,
 } from "@/services/vault";
 import { readTableVault } from "@/services/table";
@@ -27,12 +26,24 @@ import { tableToSnapshotText } from "@/utils/table";
 import { toApiMessages, type ChatParams } from "@/services/ai/client";
 import { abortAutoTitle } from "@/services/ai/autoTitle";
 import { runSearch, resultsToText } from "@/services/search";
-import { pickFile } from "@/services/dialog";
-import { findFreeSpot, pickEdgeHandles } from "@/utils/layout";
+import {
+  findFreeSpot,
+  pickEdgeHandles,
+  collectGroupMembers,
+} from "@/utils/layout";
 import { createPersistController } from "@/utils/persist";
 import { createUndoManager } from "@/utils/undoStack";
 import { inferImageMime } from "@/utils/whiteboard";
-import { DEFAULT_CONVERSATION_WIDTH, DEFAULT_CONVERSATION_HEIGHT, DEFAULT_TEXT_NODE_WIDTH, DEFAULT_TEXT_NODE_HEIGHT, DEFAULT_TABLE_NODE_WIDTH, DEFAULT_TABLE_NODE_HEIGHT } from "@/constants/canvas";
+import {
+  DEFAULT_CONVERSATION_WIDTH,
+  DEFAULT_CONVERSATION_HEIGHT,
+  DEFAULT_TEXT_NODE_WIDTH,
+  DEFAULT_TEXT_NODE_HEIGHT,
+  DEFAULT_TABLE_NODE_WIDTH,
+  DEFAULT_TABLE_NODE_HEIGHT,
+  DEFAULT_GROUP_WIDTH,
+  DEFAULT_GROUP_HEIGHT,
+} from "@/constants/canvas";
 import { WEB_SEARCH_TOOL } from "@/constants/tools";
 import { runStreamExchange, decideCleanup, runAutoNaming } from "./streaming";
 import { isAssetConsumed } from "@/utils/consumed";
@@ -59,6 +70,29 @@ interface Snapshot {
   edges: Edge[];
   messagesByConv: Record<string, Message[]>;
 }
+
+/**
+ * 分组拖拽联动状态：dragStart 时快照组起始位置 + 组内成员起始位置，
+ * dragging 期间按组位移同步平移成员（onNodesChange 中处理），dragStop 清空。
+ * 成员判定 = 中心点落在组矩形内（collectGroupMembers，拖前位置一次快照）。
+ */
+interface GroupDragState {
+  groupId: string;
+  groupStart: { x: number; y: number };
+  members: { id: string; start: { x: number; y: number } }[];
+}
+let groupDragState: GroupDragState | null = null;
+
+/** 复制/粘贴剪贴板（模块级）：复制选中节点深拷贝快照，粘贴重新生成 id（不带边，语义同右键「复制节点」）。 */
+interface ClipboardNode {
+  type: string | undefined;
+  position: { x: number; y: number };
+  width?: number | null;
+  height?: number | null;
+  zIndex?: number;
+  data: Record<string, unknown>;
+}
+let clipboardNodes: ClipboardNode[] = [];
 
 /** getReferencedInputs 返回的待注入引用（含源节点 id、显示名、注入内容）。 */
 interface ReferencedInput {
@@ -115,8 +149,12 @@ interface CanvasState {
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: OnConnect;
-  /** 节点开始拖拽时保存快照 */
-  onNodeDragStart: () => void;
+  /** 节点开始拖拽时保存快照（组节点同时快照组内成员，拖动时联动平移） */
+  onNodeDragStart: (event: unknown, node: Node) => void;
+  /** 复制选中节点到内部剪贴板（深拷贝 data，不带边；多选全复制）。无选中返回 false。 */
+  copySelectedNodes: () => boolean;
+  /** 粘贴剪贴板节点到目标位置（整体中心对齐，重新生成 id；空剪贴板 no-op，入 undo 栈）。 */
+  pasteNodes: (position: { x: number; y: number }) => void;
   /** 节点拖动结束：重算相连边的锚点（位置自适应）。 */
   onNodeDragStop: (event: unknown, node: Node) => void;
   /** 添加节点到画布。 */
@@ -125,21 +163,32 @@ interface CanvasState {
    * 从仓库 `.md` 文件建文本节点（文件面板拖拽）：读正文填 bodyMd，
    * file 引用该文件（不复制）。findFreeSpot 避让已有节点。
    */
-  addTextNoteFromVault: (file: string, title: string, position: { x: number; y: number }, exact?: boolean) => Promise<void>;
+  addTextNoteFromVault: (
+    file: string,
+    title: string,
+    position: { x: number; y: number },
+    exact?: boolean,
+  ) => Promise<void>;
   /**
    * 从仓库附件建媒体节点（文件面板拖拽）：图片读 dataURL 设 thumb，文本类读内容设 body，
    * 解析失败标 parseFailed。file 引用该文件（不复制）。
    */
-  addMediaFromVault: (file: string, name: string, position: { x: number; y: number }, exact?: boolean) => Promise<void>;
+  addMediaFromVault: (
+    file: string,
+    name: string,
+    position: { x: number; y: number },
+    exact?: boolean,
+  ) => Promise<void>;
   /**
    * 从仓库 `.atb` 表格建表格节点（文件面板拖拽）：读文件填快照 snapshot，
    * file 引用该文件（不复制）。findFreeSpot 避让已有节点。
    */
-  addTableFromVault: (file: string, title: string, position: { x: number; y: number }, exact?: boolean) => Promise<void>;
-  /** 导入系统文件到仓库（service 只经 store 出口）。返回相对路径。 */
-  importAttachment: (src: string, name: string) => Promise<string>;
-  /** 系统对话框选文件 → 导入仓库 → 画布中心建媒体节点。用户取消返回 false。 */
-  pickAndImportAttachment: (position: { x: number; y: number }) => Promise<boolean>;
+  addTableFromVault: (
+    file: string,
+    title: string,
+    position: { x: number; y: number },
+    exact?: boolean,
+  ) => Promise<void>;
   /** 查找引用指定 `.md` 文件的文本节点 id（双击定位用，无则 null）。 */
   findTextNoteByFile: (file: string) => string | null;
   /** 添加边到画布。 */
@@ -161,7 +210,12 @@ interface CanvasState {
   /** Rust 侧改过当前画布磁盘 .atlx 后同步乐观锁基准（重命名笔记/附件/画布），防下次保存被误判「已被外部修改」。 */
   syncBaseUpdatedAt: () => Promise<void>;
   /** 发送消息到指定对话节点，可携带待发送附件。 */
-  send: (conversationId: string, content: string, attachments?: PendingAttachment[], mentions?: Mention[]) => Promise<void>;
+  send: (
+    conversationId: string,
+    content: string,
+    attachments?: PendingAttachment[],
+    mentions?: Mention[],
+  ) => Promise<void>;
   /** 重新生成该对话的最后一条 AI 回复（重发最后一条 user 消息，不追加新消息）。 */
   regenerate: (conversationId: string) => Promise<void>;
   /**
@@ -173,7 +227,11 @@ interface CanvasState {
    * 从父对话分支创建新对话节点：复制 upToMessageId（含）之前的全部完整消息到子节点，
    * 连一条父→子的有向边（仅表分支血缘，不注入数据），单次 undo 事务，快照语义。
    */
-  branchFrom: (conversationId: string, upToMessageId: string, position: { x: number; y: number }) => Promise<void>;
+  branchFrom: (
+    conversationId: string,
+    upToMessageId: string,
+    position: { x: number; y: number },
+  ) => Promise<void>;
   /** 中止某对话节点的流式回复。 */
   abort: (conversationId: string) => void;
   /** 清除全局错误。 */
@@ -246,7 +304,8 @@ let globalSelfSaveAt = 0;
 export function isSelfSaveEcho(path?: string): boolean {
   const now = Date.now();
   if (now - globalSelfSaveAt < SELF_SAVE_SUPPRESS_MS) return true;
-  if (path && now - (selfSavedAt.get(path) ?? 0) < SELF_SAVE_SUPPRESS_MS) return true;
+  if (path && now - (selfSavedAt.get(path) ?? 0) < SELF_SAVE_SUPPRESS_MS)
+    return true;
   return false;
 }
 
@@ -279,8 +338,15 @@ function touchRedo(): void {
  */
 async function persistNow(): Promise<void> {
   const versionAtStart = persistCtl.version;
-  const { canvasId, canvasFile, canvasTitle, nodes, edges, messagesByConv, baseUpdatedAt } =
-    useCanvasStore.getState();
+  const {
+    canvasId,
+    canvasFile,
+    canvasTitle,
+    nodes,
+    edges,
+    messagesByConv,
+    baseUpdatedAt,
+  } = useCanvasStore.getState();
   if (!canvasId || !canvasFile) return;
   try {
     const newUpdatedAt = await persistCanvasVault(
@@ -290,7 +356,7 @@ async function persistNow(): Promise<void> {
       nodes,
       edges,
       messagesByConv,
-      baseUpdatedAt
+      baseUpdatedAt,
     );
     markSelfSave(canvasFile);
     // 竞态守卫：await 期间可能已切换画布/清空状态（load 异步读盘），旧画布的写盘结果
@@ -303,7 +369,12 @@ async function persistNow(): Promise<void> {
       return;
     }
     // 同步乐观锁基准为本次写入的磁盘版本，避免下次保存误判冲突
-    useCanvasStore.setState({ error: null, dirty: false, saving: false, baseUpdatedAt: newUpdatedAt });
+    useCanvasStore.setState({
+      error: null,
+      dirty: false,
+      saving: false,
+      baseUpdatedAt: newUpdatedAt,
+    });
   } catch (e) {
     useCanvasStore.setState({ saving: false });
     if (typeof e === "string" && e.includes("已被外部修改")) {
@@ -339,25 +410,43 @@ function withHandles<
     target: string;
     sourceHandle?: string | null;
     targetHandle?: string | null;
-  }
+  },
 >(edge: T, nodes: Node[]): T {
   const src = nodes.find((n) => n.id === edge.source);
   const tgt = nodes.find((n) => n.id === edge.target);
   if (!src || !tgt) return edge;
   const { sourceHandle, targetHandle } = pickEdgeHandles(
-    { x: src.position.x, y: src.position.y, w: src.measured?.width ?? 200, h: src.measured?.height ?? 100 },
-    { x: tgt.position.x, y: tgt.position.y, w: tgt.measured?.width ?? 200, h: tgt.measured?.height ?? 100 }
+    {
+      x: src.position.x,
+      y: src.position.y,
+      w: src.measured?.width ?? 200,
+      h: src.measured?.height ?? 100,
+    },
+    {
+      x: tgt.position.x,
+      y: tgt.position.y,
+      w: tgt.measured?.width ?? 200,
+      h: tgt.measured?.height ?? 100,
+    },
   );
   return { ...edge, sourceHandle, targetHandle };
 }
 
 /** 重算与指定节点相连的边锚点；有变化返回新 edges，无变化返回 null（避免无谓 set）。 */
-function recalcEdgeHandles(edges: Edge[], nodes: Node[], nodeIds: Set<string>): Edge[] | null {
+function recalcEdgeHandles(
+  edges: Edge[],
+  nodes: Node[],
+  nodeIds: Set<string>,
+): Edge[] | null {
   const next = edges.map((e) => {
     if (!nodeIds.has(e.source) && !nodeIds.has(e.target)) return e;
     return withHandles(e, nodes);
   });
-  return next.some((e, i) => e.sourceHandle !== edges[i].sourceHandle || e.targetHandle !== edges[i].targetHandle)
+  return next.some(
+    (e, i) =>
+      e.sourceHandle !== edges[i].sourceHandle ||
+      e.targetHandle !== edges[i].targetHandle,
+  )
     ? next
     : null;
 }
@@ -378,7 +467,11 @@ function abortAllStreams() {
 /** 搜索结果产物节点：对话右侧 findFreeSpot 落点 + 对话→search 边。
  * 走 silent set（不 pushUndo）：工具产物属业务操作（同 send 的影子节点），
  * 入 undo 栈会与 tool 回填消息撕裂（撤销节点但消息仍在）。 */
-function createSearchNode(conversationId: string, query: string, data: SearchResultData) {
+function createSearchNode(
+  conversationId: string,
+  query: string,
+  data: SearchResultData,
+) {
   const store = useCanvasStore.getState();
   const convNode = store.nodes.find((n) => n.id === conversationId);
   if (!convNode) return;
@@ -388,9 +481,14 @@ function createSearchNode(conversationId: string, query: string, data: SearchRes
   const spot = findFreeSpot(
     store.nodes,
     { x: convNode.position.x + 480, y: convNode.position.y },
-    { w: 280, h: 220 }
+    { w: 280, h: 220 },
   );
-  const node: Node = { id, type: "search", position: spot, data: { ...data, query } };
+  const node: Node = {
+    id,
+    type: "search",
+    position: spot,
+    data: { ...data, query },
+  };
   // withHandles 传入含新节点的列表：target（search 节点）能找到，边锚点自适应
   const nextNodes = [...store.nodes, node];
   const edge = withHandles(
@@ -401,15 +499,20 @@ function createSearchNode(conversationId: string, query: string, data: SearchRes
       sourceHandle: null,
       targetHandle: null,
     },
-    nextNodes
+    nextNodes,
   );
-  useCanvasStore.setState((s) => ({ nodes: [...s.nodes, node], edges: [...s.edges, edge] }));
+  useCanvasStore.setState((s) => ({
+    nodes: [...s.nodes, node],
+    edges: [...s.edges, edge],
+  }));
   schedulePersist();
 }
 
 /** 画布对话节点实时查找（命名管线回调共用：延迟后/写回前重取，已删除/切画布返回 undefined）。 */
 function findConversationNode(conversationId: string): Node | undefined {
-  const node = useCanvasStore.getState().nodes.find((n) => n.id === conversationId);
+  const node = useCanvasStore
+    .getState()
+    .nodes.find((n) => n.id === conversationId);
   return node && node.type === "conversation" ? node : undefined;
 }
 
@@ -428,7 +531,7 @@ async function autoNameConversation(conversationId: string): Promise<void> {
     },
     isNamed: () => {
       const node = findConversationNode(conversationId);
-      return !node || !!((node.data as Partial<ConversationData>).title);
+      return !node || !!(node.data as Partial<ConversationData>).title;
     },
     applyTitle: (title) => {
       const node = findConversationNode(conversationId);
@@ -453,13 +556,15 @@ async function runStream(conversationId: string): Promise<void> {
 
   // 节点级 provider/model 优先，未指定则跟随仓库默认；解析失败（供应商已删/未配置）提示并中止，
   // 不静默回落默认——统一走 settingsStore.resolveChatTarget（与 AI 对话面板同源）
-  const nodeData = store
-    .getState()
-    .nodes.find((n) => n.id === conversationId)?.data as Partial<ConversationData> | undefined;
+  const nodeData = store.getState().nodes.find((n) => n.id === conversationId)
+    ?.data as Partial<ConversationData> | undefined;
   const resolved = useSettingsStore.getState().resolveChatTarget(
     nodeData?.providerId || nodeData?.model
-      ? { providerId: nodeData.providerId || undefined, model: nodeData.model || undefined }
-      : null
+      ? {
+          providerId: nodeData.providerId || undefined,
+          model: nodeData.model || undefined,
+        }
+      : null,
   );
   if (!resolved.ok) {
     store.setState({ error: resolved.error });
@@ -473,9 +578,21 @@ async function runStream(conversationId: string): Promise<void> {
   store.setState({
     messagesByConv: {
       ...store.getState().messagesByConv,
-      [conversationId]: [...list, { id: asstId, conversationId, role: "assistant", content: "", createdAt: asstTs }],
+      [conversationId]: [
+        ...list,
+        {
+          id: asstId,
+          conversationId,
+          role: "assistant",
+          content: "",
+          createdAt: asstTs,
+        },
+      ],
     },
-    streamingByConv: { ...store.getState().streamingByConv, [conversationId]: true },
+    streamingByConv: {
+      ...store.getState().streamingByConv,
+      [conversationId]: true,
+    },
   });
 
   const controller = new AbortController();
@@ -484,11 +601,16 @@ async function runStream(conversationId: string): Promise<void> {
   // 5.4：引用已在 send 时固化进 user 消息 content（一次性注入），此处不再动态拼接
   // 过滤 system 与错误占位 assistant（[错误] 不进 API 历史，避免污染上下文）；
   // 空占位 assistant（预建 content:"" 的流式占位）也不发送——部分端点对空 content 返回 400
-  const history = store.getState().messagesByConv[conversationId].filter(
-    (m) =>
-      m.role !== "system" &&
-      !(m.role === "assistant" && (m.content.startsWith("[错误]") || m.content === ""))
-  );
+  const history = store
+    .getState()
+    .messagesByConv[conversationId].filter(
+      (m) =>
+        m.role !== "system" &&
+        !(
+          m.role === "assistant" &&
+          (m.content.startsWith("[错误]") || m.content === "")
+        ),
+    );
 
   try {
     // 工具开关：节点级显式开启且搜索源已配置才携带 tools；开着但未配置 → 提示并降级不带 tools
@@ -496,7 +618,9 @@ async function runStream(conversationId: string): Promise<void> {
     const toolsWanted = !!nodeData?.toolsEnabled;
     const searchReady = settings.isSearchConfigured();
     if (toolsWanted && !searchReady) {
-      store.setState({ error: "未配置搜索源（设置 → 联网搜索），本次对话未启用联网搜索" });
+      store.setState({
+        error: "未配置搜索源（设置 → 联网搜索），本次对话未启用联网搜索",
+      });
     }
     const tools = toolsWanted && searchReady ? [WEB_SEARCH_TOOL] : undefined;
     // 5.4：引用已在 send 时固化进 user 消息 content（一次性注入），此处不再动态拼接
@@ -506,7 +630,8 @@ async function runStream(conversationId: string): Promise<void> {
     if (nodeData?.systemPromptFile) {
       try {
         const sysContent = await readNote(nodeData.systemPromptFile);
-        if (sysContent.trim()) apiMessages.unshift({ role: "system", content: sysContent });
+        if (sysContent.trim())
+          apiMessages.unshift({ role: "system", content: sysContent });
       } catch {
         // 笔记缺失：跳过注入
       }
@@ -530,10 +655,13 @@ async function runStream(conversationId: string): Promise<void> {
                       ...m,
                       ...(content ? { content: m.content + content } : {}),
                       ...(reasoning
-                        ? { reasoningContent: (m.reasoningContent ?? "") + reasoning }
+                        ? {
+                            reasoningContent:
+                              (m.reasoningContent ?? "") + reasoning,
+                          }
                         : {}),
                     }
-                  : m
+                  : m,
               ),
             },
           };
@@ -551,10 +679,13 @@ async function runStream(conversationId: string): Promise<void> {
               [conversationId]: l.map((m) =>
                 m.id === asstId
                   ? { ...m, content: m.content || `[错误] ${err.message}` }
-                  : m
+                  : m,
               ),
             },
-            streamingByConv: { ...state.streamingByConv, [conversationId]: false },
+            streamingByConv: {
+              ...state.streamingByConv,
+              [conversationId]: false,
+            },
           };
         });
         // 持久化错误占位（[错误] 前缀会在下次请求历史中被过滤，不污染上下文）
@@ -574,7 +705,10 @@ async function runStream(conversationId: string): Promise<void> {
                 ...state.messagesByConv,
                 [conversationId]: l.filter((m) => m.id !== asstId),
               },
-              streamingByConv: { ...state.streamingByConv, [conversationId]: false },
+              streamingByConv: {
+                ...state.streamingByConv,
+                [conversationId]: false,
+              },
             };
           });
         } else if (decision.kind === "timeout-error") {
@@ -585,16 +719,25 @@ async function runStream(conversationId: string): Promise<void> {
                 ...state.messagesByConv,
                 [conversationId]: l.map((m) =>
                   m.id === asstId
-                    ? { ...m, content: "[错误] 响应超时（长时间无输出，已自动停止）" }
-                    : m
+                    ? {
+                        ...m,
+                        content: "[错误] 响应超时（长时间无输出，已自动停止）",
+                      }
+                    : m,
                 ),
               },
-              streamingByConv: { ...state.streamingByConv, [conversationId]: false },
+              streamingByConv: {
+                ...state.streamingByConv,
+                [conversationId]: false,
+              },
             };
           });
         } else {
           store.setState((state) => ({
-            streamingByConv: { ...state.streamingByConv, [conversationId]: false },
+            streamingByConv: {
+              ...state.streamingByConv,
+              [conversationId]: false,
+            },
           }));
         }
         // messages 随 .atlx 整体写（替代旧 upsertMessage/deleteMessage 单条持久化）
@@ -609,7 +752,9 @@ async function runStream(conversationId: string): Promise<void> {
         for (const tc of calls) {
           let query = "";
           try {
-            query = (JSON.parse(tc.function.arguments) as { query?: string }).query ?? "";
+            query =
+              (JSON.parse(tc.function.arguments) as { query?: string }).query ??
+              "";
           } catch {
             // 参数解析失败：按空 query 处理（下方产生失败节点）
           }
@@ -619,12 +764,18 @@ async function runStream(conversationId: string): Promise<void> {
           // 用户已点停止：不创建「搜索失败」节点（abort 后 runSearch 降级为 error，属预期中止而非失败）
           if (controller.signal.aborted) break;
           if (data.results.length > 0 || data.error) {
-            createSearchNode(conversationId, data.query || query || "搜索", data);
+            createSearchNode(
+              conversationId,
+              data.query || query || "搜索",
+              data,
+            );
           }
           toolMessages.push({
             role: "tool",
             tool_call_id: tc.id,
-            content: data.error ? `搜索失败：${data.error}` : JSON.stringify(data.results),
+            content: data.error
+              ? `搜索失败：${data.error}`
+              : JSON.stringify(data.results),
           });
         }
         return toolMessages;
@@ -662,7 +813,12 @@ function latestRefOf(node: Node): { text: string; attach?: Attachment } | null {
   if (md.kind === "image" && md.thumb) {
     return {
       text: md.name ?? "",
-      attach: { kind: "image", payload: md.thumb, mime: md.mime, filename: md.name },
+      attach: {
+        kind: "image",
+        payload: md.thumb,
+        mime: md.mime,
+        filename: md.name,
+      },
     };
   }
   if (md.body) return { text: md.body };
@@ -680,7 +836,7 @@ function latestRefOf(node: Node): { text: string; attach?: Attachment } | null {
  */
 function rebuildUserContent(
   userMsg: Message,
-  nodes: Node[]
+  nodes: Node[],
 ): { content: string; attachments?: Attachment[] } {
   let content = userMsg.displayContent as string;
   const prefixParts: string[] = [];
@@ -695,14 +851,19 @@ function rebuildUserContent(
       // 函数形式替换：latest.text 若含 `$`/`&` 不会被 String.replace 当作替换模式解析
       content = content.replace(tag, () => latest.text);
       // 保留 sourceNodeId：附件来自画布媒体节点（@ 提及），供「已注入」检测与语义完整
-      if (latest.attach) attachByNode.set(ref.nodeId, { ...latest.attach, sourceNodeId: ref.nodeId });
+      if (latest.attach)
+        attachByNode.set(ref.nodeId, {
+          ...latest.attach,
+          sourceNodeId: ref.nodeId,
+        });
     } else {
       prefixParts.push(latest.text);
     }
   }
-  if (prefixParts.length) content = `[引用：${prefixParts.join("\n\n")}]\n\n${content}`;
+  if (prefixParts.length)
+    content = `[引用：${prefixParts.join("\n\n")}]\n\n${content}`;
   const attachments = (userMsg.attachments ?? []).map((a) =>
-    a.sourceNodeId ? (attachByNode.get(a.sourceNodeId) ?? a) : a
+    a.sourceNodeId ? (attachByNode.get(a.sourceNodeId) ?? a) : a,
   );
   return { content, attachments: attachments.length ? attachments : undefined };
 }
@@ -710,7 +871,7 @@ function rebuildUserContent(
 function snapshot(
   nodes: Node[],
   edges: Edge[],
-  messagesByConv: Record<string, Message[]>
+  messagesByConv: Record<string, Message[]>,
 ): Snapshot {
   // 不可变更新保证引用即快照（零拷贝）：store 每次变更生成新数组/新消息对象，
   // 历史引用不会被污染——深拷贝只会拖慢每次撤销/入栈（大画布 + 长对话尤甚）
@@ -744,11 +905,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     abortAllStreams();
     // 中止旧画布进行中的命名请求（防其后台空转/误写；与面板 load 对称）
     abortAutoTitle();
+    groupDragState = null;
     set({ loading: true, error: null, selectedNodeId: null });
     try {
       // 外部白板格式（.canvas）走只读加载：映射为运行时节点 + 无向边，永不落盘
       const isWhiteboard = file.toLowerCase().endsWith(".canvas");
-      const data = isWhiteboard ? await loadWhiteboardVault(file) : await loadCanvasVault(file);
+      const data = isWhiteboard
+        ? await loadWhiteboardVault(file)
+        : await loadCanvasVault(file);
       set({
         canvasId: data.id,
         canvasFile: file,
@@ -770,7 +934,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       // 仅补一个防并发请求轰炸模型端点）；无 title 无消息的节点由消息检查自然跳过
       if (!isWhiteboard) {
         const unnamed = get().nodes.find(
-          (n) => n.type === "conversation" && !((n.data as Partial<ConversationData>).title),
+          (n) =>
+            n.type === "conversation" &&
+            !(n.data as Partial<ConversationData>).title,
         );
         if (unnamed) void autoNameConversation(unnamed.id);
       }
@@ -791,7 +957,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       await renameCanvasVault(canvasFile, title);
       // 同目录改文件名：先算新路径再标记自写（旧路径删除 + 新路径创建两路事件一并抑制），
       // 并同步乐观锁基准防下次保存误冲突
-      const newFile = siblingPath(canvasFile, `${sanitizeFilename(title)}.atlx`);
+      const newFile = siblingPath(
+        canvasFile,
+        `${sanitizeFilename(title)}.atlx`,
+      );
       markSelfSave([canvasFile, newFile]);
       // 同步 canvasFile 到新路径（防下次保存写旧路径 → createdAt 重置/乐观锁失效/
       // 外部修改失配）；appStore.currentCanvasFile 同源（打开路径/文件面板高亮），一并同步
@@ -806,15 +975,38 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   },
   onNodesChange: (changes) => {
     // 只读画布：只保留选中态变化（禁拖拽/缩放产生的位置尺寸变更，防白板内容被改动）
-    const changesNow = get().readOnly ? changes.filter((c) => c.type === "select") : changes;
-    const nodes = applyNodeChanges(changesNow, get().nodes);
+    const changesNow = get().readOnly
+      ? changes.filter((c) => c.type === "select")
+      : changes;
+    let nodes = applyNodeChanges(changesNow, get().nodes);
+    // 分组拖拽联动：拖动中的组按位移同步平移组内成员（同帧合并防位置撕裂）。
+    // 多选拖拽时成员自身也收到 position change（React Flow 按相同 delta 移动），
+    // 此处覆盖结果一致，无叠加；成员未被选中时（仅拖组）平移由这里完成。
+    if (groupDragState && !get().readOnly) {
+      const groupChange = changesNow.find(
+        (c) => c.type === "position" && c.id === groupDragState!.groupId,
+      );
+      if (groupChange?.type === "position" && groupChange.position) {
+        const dx = groupChange.position.x - groupDragState.groupStart.x;
+        const dy = groupChange.position.y - groupDragState.groupStart.y;
+        const memberStart = new Map(
+          groupDragState.members.map((m) => [m.id, m.start]),
+        );
+        nodes = nodes.map((n) => {
+          const start = memberStart.get(n.id);
+          return start
+            ? { ...n, position: { x: start.x + dx, y: start.y + dy } }
+            : n;
+        });
+      }
+    }
     set({ nodes });
     // resize 结束（dimensions + resizing:false）：重算相连边锚点（与 onNodeDragStop 对称）
     const resized = new Set(
       changesNow
         .filter((c) => c.type === "dimensions")
         .filter((c) => c.resizing === false)
-        .map((c) => c.id)
+        .map((c) => c.id),
     );
     if (resized.size > 0) {
       const next = recalcEdgeHandles(get().edges, nodes, resized);
@@ -843,16 +1035,22 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       (src?.type === "text" || src?.type === "media" || src?.type === "search")
     ) {
       const alreadyConnected = edges.some(
-        (e) => e.target === connection.target && e.source === connection.source
+        (e) => e.target === connection.target && e.source === connection.source,
       );
       if (alreadyConnected) {
         // 已连接：该资产已被消费过（实线边）→ 弹「再次注入」菜单；未消费（虚线待发送）→ 无效果（防同轮重复引用）
-        const injected = isAssetConsumed(messagesByConv[connection.target] ?? [], connection.source);
+        const injected = isAssetConsumed(
+          messagesByConv[connection.target] ?? [],
+          connection.source,
+        );
         if (injected) {
           set((state) => ({
             pendingConfirmByConv: {
               ...state.pendingConfirmByConv,
-              [connection.target]: [...(state.pendingConfirmByConv[connection.target] ?? []), connection.source],
+              [connection.target]: [
+                ...(state.pendingConfirmByConv[connection.target] ?? []),
+                connection.source,
+              ],
             },
           }));
         }
@@ -868,13 +1066,18 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     }
     // 自动分类：仅「对话 → 资产」是有向数据流产出边；其余连线（对话↔对话、link/group 参与、
     // 无对话组合）均为关联自由线（directed: false，无消费语义、可删除、箭头模式 linkMode）
-    const isDataFlow = src?.type === "conversation" &&
+    const isDataFlow =
+      src?.type === "conversation" &&
       (tgt?.type === "text" || tgt?.type === "media" || tgt?.type === "search");
     get().pushUndo();
     const nodesNow = get().nodes;
     const edge = withHandles(
-      { ...connection, animated: false, ...(isDataFlow ? {} : { directed: false, linkMode: "none" as const }) },
-      nodesNow
+      {
+        ...connection,
+        animated: false,
+        ...(isDataFlow ? {} : { directed: false, linkMode: "none" as const }),
+      },
+      nodesNow,
     );
     const nextEdges = rfAddEdge(edge, get().edges);
     set({ edges: nextEdges });
@@ -884,7 +1087,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     set((state) => ({
       pendingMentionsByConv: {
         ...state.pendingMentionsByConv,
-        [conversationId]: [...(state.pendingMentionsByConv[conversationId] ?? []), nodeId],
+        [conversationId]: [
+          ...(state.pendingMentionsByConv[conversationId] ?? []),
+          nodeId,
+        ],
       },
     }));
   },
@@ -913,15 +1119,88 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       return { pendingConfirmByConv: next };
     });
   },
-  onNodeDragStart: () => {
+  onNodeDragStart: (_event, node) => {
     get().pushUndo();
+    // 组节点：快照组内成员（中心点在内，拖前位置一次判定），拖动期间按组位移联动平移
+    groupDragState = null;
+    if (get().readOnly || node.type !== "group") return;
+    const gw = node.width ?? node.measured?.width ?? DEFAULT_GROUP_WIDTH;
+    const gh = node.height ?? node.measured?.height ?? DEFAULT_GROUP_HEIGHT;
+    const members = collectGroupMembers(get().nodes, node.id, {
+      x: node.position.x,
+      y: node.position.y,
+      w: gw,
+      h: gh,
+    });
+    if (members.length) {
+      groupDragState = {
+        groupId: node.id,
+        groupStart: { x: node.position.x, y: node.position.y },
+        members: members.map((m) => ({
+          id: m.id,
+          start: { x: m.position.x, y: m.position.y },
+        })),
+      };
+    }
   },
-  onNodeDragStop: (_, node) => {
-    const next = recalcEdgeHandles(get().edges, get().nodes, new Set([node.id]));
+  onNodeDragStop: (_event, node) => {
+    // 组拖拽联动结束时重算组 + 全部成员的相连边锚点（位置自适应）
+    const ids = new Set<string>([node.id]);
+    if (groupDragState?.groupId === node.id) {
+      for (const m of groupDragState.members) ids.add(m.id);
+    }
+    const next = recalcEdgeHandles(get().edges, get().nodes, ids);
     if (next) {
       set({ edges: next });
       schedulePersist();
     }
+    groupDragState = null;
+  },
+  copySelectedNodes: () => {
+    const sel = get().nodes.filter((n) => n.selected);
+    if (sel.length === 0) return false;
+    clipboardNodes = sel.map((n) => ({
+      type: n.type,
+      position: { x: n.position.x, y: n.position.y },
+      width: n.width,
+      height: n.height,
+      // 保留 group 的 -1：粘贴的分组同样垫底
+      zIndex: n.zIndex,
+      data: structuredClone(n.data),
+    }));
+    return true;
+  },
+  pasteNodes: (position) => {
+    // 未打开画布（占位面积）时粘贴无意义：不写入 store（canvasId null 时 persist 虽不落盘，
+    // 但节点会残留在内存态，打开画布前状态混乱）
+    if (!get().canvasId || clipboardNodes.length === 0) return;
+    get().pushUndo();
+    // 整体中心对齐：以剪贴板包围盒中心为锚，粘贴件中心落在目标位置（多选复制保持相对排布）
+    const xs = clipboardNodes.map((c) => c.position.x);
+    const ys = clipboardNodes.map((c) => c.position.y);
+    const centerX = (Math.min(...xs) + Math.max(...xs)) / 2;
+    const centerY = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const pasted: Node[] = clipboardNodes.map((c) => ({
+      id: crypto.randomUUID(),
+      type: c.type,
+      position: {
+        x: position.x + (c.position.x - centerX),
+        y: position.y + (c.position.y - centerY),
+      },
+      ...(c.width != null ? { width: c.width } : {}),
+      ...(c.height != null ? { height: c.height } : {}),
+      ...(c.zIndex != null ? { zIndex: c.zIndex } : {}),
+      // 粘贴即选中（清除旧选中，避免旧节点被误当多选整体拖动）
+      selected: true,
+      data: structuredClone(c.data),
+    }));
+    set({
+      nodes: [
+        ...get().nodes.map((n) => (n.selected ? { ...n, selected: false } : n)),
+        ...pasted,
+      ],
+    });
+    schedulePersist();
   },
   addNode: (node) => {
     get().pushUndo();
@@ -939,7 +1218,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       fileMissing = true;
     }
     // 拖拽落点精确（exact=true 跳过避让，保证节点落在鼠标位置）；其他入口走 findFreeSpot 避让
-    const spot = exact ? position : findFreeSpot(get().nodes, position, { w: 320, h: 240 });
+    const spot = exact
+      ? position
+      : findFreeSpot(get().nodes, position, { w: 320, h: 240 });
     get().addNode({
       id: crypto.randomUUID(),
       type: "text",
@@ -949,15 +1230,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       height: DEFAULT_TEXT_NODE_HEIGHT,
       data: { title, file, bodyMd, fileMissing } as unknown as Node["data"],
     });
-  },
-  importAttachment: (src, name) => importAttachmentVault(src, name),
-  pickAndImportAttachment: async (position: { x: number; y: number }) => {
-    const picked = await pickFile();
-    if (!picked) return false;
-    const name = picked.split(/[\\/]/).pop() ?? "未命名";
-    const file = await importAttachmentVault(picked, name);
-    await get().addMediaFromVault(file, name, position);
-    return true;
   },
   addMediaFromVault: async (file, name, position, exact = false) => {
     const isImage = /\.(png|jpe?g|webp|gif)$/i.test(name);
@@ -980,10 +1252,19 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       } catch {
         parseFailed = true;
       }
-      data = { file, kind: "file", mime: "text/plain", name, body, parseFailed };
+      data = {
+        file,
+        kind: "file",
+        mime: "text/plain",
+        name,
+        body,
+        parseFailed,
+      };
     }
     // 拖拽落点精确（exact=true 跳过避让）；其他入口走 findFreeSpot 避让
-    const spot = exact ? position : findFreeSpot(get().nodes, position, { w: 260, h: 240 });
+    const spot = exact
+      ? position
+      : findFreeSpot(get().nodes, position, { w: 260, h: 240 });
     get().addNode({
       id: crypto.randomUUID(),
       type: "media",
@@ -993,13 +1274,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   },
   findTextNoteByFile: (file) => {
     const node = get().nodes.find(
-      (n) => n.type === "text" && (n.data as unknown as TextData).file === file
+      (n) => n.type === "text" && (n.data as unknown as TextData).file === file,
     );
     return node?.id ?? null;
   },
   findMediaNoteByFile: (file) => {
     const node = get().nodes.find(
-      (n) => n.type === "media" && (n.data as unknown as MediaData).file === file
+      (n) =>
+        n.type === "media" && (n.data as unknown as MediaData).file === file,
     );
     return node?.id ?? null;
   },
@@ -1013,7 +1295,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       fileMissing = true;
     }
     // 拖拽落点精确（exact=true 跳过避让）；其他入口走 findFreeSpot 避让
-    const spot = exact ? position : findFreeSpot(get().nodes, position, { w: 320, h: 240 });
+    const spot = exact
+      ? position
+      : findFreeSpot(get().nodes, position, { w: 320, h: 240 });
     get().addNode({
       id: crypto.randomUUID(),
       type: "table",
@@ -1026,7 +1310,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   refreshTableContent: async (file) => {
     // 同一 .atb 可被多个 table 节点引用（同画布多节点），全部刷新（与 refreshTextContent 同构）
     const ids = get()
-      .nodes.filter((n) => n.type === "table" && (n.data as unknown as TableData).file === file)
+      .nodes.filter(
+        (n) =>
+          n.type === "table" && (n.data as unknown as TableData).file === file,
+      )
       .map((n) => n.id);
     if (ids.length === 0) return;
     try {
@@ -1035,8 +1322,15 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       set((s) => ({
         nodes: s.nodes.map((n) =>
           ids.includes(n.id)
-            ? { ...n, data: { ...n.data, snapshot, fileMissing: false } as unknown as Node["data"] }
-            : n
+            ? {
+                ...n,
+                data: {
+                  ...n.data,
+                  snapshot,
+                  fileMissing: false,
+                } as unknown as Node["data"],
+              }
+            : n,
         ),
       }));
     } catch {
@@ -1046,7 +1340,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   refreshTextContent: async (file) => {
     // 同一 .md 可被多个 text 节点引用（同画布多节点），全部刷新（与 markFileMissing 更新全部节点同构）
     const ids = get()
-      .nodes.filter((n) => n.type === "text" && (n.data as unknown as TextData).file === file)
+      .nodes.filter(
+        (n) =>
+          n.type === "text" && (n.data as unknown as TextData).file === file,
+      )
       .map((n) => n.id);
     if (ids.length === 0) return;
     try {
@@ -1062,8 +1359,15 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       set((s) => ({
         nodes: s.nodes.map((n) =>
           ids.includes(n.id)
-            ? { ...n, data: { ...n.data, bodyMd, fileMissing: false } as unknown as Node["data"] }
-            : n
+            ? {
+                ...n,
+                data: {
+                  ...n.data,
+                  bodyMd,
+                  fileMissing: false,
+                } as unknown as Node["data"],
+              }
+            : n,
         ),
       }));
     } catch {
@@ -1073,18 +1377,29 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   refreshMediaContent: async (file) => {
     // 同一附件可被多个 media 节点引用，全部刷新（与 markFileMissing 同构）
     const ids = get()
-      .nodes.filter((n) => n.type === "media" && (n.data as unknown as MediaData).file === file)
+      .nodes.filter(
+        (n) =>
+          n.type === "media" && (n.data as unknown as MediaData).file === file,
+      )
       .map((n) => n.id);
     if (ids.length === 0) return;
     try {
-      const existing = get().nodes.find((n) => n.id === ids[0])?.data as unknown as MediaData;
+      const existing = get().nodes.find((n) => n.id === ids[0])
+        ?.data as unknown as MediaData;
       if (existing.kind === "image") {
         const thumb = await readAttachmentDataUrl(file);
         set((s) => ({
           nodes: s.nodes.map((n) =>
             ids.includes(n.id)
-              ? { ...n, data: { ...n.data, thumb, fileMissing: false } as unknown as Node["data"] }
-              : n
+              ? {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    thumb,
+                    fileMissing: false,
+                  } as unknown as Node["data"],
+                }
+              : n,
           ),
         }));
       } else {
@@ -1101,7 +1416,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
                     fileMissing: false,
                   } as unknown as Node["data"],
                 }
-              : n
+              : n,
           ),
         }));
       }
@@ -1112,22 +1427,35 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   markFileMissing: (file, kind) => {
     set((s) => ({
       nodes: s.nodes.map((n) => {
-        if (kind === "text" && n.type === "text" && (n.data as unknown as TextData).file === file) {
-          return { ...n, data: { ...n.data, fileMissing: true } as unknown as Node["data"] };
+        if (
+          kind === "text" &&
+          n.type === "text" &&
+          (n.data as unknown as TextData).file === file
+        ) {
+          return {
+            ...n,
+            data: { ...n.data, fileMissing: true } as unknown as Node["data"],
+          };
         }
         if (
           kind === "media" &&
           n.type === "media" &&
           (n.data as unknown as MediaData).file === file
         ) {
-          return { ...n, data: { ...n.data, fileMissing: true } as unknown as Node["data"] };
+          return {
+            ...n,
+            data: { ...n.data, fileMissing: true } as unknown as Node["data"],
+          };
         }
         if (
           kind === "table" &&
           n.type === "table" &&
           (n.data as unknown as TableData).file === file
         ) {
-          return { ...n, data: { ...n.data, fileMissing: true } as unknown as Node["data"] };
+          return {
+            ...n,
+            data: { ...n.data, fileMissing: true } as unknown as Node["data"],
+          };
         }
         return n;
       }),
@@ -1167,8 +1495,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     const diskNodeIds = new Set(diskNodes.map((n) => n.id));
     const diskEdgeIds = new Set(diskEdges.map((e) => e.id));
     // 合并：磁盘为基础，本地新增的节点/边保留；重叠（同 id）以磁盘为准（外部修改优先）
-    const mergedNodes = [...diskNodes, ...localNodes.filter((n) => !diskNodeIds.has(n.id))];
-    const mergedEdges = [...diskEdges, ...localEdges.filter((e) => !diskEdgeIds.has(e.id))];
+    const mergedNodes = [
+      ...diskNodes,
+      ...localNodes.filter((n) => !diskNodeIds.has(n.id)),
+    ];
+    const mergedEdges = [
+      ...diskEdges,
+      ...localEdges.filter((e) => !diskEdgeIds.has(e.id)),
+    ];
     // 消息：磁盘为基础，本地独有的消息按 id 补入（避免丢用户未保存的消息）
     const mergedMessages: Record<string, Message[]> = { ...diskMessages };
     for (const [convId, msgs] of Object.entries(localMessages)) {
@@ -1196,7 +1530,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   updateNodeData: (nodeId, patch) => {
     touchRedo();
     const nodes = get().nodes.map((n) =>
-      n.id === nodeId ? { ...n, data: { ...n.data, ...patch } } : n
+      n.id === nodeId ? { ...n, data: { ...n.data, ...patch } } : n,
     );
     set({ nodes });
     schedulePersist();
@@ -1218,7 +1552,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       (e) =>
         e.target === conversationId &&
         e.directed !== false &&
-        (e.data as { inject?: boolean } | undefined)?.inject !== false
+        (e.data as { inject?: boolean } | undefined)?.inject !== false,
     );
     const inputs: ReferencedInput[] = [];
     for (const edge of upstream) {
@@ -1228,7 +1562,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       if (sourceNode.type === "text") {
         const bodyMd = (data as TextData).bodyMd;
         if (bodyMd) {
-          inputs.push({ nodeId: sourceNode.id, label: prefix(bodyMd) || "文本", content: bodyMd });
+          inputs.push({
+            nodeId: sourceNode.id,
+            label: prefix(bodyMd) || "文本",
+            content: bodyMd,
+          });
         }
       } else if (sourceNode.type === "search") {
         // 搜索结果节点：注入勾选子集或全部结果的文本摘要
@@ -1245,7 +1583,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         const td = data as unknown as TableData;
         const content = td.snapshot || td.title;
         if (content) {
-          inputs.push({ nodeId: sourceNode.id, label: td.title || "表格", content });
+          inputs.push({
+            nodeId: sourceNode.id,
+            label: td.title || "表格",
+            content,
+          });
         }
       }
     }
@@ -1284,8 +1626,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     const edgesNow = get().edges;
     const missing = mentions.filter(
       (m) =>
-        !edgesNow.some((e) => e.target === conversationId && e.source === m.nodeId) &&
-        nodes.some((n) => n.id === m.nodeId)
+        !edgesNow.some(
+          (e) => e.target === conversationId && e.source === m.nodeId,
+        ) && nodes.some((n) => n.id === m.nodeId),
     );
     if (missing.length) {
       set({
@@ -1300,8 +1643,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
                 sourceHandle: null,
                 targetHandle: null,
               },
-              nodes
-            )
+              nodes,
+            ),
           ),
         ],
       });
@@ -1321,8 +1664,13 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       if (node.type === "text") {
         const bodyMd = (node.data as unknown as TextData).bodyMd;
         if (bodyMd) {
-          finalContent = finalContent.slice(0, start) + bodyMd + finalContent.slice(end);
-          mentionRefs.push({ nodeId: node.id, label: m.text.slice(1), content: bodyMd });
+          finalContent =
+            finalContent.slice(0, start) + bodyMd + finalContent.slice(end);
+          mentionRefs.push({
+            nodeId: node.id,
+            label: m.text.slice(1),
+            content: bodyMd,
+          });
         }
       } else if (node.type === "media") {
         const md = node.data as unknown as MediaData;
@@ -1330,7 +1678,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           // 图片：文本位替换为文件名，图片本体随附件（vision）发送。
           // 引用此节点的附件已在托盘（拖线/@picker 均同时进托盘 + 输入框 @标记），
           // 这里只做文本位替换，不重复 push——否则同一图片会发两张。
-          finalContent = finalContent.slice(0, start) + (md.name ?? "") + finalContent.slice(end);
+          finalContent =
+            finalContent.slice(0, start) +
+            (md.name ?? "") +
+            finalContent.slice(end);
           if (!attachments.some((a) => a.sourceNodeId === node.id)) {
             mentionAtts.push({
               id: crypto.randomUUID(),
@@ -1342,23 +1693,38 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
             });
           }
         } else if (md.body) {
-          finalContent = finalContent.slice(0, start) + md.body + finalContent.slice(end);
-          mentionRefs.push({ nodeId: node.id, label: m.text.slice(1), content: md.body });
+          finalContent =
+            finalContent.slice(0, start) + md.body + finalContent.slice(end);
+          mentionRefs.push({
+            nodeId: node.id,
+            label: m.text.slice(1),
+            content: md.body,
+          });
         }
       } else if (node.type === "search") {
         // 搜索结果节点：@提及 就地替换为结果摘要（勾选子集或全部，）
         const text = resultsToText(node.data as unknown as SearchResultData);
         if (text) {
-          finalContent = finalContent.slice(0, start) + text + finalContent.slice(end);
-          mentionRefs.push({ nodeId: node.id, label: m.text.slice(1), content: text });
+          finalContent =
+            finalContent.slice(0, start) + text + finalContent.slice(end);
+          mentionRefs.push({
+            nodeId: node.id,
+            label: m.text.slice(1),
+            content: text,
+          });
         }
       } else if (node.type === "table") {
         // 表格节点：@提及 就地替换为快照（字段名 + 每行值，行限 MAX_TABLE_INJECT_ROWS）
         const td = node.data as unknown as TableData;
         const snapshot = td.snapshot || td.title;
         if (snapshot) {
-          finalContent = finalContent.slice(0, start) + snapshot + finalContent.slice(end);
-          mentionRefs.push({ nodeId: node.id, label: m.text.slice(1), content: snapshot });
+          finalContent =
+            finalContent.slice(0, start) + snapshot + finalContent.slice(end);
+          mentionRefs.push({
+            nodeId: node.id,
+            label: m.text.slice(1),
+            content: snapshot,
+          });
         }
       }
     }
@@ -1372,10 +1738,15 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     // 后续每条消息都会重拼 [引用：…] 前缀并在气泡里累计同样的 @chip（5.4 一次性语义）
     const historyMsgs = messagesByConv[conversationId] ?? [];
     const extraRefs = edgeRefs.filter(
-      (r) => !already.has(r.nodeId) && !isAssetConsumed(historyMsgs, r.nodeId)
+      (r) => !already.has(r.nodeId) && !isAssetConsumed(historyMsgs, r.nodeId),
     );
-    const refText = extraRefs.map((r) => r.content).filter(Boolean).join("\n\n");
-    finalContent = refText ? `[引用：${refText}]\n\n${finalContent}` : finalContent;
+    const refText = extraRefs
+      .map((r) => r.content)
+      .filter(Boolean)
+      .join("\n\n");
+    finalContent = refText
+      ? `[引用：${refText}]\n\n${finalContent}`
+      : finalContent;
     const refs = [...extraRefs, ...mentionRefs];
     const allAttachments = [...attachments, ...mentionAtts];
 
@@ -1400,10 +1771,18 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       attachments: allAttachments.length
         ? allAttachments.map((a) => {
             const { kind, payload, mime, filename, sourceNodeId } = a;
-            return { kind, payload, mime, filename, sourceNodeId: sourceNodeId ?? shadowIds.get(a) };
+            return {
+              kind,
+              payload,
+              mime,
+              filename,
+              sourceNodeId: sourceNodeId ?? shadowIds.get(a),
+            };
           })
         : undefined,
-      refs: refs.length ? refs.map((r) => ({ nodeId: r.nodeId, label: r.label })) : undefined,
+      refs: refs.length
+        ? refs.map((r) => ({ nodeId: r.nodeId, label: r.label }))
+        : undefined,
     };
     set({
       messagesByConv: {
@@ -1431,7 +1810,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           const spot = findFreeSpot(
             newNodes,
             { x: baseX, y: convNode.position.y },
-            { w: 260, h: 240 }
+            { w: 260, h: 240 },
           );
           newNodes.push({
             id: mediaId,
@@ -1455,8 +1834,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
                 sourceHandle: null,
                 targetHandle: null,
               },
-              newNodes
-            )
+              newNodes,
+            ),
           );
         });
         set({ nodes: newNodes, edges: newEdges });
@@ -1491,12 +1870,17 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       const rebuilt = rebuildUserContent(userMsg, get().nodes);
       const changed =
         rebuilt.content !== userMsg.content ||
-        JSON.stringify(rebuilt.attachments) !== JSON.stringify(userMsg.attachments);
+        JSON.stringify(rebuilt.attachments) !==
+          JSON.stringify(userMsg.attachments);
       if (changed) {
         nextList = nextList.map((m) =>
           m.id === userMsg.id
-            ? { ...m, content: rebuilt.content, attachments: rebuilt.attachments }
-            : m
+            ? {
+                ...m,
+                content: rebuilt.content,
+                attachments: rebuilt.attachments,
+              }
+            : m,
         );
       }
     }
@@ -1544,9 +1928,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     // 以目标 AI 回复（含）为止的全部完整状态创建分支：排除空占位，保留仅含附件无文本的消息
     const upToIdx = src.findIndex((m) => m.id === upToMessageId);
     if (upToIdx < 0) return;
-    const copied = src.slice(0, upToIdx + 1).filter(
-      (m) => m.content.trim() !== "" || (m.attachments?.length ?? 0) > 0
-    );
+    const copied = src
+      .slice(0, upToIdx + 1)
+      .filter(
+        (m) => m.content.trim() !== "" || (m.attachments?.length ?? 0) > 0,
+      );
 
     // 单次 undo 事务：节点 + 边 + 消息复制
     get().pushUndo();
@@ -1586,7 +1972,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         sourceHandle: null,
         targetHandle: null,
       },
-      nodes
+      nodes,
     );
 
     set({
@@ -1606,6 +1992,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     // 否则残留 saveTimer 会重写已删的 .atlx、watcher 事件匹配旧 id 产生误导 reload
     persistCtl.cancel();
     abortAllStreams();
+    groupDragState = null;
     set({
       canvasId: null,
       canvasFile: null,
@@ -1636,11 +2023,15 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     // 只读画布（外部白板格式）禁止删除节点
     if (get().readOnly) return;
     const { nodes, edges, onNodesChange, onEdgesChange } = get();
-    const selectedNodeIds = new Set(nodes.filter((n) => n.selected).map((n) => n.id));
+    const selectedNodeIds = new Set(
+      nodes.filter((n) => n.selected).map((n) => n.id),
+    );
     // 连接后不可手动断开：Delete 只删节点，不再删除单独选中的边（连到被删节点的边随节点删除）。
     // 例外：无向关联边可单独删除（选中边后 Delete，关联线不表达数据流，无引用语义）
     const orphanEdgeIds = edges
-      .filter((e) => selectedNodeIds.has(e.source) || selectedNodeIds.has(e.target))
+      .filter(
+        (e) => selectedNodeIds.has(e.source) || selectedNodeIds.has(e.target),
+      )
       .map((e) => e.id);
     const selectedUndirectedEdgeIds = edges
       .filter((e) => e.selected && e.directed === false)
@@ -1650,7 +2041,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       selectedNodeIds.size === 0 &&
       orphanEdgeIds.length === 0 &&
       selectedUndirectedEdgeIds.length === 0
-    ) return;
+    )
+      return;
 
     // 记录被删的对话节点 id，删除后清理其消息内存
     // （持久化层：messages 嵌对话节点，随 .atlx 整体写，删节点即删其消息）
@@ -1670,16 +2062,19 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
     get().pushUndo();
 
-    const allEdgeIds = new Set([...orphanEdgeIds, ...selectedUndirectedEdgeIds]);
+    const allEdgeIds = new Set([
+      ...orphanEdgeIds,
+      ...selectedUndirectedEdgeIds,
+    ]);
 
     if (selectedNodeIds.size > 0) {
       onNodesChange(
-        [...selectedNodeIds].map((id) => ({ type: "remove" as const, id }))
+        [...selectedNodeIds].map((id) => ({ type: "remove" as const, id })),
       );
     }
     if (allEdgeIds.size > 0) {
       onEdgesChange(
-        [...allEdgeIds].map((id) => ({ type: "remove" as const, id }))
+        [...allEdgeIds].map((id) => ({ type: "remove" as const, id })),
       );
     }
     if (deletedConvIds.length) {
@@ -1707,5 +2102,3 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     schedulePersist();
   },
 }));
-
-

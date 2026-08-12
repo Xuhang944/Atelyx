@@ -42,7 +42,9 @@ function ResultRow({
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            void openUrl(item.url).catch((err) => console.error("打开链接失败", err));
+            void openUrl(item.url).catch((err) =>
+              console.error("打开链接失败", err),
+            );
           }}
           className="flex-1 min-w-0 truncate hover:opacity-80 inline-flex items-center gap-1"
           style={{ color: "var(--accent)" }}
@@ -72,7 +74,7 @@ function ResultRow({
   );
 }
 
-export function SearchResultNode({ id, data, height }: NodeProps) {
+export function SearchResultNode({ id, data, height, selected }: NodeProps) {
   const d = data as unknown as SearchResultData;
   const updateNodeData = useCanvasStore((s) => s.updateNodeData);
   const hasFixedHeight = height != null;
@@ -80,7 +82,9 @@ export function SearchResultNode({ id, data, height }: NodeProps) {
   const toggleCheck = (index: number) => {
     const checked = d.checked ?? [];
     updateNodeData(id, {
-      checked: checked.includes(index) ? checked.filter((i) => i !== index) : [...checked, index],
+      checked: checked.includes(index)
+        ? checked.filter((i) => i !== index)
+        : [...checked, index],
     });
   };
 
@@ -98,21 +102,36 @@ export function SearchResultNode({ id, data, height }: NodeProps) {
         minWidth: 220,
         minHeight: 120,
         background: "var(--bg-card)",
-        borderColor: "var(--border)",
+        borderColor: selected ? "var(--accent)" : "var(--border)",
         cursor: "default",
         position: "relative",
       }}
     >
-      <ConnectionFrame topType="source" />
+      <ConnectionFrame topType="source" selected={selected} />
       <header
         className="px-3 py-2 border-b rounded-t-lg flex items-center gap-1.5"
-        style={{ borderColor: "var(--border)", background: "var(--bg-card)", cursor: "grab" }}
+        style={{
+          borderColor: "var(--border)",
+          background: "var(--bg-card)",
+          cursor: "grab",
+        }}
       >
-        <Search size={13} className="flex-shrink-0" style={{ color: "var(--accent)" }} />
-        <span className="font-medium text-xs truncate" style={{ color: "var(--text-primary)" }} title={d.query}>
+        <Search
+          size={13}
+          className="flex-shrink-0"
+          style={{ color: "var(--accent)" }}
+        />
+        <span
+          className="font-medium text-xs truncate"
+          style={{ color: "var(--text-primary)" }}
+          title={d.query}
+        >
           {d.query}
         </span>
-        <span className="ml-auto text-[10px] flex-shrink-0" style={{ color: "var(--text-muted)" }}>
+        <span
+          className="ml-auto text-[10px] flex-shrink-0"
+          style={{ color: "var(--text-muted)" }}
+        >
           {d.results.length} 条结果
         </span>
       </header>
@@ -123,14 +142,20 @@ export function SearchResultNode({ id, data, height }: NodeProps) {
       >
         {d.error ? (
           <div className="flex flex-col gap-2">
-            <p className="text-xs flex items-center gap-1" style={{ color: "#f87171" }}>
+            <p
+              className="text-xs flex items-center gap-1"
+              style={{ color: "#f87171" }}
+            >
               <AlertTriangle size={13} className="flex-shrink-0" />
               {d.error}
             </p>
             <button
               onClick={() => void retry()}
               className="nodrag text-xs px-2 py-0.5 rounded border self-start hover:opacity-80"
-              style={{ borderColor: "var(--border)", color: "var(--text-secondary)" }}
+              style={{
+                borderColor: "var(--border)",
+                color: "var(--text-secondary)",
+              }}
             >
               重试
             </button>
@@ -155,7 +180,12 @@ export function SearchResultNode({ id, data, height }: NodeProps) {
 
       <NodeResizeControl
         position="bottom-right"
-        style={{ width: 10, height: 10, background: "transparent", border: "none" }}
+        style={{
+          width: 10,
+          height: 10,
+          background: "transparent",
+          border: "none",
+        }}
       />
     </div>
   );

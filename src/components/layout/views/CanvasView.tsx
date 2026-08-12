@@ -1,5 +1,5 @@
 /**
- * 画布视图面积：ReactFlow 画布完整渲染（节点/边/悬浮控件/小地图/底部工具栏/状态栏）。
+ * 画布视图面积：ReactFlow 画布完整渲染（节点/边/悬浮控件/小地图/状态栏）。
  *
  * 从旧「主编辑区画布窗口」抽取：视口缓存（面积卸载重挂恢复）、画布右键菜单、
  * 节点右键菜单、面板拖拽落点、只读白板横幅全部内聚于此。
@@ -7,11 +7,9 @@
  */
 import {
   FileOutput,
-  FilePlus,
   FileText,
   Grid3x3,
   LayoutDashboard,
-  LayoutTemplate,
   Link2,
   Magnet,
   Maximize,
@@ -54,7 +52,10 @@ import { MediaNode } from "@/components/canvas/nodes/MediaNode";
 import { SearchResultNode } from "@/components/canvas/nodes/SearchResultNode";
 import { GroupNode } from "@/components/canvas/nodes/GroupNode";
 import { LinkNode } from "@/components/canvas/nodes/LinkNode";
-import { OPEN_TABLE_EVENT, TableNode } from "@/components/canvas/nodes/TableNode";
+import {
+  OPEN_TABLE_EVENT,
+  TableNode,
+} from "@/components/canvas/nodes/TableNode";
 import { NodeContextMenu } from "@/components/canvas/panels/NodeContextMenu";
 import { DataFlowEdge } from "@/components/canvas/edges/DataFlowEdge";
 import {
@@ -64,7 +65,15 @@ import {
 import { AreaPlaceholder } from "@/components/layout/AreaPlaceholder";
 import { Menu, MenuDivider, MenuItem } from "@/components/common/Menu";
 
-const nodeTypes = { conversation: ConversationNode, text: TextNode, media: MediaNode, search: SearchResultNode, group: GroupNode, link: LinkNode, table: TableNode };
+const nodeTypes = {
+  conversation: ConversationNode,
+  text: TextNode,
+  media: MediaNode,
+  search: SearchResultNode,
+  group: GroupNode,
+  link: LinkNode,
+  table: TableNode,
+};
 const edgeTypes = { default: DataFlowEdge };
 
 /**
@@ -90,7 +99,7 @@ function isValidConnection(connection: Edge | Connection) {
   // 同对已有任意边（数据流产出/关联）→ 拦截；资产→对话例外（onConnect 处理「再次注入」）
   if (!isAssetToConv) {
     const already = state.edges.some(
-      (e) => e.source === connection.source && e.target === connection.target
+      (e) => e.source === connection.source && e.target === connection.target,
     );
     if (already) return false;
   }
@@ -98,7 +107,11 @@ function isValidConnection(connection: Edge | Connection) {
 }
 
 /** 画布面积 props：areaId 用于聚焦判定（画布快捷键门控）。 */
-export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string }) {
+export const CanvasView = memo(function CanvasView({
+  areaId,
+}: {
+  areaId: string;
+}) {
   const nodes = useCanvasStore((s) => s.nodes);
   const edges = useCanvasStore((s) => s.edges);
   const readOnly = useCanvasStore((s) => s.readOnly);
@@ -109,36 +122,49 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
   const selectNode = useCanvasStore((s) => s.selectNode);
   const onNodeDragStart = useCanvasStore((s) => s.onNodeDragStart);
   const onNodeDragStop = useCanvasStore((s) => s.onNodeDragStop);
+  const pasteNodes = useCanvasStore((s) => s.pasteNodes);
   const addNode = useCanvasStore((s) => s.addNode);
   const addTextNoteFromVault = useCanvasStore((s) => s.addTextNoteFromVault);
   const addMediaFromVault = useCanvasStore((s) => s.addMediaFromVault);
-  const pickAndImportAttachment = useCanvasStore((s) => s.pickAndImportAttachment);
   const canvasFile = useAppStore((s) => s.currentCanvasFile);
   const openTable = useAppStore((s) => s.openTable);
   const convertWhiteboard = useAppStore((s) => s.convertWhiteboard);
   const focusedAreaId = useUiStateStore((s) => s.focusedAreaId);
-  const { screenToFlowPosition, fitView, zoomIn, zoomOut, setCenter, setViewport } = useReactFlow();
+  const {
+    screenToFlowPosition,
+    fitView,
+    zoomIn,
+    zoomOut,
+    setCenter,
+    setViewport,
+  } = useReactFlow();
 
   const [showGrid, setShowGrid] = useState(true);
   // 网格吸附开关（左下角按钮组磁铁按钮切换，默认开）
   const [snapEnabled, setSnapEnabled] = useState(true);
 
   // 画布右键菜单（空白处）
-  const [menu, setMenu] = useState<{ x: number; y: number; flowX: number; flowY: number; linkMode?: boolean } | null>(null);
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    flowX: number;
+    flowY: number;
+    linkMode?: boolean;
+  } | null>(null);
   const closeMenu = useCallback(() => setMenu(null), []);
   // 节点右键菜单
-  const [nodeMenu, setNodeMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null);
+  const [nodeMenu, setNodeMenu] = useState<{
+    nodeId: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const closeNodeMenu = useCallback(() => setNodeMenu(null), []);
-
-  // 画布快捷键仅在画布面积聚焦时启用（其他面积激活时 Delete/Ctrl+Z/Ctrl+A 不误操作画布）；
-  // 只读白板（外部白板格式）不提供编辑快捷键
-  const focused = focusedAreaId === areaId;
-  useCanvasHotkeys(menu ? closeMenu : undefined, focused && !readOnly);
 
   // 加载画布：store 已持有该画布（面积重挂，未保存改动还在内存）时不重载；
   // 首次打开/切换画布（store.canvasFile 与目标不一致）才读盘
   useEffect(() => {
-    if (canvasFile && useCanvasStore.getState().canvasFile !== canvasFile) load(canvasFile);
+    if (canvasFile && useCanvasStore.getState().canvasFile !== canvasFile)
+      load(canvasFile);
   }, [canvasFile, load]);
 
   // 画布加载完成（首次打开/切换画布 loading true→false；面积重挂时 load 不执行、
@@ -176,6 +202,19 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
     return screenToFlowPosition(center);
   }, [screenToFlowPosition]);
 
+  // 画布快捷键仅在画布面积聚焦时启用（其他面积激活时 Delete/Ctrl+Z/Ctrl+A 不误操作画布）；
+  // 只读白板（外部白板格式）不提供编辑快捷键；Ctrl+V 粘贴到画布视口中心（坐标由 UI 层提供，store 不依赖 ReactFlow）
+  const handlePaste = useCallback(
+    () => pasteNodes(canvasCenter()),
+    [pasteNodes, canvasCenter],
+  );
+  const focused = focusedAreaId === areaId;
+  useCanvasHotkeys(
+    menu ? closeMenu : undefined,
+    focused && !readOnly,
+    handlePaste,
+  );
+
   const addConversationAt = useCallback(
     (x: number, y: number) => {
       const newNode: Node = {
@@ -189,7 +228,7 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
       };
       addNode(newNode);
     },
-    [addNode]
+    [addNode],
   );
 
   /** 画布空白处右键/新建：画布内文本节点（无 file，正文空，随 .atlx 内嵌；右键「保存为笔记」才落盘）。 */
@@ -205,7 +244,7 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
       };
       addNode(newNode);
     },
-    [addNode]
+    [addNode],
   );
 
   /** 画布空白处右键「添加分组」：背景矩形容器（低 zIndex，色板默认中性色）。 */
@@ -222,7 +261,7 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
       };
       addNode(newNode);
     },
-    [addNode]
+    [addNode],
   );
 
   /** 画布空白处右键「添加链接」：URL 卡片节点。 */
@@ -238,25 +277,8 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
       };
       addNode(newNode);
     },
-    [addNode]
+    [addNode],
   );
-
-  /** 底部工具栏「新建页面」：画布视图中心新建对话节点。 */
-  const createConversationAtCenter = useCallback(() => {
-    const pos = canvasCenter();
-    addConversationAt(pos.x, pos.y);
-    setTimeout(() => fitView({ duration: 200, padding: 0.2 }), 50);
-  }, [canvasCenter, addConversationAt, fitView]);
-
-  /** 底部工具栏「插入文件」：系统对话框选文件 → 导入仓库附件目录 → 画布中心建媒体节点。 */
-  const handleInsertFile = useCallback(async () => {
-    try {
-      const pos = canvasCenter();
-      await pickAndImportAttachment(pos);
-    } catch (e) {
-      console.error("插入文件失败", e);
-    }
-  }, [canvasCenter, pickAndImportAttachment]);
 
   /**
    * 画布容器原生监听 dragover/drop：绕开 React 合成事件委托（WebView2 中合成事件对
@@ -280,7 +302,12 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
       }
       const pos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
       if (payload.kind === "note") {
-        void addTextNoteFromVault(payload.file, payload.title ?? payload.name, pos, true);
+        void addTextNoteFromVault(
+          payload.file,
+          payload.title ?? payload.name,
+          pos,
+          true,
+        );
       } else {
         void addMediaFromVault(payload.file, payload.name, pos, true);
       }
@@ -291,7 +318,12 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
       el.removeEventListener("dragover", onDragOver);
       el.removeEventListener("drop", onDrop);
     };
-  }, [canvasFile, screenToFlowPosition, addTextNoteFromVault, addMediaFromVault]);
+  }, [
+    canvasFile,
+    screenToFlowPosition,
+    addTextNoteFromVault,
+    addMediaFromVault,
+  ]);
 
   const onPaneContextMenu = useCallback(
     (event: React.MouseEvent) => {
@@ -301,9 +333,14 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
       // 右键空白 = 取消节点选中（与左键 onPaneClick 一致）
       selectNode(null);
       const pos = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-      setMenu({ x: event.clientX, y: event.clientY, flowX: pos.x, flowY: pos.y });
+      setMenu({
+        x: event.clientX,
+        y: event.clientY,
+        flowX: pos.x,
+        flowY: pos.y,
+      });
     },
-    [screenToFlowPosition, selectNode]
+    [screenToFlowPosition, selectNode],
   );
 
   const onNodeContextMenuInternal = useCallback(
@@ -315,13 +352,16 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
       selectNode(node.id);
       setNodeMenu({ nodeId: node.id, x: event.clientX, y: event.clientY });
     },
-    [selectNode]
+    [selectNode],
   );
 
   // 属性面板选中：左键单击节点选中、单击空白清空（与右键行为对称）
-  const handleNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
-    selectNode(node.id);
-  }, [selectNode]);
+  const handleNodeClick = useCallback(
+    (_event: React.MouseEvent, node: Node) => {
+      selectNode(node.id);
+    },
+    [selectNode],
+  );
   const handlePaneClick = useCallback(() => {
     selectNode(null);
   }, [selectNode]);
@@ -329,7 +369,8 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
   // 画布表格节点「打开表格」按钮 → 打开表格面积（ReactFlow 节点无法经 props 回调，走事件桥接）
   useEffect(() => {
     const onOpenTable = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { file: string; title: string } | undefined;
+      const detail = (e as CustomEvent).detail as
+        { file: string; title: string } | undefined;
       if (detail?.file) openTable(detail.file, detail.title ?? "表格");
     };
     window.addEventListener(OPEN_TABLE_EVENT, onOpenTable);
@@ -392,6 +433,9 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
           maxZoom={2}
           panOnDrag={[1, 2]}
           panActivationKeyCode="Space"
+          // 左键拖拽空白 = 框选（React Flow 默认 selectionOnDrag=false 须显式开启；
+          // panOnDrag 数组不含左键 0，两者不冲突：中键/右键平移、左键框选）
+          selectionOnDrag
           snapToGrid={snapEnabled}
           snapGrid={[16, 16]}
           // 只读白板（外部白板格式）：禁拖拽/连线；关联边需任意 handle 组合（Loose，
@@ -409,7 +453,11 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
                 title="显示网格"
                 aria-label="显示网格"
                 onClick={() => setShowGrid((v) => !v)}
-                style={{ width: 36, height: 36, color: showGrid ? "var(--accent)" : undefined }}
+                style={{
+                  width: 36,
+                  height: 36,
+                  color: showGrid ? "var(--accent)" : undefined,
+                }}
               >
                 <Grid3x3 size={18} />
               </ControlButton>
@@ -417,7 +465,11 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
                 title={snapEnabled ? "关闭网格吸附" : "开启网格吸附"}
                 aria-label="网格吸附"
                 onClick={() => setSnapEnabled((v) => !v)}
-                style={{ width: 36, height: 36, color: snapEnabled ? "var(--accent)" : undefined }}
+                style={{
+                  width: 36,
+                  height: 36,
+                  color: snapEnabled ? "var(--accent)" : undefined,
+                }}
               >
                 <Magnet size={18} />
               </ControlButton>
@@ -426,13 +478,22 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
           {/* 左下角按钮组：放大/缩小/适应视图（bottom 上调避开状态栏统计） */}
           <FlowPanel position="bottom-left" style={{ bottom: 32 }}>
             <div className="react-flow__controls">
-              <ControlButton title="放大 (+)" onClick={() => zoomIn({ duration: 150 })}>
+              <ControlButton
+                title="放大 (+)"
+                onClick={() => zoomIn({ duration: 150 })}
+              >
                 <Plus size={16} />
               </ControlButton>
-              <ControlButton title="缩小 (-)" onClick={() => zoomOut({ duration: 150 })}>
+              <ControlButton
+                title="缩小 (-)"
+                onClick={() => zoomOut({ duration: 150 })}
+              >
                 <Minus size={16} />
               </ControlButton>
-              <ControlButton title="适应视图" onClick={() => fitView({ duration: 200, padding: 0.15 })}>
+              <ControlButton
+                title="适应视图"
+                onClick={() => fitView({ duration: 200, padding: 0.15 })}
+              >
                 <Maximize size={16} />
               </ControlButton>
             </div>
@@ -442,7 +503,9 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
             pannable
             zoomable
             nodeBorderRadius={4}
-            onClick={(_, position) => setCenter(position.x, position.y, { duration: 200 })}
+            onClick={(_, position) =>
+              setCenter(position.x, position.y, { duration: 200 })
+            }
             style={{ bottom: 16, right: 16, width: 170, height: 130 }}
           />
         </ReactFlow>
@@ -451,32 +514,25 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
         {readOnly && (
           <div
             className="absolute top-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs"
-            style={{ background: "var(--bg-tertiary)", borderColor: "var(--border)", color: "var(--text-secondary)" }}
+            style={{
+              background: "var(--bg-tertiary)",
+              borderColor: "var(--border)",
+              color: "var(--text-secondary)",
+            }}
           >
             <span>只读查看 · 外部白板格式</span>
             <button
               onClick={() => void convertWhiteboard(canvasFile)}
               className="inline-flex items-center gap-1 px-2 py-0.5 rounded transition-colors"
-              style={{ background: "color-mix(in srgb, var(--accent) 15%, transparent)", color: "var(--accent)" }}
+              style={{
+                background:
+                  "color-mix(in srgb, var(--accent) 15%, transparent)",
+                color: "var(--accent)",
+              }}
               title="生成同目录 .atlx 画布副本并打开（原文件保留）"
             >
               <FileOutput size={13} /> 转换为画布
             </button>
-          </div>
-        )}
-
-        {/* 底部居中工具栏：新建页面 / 插入文件 / 模板库（只读白板隐藏） */}
-        {!readOnly && (
-          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex gap-1.5">
-            <SquareToolButton title="新建对话节点" onClick={createConversationAtCenter}>
-              <MessageSquarePlus size={16} />
-            </SquareToolButton>
-            <SquareToolButton title="插入文件（导入到附件目录）" onClick={() => void handleInsertFile()}>
-              <FilePlus size={16} />
-            </SquareToolButton>
-            <SquareToolButton title="模板库（尚未支持）" disabled>
-              <LayoutTemplate size={16} />
-            </SquareToolButton>
           </div>
         )}
 
@@ -485,14 +541,22 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
           className="absolute bottom-1.5 left-3 z-10 text-[11px] select-none inline-flex items-center gap-1.5"
           style={{ color: "var(--text-muted)" }}
         >
-          <span>{nodes.length} 个节点 · {edges.length} 条连线</span>
+          <span>
+            {nodes.length} 个节点 · {edges.length} 条连线
+          </span>
           <ZoomBadge />
         </div>
       </div>
 
       {/* 画布空白处右键菜单 */}
       {menu && (
-        <Menu x={menu.x} y={menu.y} onClose={closeMenu} widthClass="w-40" stopPointerDown>
+        <Menu
+          x={menu.x}
+          y={menu.y}
+          onClose={closeMenu}
+          widthClass="w-40"
+          stopPointerDown
+        >
           {menu.linkMode ? (
             /* 添加链接：菜单内 inline 输入 URL（Enter 创建，Esc 关闭） */
             <div className="px-3 py-1.5">
@@ -519,7 +583,10 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
                 onClick={() => {
                   addConversationAt(menu.flowX, menu.flowY);
                   closeMenu();
-                  setTimeout(() => fitView({ duration: 200, padding: 0.2 }), 50);
+                  setTimeout(
+                    () => fitView({ duration: 200, padding: 0.2 }),
+                    50,
+                  );
                 }}
               >
                 <span className="inline-flex items-center gap-1.5">
@@ -548,7 +615,9 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
                 </span>
               </MenuItem>
               <MenuItem
-                onClick={() => setMenu((m) => (m ? { ...m, linkMode: true } : m))}
+                onClick={() =>
+                  setMenu((m) => (m ? { ...m, linkMode: true } : m))
+                }
               >
                 <span className="inline-flex items-center gap-1.5">
                   <Link2 size={14} /> 添加链接
@@ -576,33 +645,4 @@ export const CanvasView = memo(function CanvasView({ areaId }: { areaId: string 
 function ZoomBadge() {
   const { zoom } = useViewport();
   return <span>{Math.round(zoom * 100)}%</span>;
-}
-
-/** 底部工具栏方形按钮。 */
-function SquareToolButton({
-  title,
-  disabled,
-  onClick,
-  children,
-}: {
-  title: string;
-  disabled?: boolean;
-  onClick?: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      className="w-9 h-9 rounded-lg border flex items-center justify-center transition-colors disabled:cursor-not-allowed disabled:opacity-40"
-      style={{
-        background: "var(--bg-secondary)",
-        borderColor: "var(--border)",
-        color: "var(--text-secondary)",
-      }}
-    >
-      {children}
-    </button>
-  );
 }

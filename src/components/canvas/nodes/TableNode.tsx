@@ -15,14 +15,17 @@ import { NodeResizeControl, type NodeProps } from "@xyflow/react";
 import type { TableData } from "@/types";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useVaultStore } from "@/stores/vaultStore";
-import { DEFAULT_TABLE_NODE_HEIGHT, DEFAULT_TABLE_NODE_WIDTH } from "@/constants/canvas";
+import {
+  DEFAULT_TABLE_NODE_HEIGHT,
+  DEFAULT_TABLE_NODE_WIDTH,
+} from "@/constants/canvas";
 import { tableTitleFromFile } from "@/utils/filename";
 import { ConnectionFrame } from "./ConnectionFrame";
 
 /** 打开表格窗口事件（detail = { file, title }；页面层 ProjectWorkspacePage 监听）。 */
 export const OPEN_TABLE_EVENT = "atelyx:open-table";
 
-export function TableNode({ id, data, width, height }: NodeProps) {
+export function TableNode({ id, data, width, height, selected }: NodeProps) {
   const { title, file, snapshot, fileMissing } = data as unknown as TableData;
   const readOnly = useCanvasStore((s) => s.readOnly);
   const [renaming, setRenaming] = useState(false);
@@ -37,7 +40,9 @@ export function TableNode({ id, data, width, height }: NodeProps) {
       const newFile = await useVaultStore.getState().renameTable(file, t);
       // 用去重后的实际标题（同名自动加序号时 ≠ 草稿），与文件内 title/窗口标签保持一致
       const actualTitle = tableTitleFromFile(newFile);
-      useCanvasStore.getState().updateNodeData(id, { title: actualTitle, file: newFile });
+      useCanvasStore
+        .getState()
+        .updateNodeData(id, { title: actualTitle, file: newFile });
     } catch (e) {
       console.error("重命名表格失败", e);
       useCanvasStore.setState({ error: "重命名表格失败，请重试" });
@@ -47,7 +52,9 @@ export function TableNode({ id, data, width, height }: NodeProps) {
   const openTableWindow = () => {
     if (fileMissing || readOnly) return;
     window.dispatchEvent(
-      new CustomEvent(OPEN_TABLE_EVENT, { detail: { file, title: title || "表格" } }),
+      new CustomEvent(OPEN_TABLE_EVENT, {
+        detail: { file, title: title || "表格" },
+      }),
     );
   };
 
@@ -64,11 +71,11 @@ export function TableNode({ id, data, width, height }: NodeProps) {
         minWidth: 240,
         minHeight: 120,
         background: "var(--bg-card)",
-        borderColor: "var(--border)",
+        borderColor: selected ? "var(--accent)" : "var(--border)",
         position: "relative",
       }}
     >
-      <ConnectionFrame topType="source" />
+      <ConnectionFrame topType="source" selected={selected} />
 
       <header
         className="px-3 py-1.5 border-b rounded-t-lg text-xs font-medium flex-shrink-0 flex items-center justify-between gap-1"
@@ -95,23 +102,33 @@ export function TableNode({ id, data, width, height }: NodeProps) {
               autoFocus
               onClick={(e) => e.stopPropagation()}
               className="nodrag w-full min-w-0 rounded px-1 text-xs outline-none focus:ring-1 focus:ring-[var(--accent)]"
-              style={{ background: "var(--input-bg)", color: "var(--text-primary)" }}
+              style={{
+                background: "var(--input-bg)",
+                color: "var(--text-primary)",
+              }}
             />
           ) : (
             <span
               className="truncate"
               title={fileMissing || readOnly ? undefined : "双击重命名"}
-              onDoubleClick={fileMissing || readOnly ? undefined : () => {
-                setDraftTitle(title ?? "");
-                setRenaming(true);
-              }}
+              onDoubleClick={
+                fileMissing || readOnly
+                  ? undefined
+                  : () => {
+                      setDraftTitle(title ?? "");
+                      setRenaming(true);
+                    }
+              }
             >
               {title || "表格"}
             </span>
           )}
         </span>
         {!fileMissing && !readOnly && (
-          <div className="flex items-center nodrag" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="flex items-center nodrag"
+            onClick={(e) => e.stopPropagation()}
+          >
             <button
               type="button"
               title="打开表格窗口"
@@ -125,16 +142,32 @@ export function TableNode({ id, data, width, height }: NodeProps) {
         )}
       </header>
 
-      <div className="nodrag nowheel overflow-auto flex-1 min-h-0 px-3 py-2" style={{ userSelect: "text", cursor: "text" }}>
+      <div
+        className="nodrag nowheel overflow-auto flex-1 min-h-0 px-3 py-2"
+        style={{ userSelect: "text", cursor: "text" }}
+      >
         {fileMissing ? (
-          <p className="text-xs flex items-center gap-1" style={{ color: "#f87171" }}>
-            <AlertTriangle size={14} className="flex-shrink-0" />文件缺失（已在文件管理器中删除或重命名）
+          <p
+            className="text-xs flex items-center gap-1"
+            style={{ color: "#f87171" }}
+          >
+            <AlertTriangle size={14} className="flex-shrink-0" />
+            文件缺失（已在文件管理器中删除或重命名）
           </p>
         ) : (
-          <div className="text-xs whitespace-pre-wrap break-words" style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}>
+          <div
+            className="text-xs whitespace-pre-wrap break-words"
+            style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}
+          >
             {lines.length > 0 ? (
               lines.map((l, i) => (
-                <div key={i} style={{ color: i === 0 ? "var(--text-primary)" : "var(--text-secondary)" }}>
+                <div
+                  key={i}
+                  style={{
+                    color:
+                      i === 0 ? "var(--text-primary)" : "var(--text-secondary)",
+                  }}
+                >
                   {l}
                 </div>
               ))
@@ -149,7 +182,11 @@ export function TableNode({ id, data, width, height }: NodeProps) {
       {!fileMissing && (
         <div
           className="px-3 py-1 border-t rounded-b-lg text-[10px] flex items-center justify-between flex-shrink-0"
-          style={{ borderColor: "var(--border)", color: "var(--text-muted)", cursor: "pointer" }}
+          style={{
+            borderColor: "var(--border)",
+            color: "var(--text-muted)",
+            cursor: "pointer",
+          }}
           onClick={openTableWindow}
         >
           <span>{rowCount > 0 ? `${rowCount} 行` : "空表格"}</span>

@@ -7,7 +7,12 @@ import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useVaultStore } from "@/stores/vaultStore";
 import { useAutoScrollFollow } from "@/hooks/useAutoScrollFollow";
-import { DEFAULT_CONVERSATION_WIDTH, DEFAULT_CONVERSATION_HEIGHT, DEFAULT_TEXT_NODE_WIDTH, DEFAULT_TEXT_NODE_HEIGHT } from "@/constants/canvas";
+import {
+  DEFAULT_CONVERSATION_WIDTH,
+  DEFAULT_CONVERSATION_HEIGHT,
+  DEFAULT_TEXT_NODE_WIDTH,
+  DEFAULT_TEXT_NODE_HEIGHT,
+} from "@/constants/canvas";
 import { isAssetConsumed } from "@/utils/consumed";
 import { findFreeSpot } from "@/utils/layout";
 import {
@@ -18,9 +23,7 @@ import {
   splitMentions,
   type MentionSeg,
 } from "@/utils/text";
-import {
-  markdownComponents,
-} from "@/utils/markdown";
+import { markdownComponents } from "@/utils/markdown";
 import type {
   ConversationData,
   MediaData,
@@ -46,7 +49,9 @@ const FALSE = false as const;
 const EMPTY_PENDING: string[] = [];
 
 /** 待发送附件 → 媒体节点 data（影子节点 / 固定到画布共用，） */
-function toMediaData(att: PendingAttachment): MediaData & Record<string, unknown> {
+function toMediaData(
+  att: PendingAttachment,
+): MediaData & Record<string, unknown> {
   return {
     mime: att.mime,
     kind: att.kind,
@@ -68,9 +73,11 @@ const refKeyOfNodeRef = (r: { label: string }) =>
  * - @ 提及引用画布资产：@chips 常驻显示入边引用
  * - 连接边框（2.4/7.2）：四周虚线边框拉线接入引用 / 拖线引用（发送时自动连线）
  */
-export function ConversationNode({ id, width, height }: NodeProps) {
+export function ConversationNode({ id, width, height, selected }: NodeProps) {
   const hasFixedHeight = height != null;
-  const messages = useCanvasStore((s) => s.messagesByConv[id] ?? EMPTY_MESSAGES);
+  const messages = useCanvasStore(
+    (s) => s.messagesByConv[id] ?? EMPTY_MESSAGES,
+  );
   const streaming = useCanvasStore((s) => s.streamingByConv[id] ?? FALSE);
   const send = useCanvasStore((s) => s.send);
   const regenerate = useCanvasStore((s) => s.regenerate);
@@ -85,11 +92,14 @@ export function ConversationNode({ id, width, height }: NodeProps) {
   const { fitView } = useReactFlow();
   const providers = useSettingsStore((s) => s.config.providers);
   // 未指定（跟随仓库默认）时下拉显示真实生效模型名（resolveDefaultModel：仓库默认模型反查所属供应商，均为落盘配置；昵称优先展示）
-  const defaultModelName = useSettingsStore((s) => s.resolveDefaultModel()?.model ?? null);
-  const defaultModelDisplay =
-    defaultModelName ? modelNameAcrossProviders(providers, defaultModelName) : null;
+  const defaultModelName = useSettingsStore(
+    (s) => s.resolveDefaultModel()?.model ?? null,
+  );
+  const defaultModelDisplay = defaultModelName
+    ? modelNameAcrossProviders(providers, defaultModelName)
+    : null;
   const nodeData = useCanvasStore(
-    (s) => s.nodes.find((n) => n.id === id)?.data
+    (s) => s.nodes.find((n) => n.id === id)?.data,
   ) as Partial<ConversationData> | undefined;
 
   // 供应商·模型组合选项（供节点一步选择；留空 = 跟随仓库默认）
@@ -103,14 +113,18 @@ export function ConversationNode({ id, width, height }: NodeProps) {
     })),
   );
   const currentComboKey =
-    nodeData?.providerId && nodeData?.model ? `${nodeData.providerId}::${nodeData.model}` : "";
+    nodeData?.providerId && nodeData?.model
+      ? `${nodeData.providerId}::${nodeData.model}`
+      : "";
 
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   // 标题：LLM 自动命名 → 回退首条 user 消息前缀 → 「对话」；双击 inline 编辑（空提交 = 清除回退显示）
   const firstUserMsg = messages.find((m) => m.role === "user");
   const displayTitle =
-    nodeData?.title || prefix(firstUserMsg?.displayContent ?? firstUserMsg?.content ?? "", 12) || "对话";
+    nodeData?.title ||
+    prefix(firstUserMsg?.displayContent ?? firstUserMsg?.content ?? "", 12) ||
+    "对话";
   const titleEdit = useInlineEdit({
     value: displayTitle,
     onCommit: (v) => {
@@ -119,11 +133,19 @@ export function ConversationNode({ id, width, height }: NodeProps) {
       updateNodeData(id, { title: t || undefined });
     },
   });
-  const [picker, setPicker] = useState<{ x: number; y: number; openUp: boolean; yBottom: number; query: string } | null>(null);
+  const [picker, setPicker] = useState<{
+    x: number;
+    y: number;
+    openUp: boolean;
+    yBottom: number;
+    query: string;
+  } | null>(null);
   // 记录 @ 触发时光标位置（@ 尚未插入，插入后 @ 即在该索引），用于精确删除而非只删末尾
   const [atIdx, setAtIdx] = useState(-1);
   // @ 提及映射：输入框内可见的 @显示名 → 源节点 id，发送时按文本就地替换为引用内容
-  const [mentions, setMentions] = useState<{ nodeId: string; text: string }[]>([]);
+  const [mentions, setMentions] = useState<{ nodeId: string; text: string }[]>(
+    [],
+  );
   // 仅订阅「本节点入边的 media 源节点」派生数据（useShallow 保证引用稳定）：
   // 拖拽其他节点（nodes 数组变化但未变节点对象引用保留）时不触发本组件重渲染/重跑 effect
   const mediaSources = useCanvasStore(
@@ -132,11 +154,11 @@ export function ConversationNode({ id, width, height }: NodeProps) {
         .filter(
           (e) =>
             e.target === id &&
-            (e.data as { inject?: boolean } | undefined)?.inject !== false
+            (e.data as { inject?: boolean } | undefined)?.inject !== false,
         )
         .map((e) => s.nodes.find((n) => n.id === e.source))
-        .filter((n): n is FlowNode => !!n && n.type === "media")
-    )
+        .filter((n): n is FlowNode => !!n && n.type === "media"),
+    ),
   );
 
   // ===== 系统提示词：从已标记笔记选择（文件面板右键 .md → 注册为提示词），发送时注入 system 消息 =====
@@ -156,7 +178,10 @@ export function ConversationNode({ id, width, height }: NodeProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ===== 智能滚动跟随：贴底时自动跟随新消息；用户上翻看历史时不被拉走，显示「新消息」回底按钮（与 AI 对话面板共用 hook） =====
-  const { handleScroll, jumpToBottom, showJumpToBottom } = useAutoScrollFollow(scrollRef, [messages]);
+  const { handleScroll, jumpToBottom, showJumpToBottom } = useAutoScrollFollow(
+    scrollRef,
+    [messages],
+  );
 
   // 阻止滚轮事件冒泡到 React Flow（防止画布缩放）
   useEffect(() => {
@@ -174,15 +199,16 @@ export function ConversationNode({ id, width, height }: NodeProps) {
     setAttachments((prev) => {
       const sentPayloads = new Set(
         (useCanvasStore.getState().messagesByConv[id] ?? []).flatMap((m) =>
-          (m.attachments ?? []).map((a) => a.payload)
-        )
+          (m.attachments ?? []).map((a) => a.payload),
+        ),
       );
       const added: PendingAttachment[] = [];
       for (const n of mediaSources) {
         // 「连接」模式边（inject:false，仅连线不注入）已在上游 filter 排除
         if (prev.some((a) => a.sourceNodeId === n.id)) continue;
         const md = n.data as unknown as MediaData;
-        const payload = md.kind === "image" ? (md.thumb ?? "") : (md.body ?? "");
+        const payload =
+          md.kind === "image" ? (md.thumb ?? "") : (md.body ?? "");
         if (sentPayloads.has(payload)) continue;
         added.push({
           id: crypto.randomUUID(),
@@ -199,7 +225,9 @@ export function ConversationNode({ id, width, height }: NodeProps) {
   }, [id, mediaSources]);
 
   // 拖线引用消费：text/media 节点拖线到本对话 → 输入框出现 @标签（媒体同步进托盘），边在发送时自动建立
-  const pendingMentions = useCanvasStore((s) => s.pendingMentionsByConv[id] ?? EMPTY_PENDING);
+  const pendingMentions = useCanvasStore(
+    (s) => s.pendingMentionsByConv[id] ?? EMPTY_PENDING,
+  );
   useEffect(() => {
     if (pendingMentions.length === 0) return;
     const store = useCanvasStore.getState();
@@ -219,13 +247,14 @@ export function ConversationNode({ id, width, height }: NodeProps) {
                 {
                   id: crypto.randomUUID(),
                   kind: md.kind,
-                  payload: md.kind === "image" ? (md.thumb ?? "") : (md.body ?? ""),
+                  payload:
+                    md.kind === "image" ? (md.thumb ?? "") : (md.body ?? ""),
                   mime: md.mime,
                   filename: md.name,
                   sourceNodeId: node.id,
                   parseFailed: md.parseFailed,
                 },
-              ]
+              ],
         );
         continue;
       }
@@ -237,8 +266,13 @@ export function ConversationNode({ id, width, height }: NodeProps) {
   }, [pendingMentions, id]);
 
   // 拖线已注入节点 → 弹「连接 / 再次注入」确认菜单（已注入不静默重复）
-  const pendingConfirm = useCanvasStore((s) => s.pendingConfirmByConv[id] ?? EMPTY_PENDING);
-  const [confirmMenu, setConfirmMenu] = useState<{ nodeId: string; label: string } | null>(null);
+  const pendingConfirm = useCanvasStore(
+    (s) => s.pendingConfirmByConv[id] ?? EMPTY_PENDING,
+  );
+  const [confirmMenu, setConfirmMenu] = useState<{
+    nodeId: string;
+    label: string;
+  } | null>(null);
   const confirmMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (pendingConfirm.length === 0) return;
@@ -254,7 +288,10 @@ export function ConversationNode({ id, width, height }: NodeProps) {
   useEffect(() => {
     if (!confirmMenu) return;
     const close = (e: MouseEvent) => {
-      if (confirmMenuRef.current && !confirmMenuRef.current.contains(e.target as Node)) {
+      if (
+        confirmMenuRef.current &&
+        !confirmMenuRef.current.contains(e.target as Node)
+      ) {
         setConfirmMenu(null);
         useCanvasStore.getState().clearPendingConfirm(id);
       }
@@ -293,7 +330,13 @@ export function ConversationNode({ id, width, height }: NodeProps) {
       if (!mountedRef.current) return;
       setAttachments((prev) => [
         ...prev,
-        { id: crypto.randomUUID(), kind: "image", payload: reader.result as string, mime: file.type, filename: file.name },
+        {
+          id: crypto.randomUUID(),
+          kind: "image",
+          payload: reader.result as string,
+          mime: file.type,
+          filename: file.name,
+        },
       ]);
     };
     reader.readAsDataURL(file);
@@ -305,14 +348,27 @@ export function ConversationNode({ id, width, height }: NodeProps) {
       if (!mountedRef.current) return;
       setAttachments((prev) => [
         ...prev,
-        { id: crypto.randomUUID(), kind: "file", payload: reader.result as string, mime: file.type, filename: file.name },
+        {
+          id: crypto.randomUUID(),
+          kind: "file",
+          payload: reader.result as string,
+          mime: file.type,
+          filename: file.name,
+        },
       ]);
     };
     reader.onerror = () => {
       if (!mountedRef.current) return;
       setAttachments((prev) => [
         ...prev,
-        { id: crypto.randomUUID(), kind: "file", payload: "", mime: file.type, filename: file.name, parseFailed: true },
+        {
+          id: crypto.randomUUID(),
+          kind: "file",
+          payload: "",
+          mime: file.type,
+          filename: file.name,
+          parseFailed: true,
+        },
       ]);
     };
     reader.readAsText(file);
@@ -348,7 +404,10 @@ export function ConversationNode({ id, width, height }: NodeProps) {
       const edge = useCanvasStore
         .getState()
         .edges.find((e) => e.target === id && e.source === att.sourceNodeId);
-      if (edge) useCanvasStore.getState().onEdgesChange([{ type: "remove", id: edge.id }]);
+      if (edge)
+        useCanvasStore
+          .getState()
+          .onEdgesChange([{ type: "remove", id: edge.id }]);
     }
     setAttachments((prev) => prev.filter((a) => a.id !== attId));
   };
@@ -363,7 +422,7 @@ export function ConversationNode({ id, width, height }: NodeProps) {
     const spot = findFreeSpot(
       nodes,
       { x: convNode.position.x - 310, y: convNode.position.y },
-      { w: 260, h: 240 }
+      { w: 260, h: 240 },
     );
     addNode({
       id: mediaId,
@@ -395,13 +454,14 @@ export function ConversationNode({ id, width, height }: NodeProps) {
               {
                 id: crypto.randomUUID(),
                 kind: md.kind,
-                payload: md.kind === "image" ? (md.thumb ?? "") : (md.body ?? ""),
+                payload:
+                  md.kind === "image" ? (md.thumb ?? "") : (md.body ?? ""),
                 mime: md.mime,
                 filename: md.name,
                 sourceNodeId: node.id,
                 parseFailed: md.parseFailed,
               },
-            ]
+            ],
       );
     }
     addEdge({
@@ -420,7 +480,10 @@ export function ConversationNode({ id, width, height }: NodeProps) {
     const before = input.slice(0, insertAt);
     const sep = before && !/\s$/.test(before) ? " " : "";
     const mentionText = `@${mentionTextOf(node)}`;
-    setInput((prev) => prev.slice(0, insertAt) + sep + mentionText + " " + prev.slice(end));
+    setInput(
+      (prev) =>
+        prev.slice(0, insertAt) + sep + mentionText + " " + prev.slice(end),
+    );
     setMentions((prev) => [...prev, { nodeId: node.id, text: mentionText }]);
     // 光标移到尾随空格之后（继续输入不紧贴胶囊），方便继续输入
     requestAnimationFrame(() => {
@@ -445,7 +508,9 @@ export function ConversationNode({ id, width, height }: NodeProps) {
     const store = useCanvasStore.getState();
     const consumed = isAssetConsumed(store.messagesByConv[id] ?? [], nodeId);
     if (consumed) return; // 已消费边不可断开（仅移除 @标签 文本）
-    const edge = store.edges.find((e) => e.target === id && e.source === nodeId);
+    const edge = store.edges.find(
+      (e) => e.target === id && e.source === nodeId,
+    );
     if (edge) store.onEdgesChange([{ type: "remove", id: edge.id }]);
     // media 引用：托盘附件一并移除（取消引用 = 完全取消，与 handleAttachmentRemove 语义对称）
     setAttachments((prev) => prev.filter((a) => a.sourceNodeId !== nodeId));
@@ -453,7 +518,11 @@ export function ConversationNode({ id, width, height }: NodeProps) {
 
   // ===== 文本提取（划词右键，） =====
 
-  const [selMenu, setSelMenu] = useState<{ x: number; y: number; text: string } | null>(null);
+  const [selMenu, setSelMenu] = useState<{
+    x: number;
+    y: number;
+    text: string;
+  } | null>(null);
 
   useEffect(() => {
     if (!selMenu) return;
@@ -495,7 +564,7 @@ export function ConversationNode({ id, width, height }: NodeProps) {
     const spot = findFreeSpot(
       nodes,
       { x: convNode.position.x + 480, y: convNode.position.y },
-      { w: 320, h: 240 }
+      { w: 320, h: 240 },
     );
     addNode({
       id: textNodeId,
@@ -518,64 +587,80 @@ export function ConversationNode({ id, width, height }: NodeProps) {
 
   // ===== 历史图片拉出为媒体节点（与文本提取对称） =====
 
-  const extractToMediaNode = useCallback((att: Attachment) => {
-    const { nodes } = useCanvasStore.getState();
-    const convNode = nodes.find((n) => n.id === id);
-    if (!convNode) return;
-    const mediaId = crypto.randomUUID();
-    // 对话节点右侧，自适应避开已有节点
-    const spot = findFreeSpot(
-      nodes,
-      { x: convNode.position.x + 480, y: convNode.position.y },
-      { w: 260, h: 240 }
-    );
-    addNode({
-      id: mediaId,
-      type: "media",
-      position: spot,
-      data: {
-        mime: att.mime,
-        kind: att.kind,
-        name: att.filename,
-        thumb: att.kind === "image" ? att.payload : undefined,
-        body: att.kind === "file" ? att.payload : undefined,
-      },
-    });
-    addEdge({
-      id: crypto.randomUUID(),
-      source: id,
-      target: mediaId,
-      sourceHandle: null,
-      targetHandle: null,
-    });
-  }, [id, addNode, addEdge]);
+  const extractToMediaNode = useCallback(
+    (att: Attachment) => {
+      const { nodes } = useCanvasStore.getState();
+      const convNode = nodes.find((n) => n.id === id);
+      if (!convNode) return;
+      const mediaId = crypto.randomUUID();
+      // 对话节点右侧，自适应避开已有节点
+      const spot = findFreeSpot(
+        nodes,
+        { x: convNode.position.x + 480, y: convNode.position.y },
+        { w: 260, h: 240 },
+      );
+      addNode({
+        id: mediaId,
+        type: "media",
+        position: spot,
+        data: {
+          mime: att.mime,
+          kind: att.kind,
+          name: att.filename,
+          thumb: att.kind === "image" ? att.payload : undefined,
+          body: att.kind === "file" ? att.payload : undefined,
+        },
+      });
+      addEdge({
+        id: crypto.randomUUID(),
+        source: id,
+        target: mediaId,
+        sourceHandle: null,
+        targetHandle: null,
+      });
+    },
+    [id, addNode, addEdge],
+  );
 
   // ===== 分支：以点击消息（含）之前的全部完整状态创建子对话节点 =====
   // 分支按钮挂在每条消息气泡下方；父子间仅一条血缘边，无数据交互。
-  const handleBranch = useCallback((messageId: string) => {
-    const { nodes } = useCanvasStore.getState();
-    const convNode = nodes.find((n) => n.id === id);
-    if (!convNode) return;
-    // 子节点落在父节点右侧，自适应避开已有节点（对话节点默认宽 ~480）
-    const spot = findFreeSpot(
-      nodes,
-      { x: convNode.position.x + DEFAULT_CONVERSATION_WIDTH + 40, y: convNode.position.y },
-      { w: DEFAULT_CONVERSATION_WIDTH, h: DEFAULT_CONVERSATION_HEIGHT }
-    );
-    void branchFrom(id, messageId, spot);
-    // 聚焦到新节点，避免落在视野外
-    setTimeout(() => fitView({ duration: 200, padding: 0.2 }), 60);
-  }, [id, branchFrom, fitView]);
+  const handleBranch = useCallback(
+    (messageId: string) => {
+      const { nodes } = useCanvasStore.getState();
+      const convNode = nodes.find((n) => n.id === id);
+      if (!convNode) return;
+      // 子节点落在父节点右侧，自适应避开已有节点（对话节点默认宽 ~480）
+      const spot = findFreeSpot(
+        nodes,
+        {
+          x: convNode.position.x + DEFAULT_CONVERSATION_WIDTH + 40,
+          y: convNode.position.y,
+        },
+        { w: DEFAULT_CONVERSATION_WIDTH, h: DEFAULT_CONVERSATION_HEIGHT },
+      );
+      void branchFrom(id, messageId, spot);
+      // 聚焦到新节点，避免落在视野外
+      setTimeout(() => fitView({ duration: 200, padding: 0.2 }), 60);
+    },
+    [id, branchFrom, fitView],
+  );
 
   // 点击 user 消息气泡里的 @chip → 定位视图到引用的源节点
-  const handleLocateRef = useCallback((nodeId: string) => {
-    fitView({ nodes: [{ id: nodeId }], duration: 200, padding: 0.2 });
-  }, [fitView]);
+  const handleLocateRef = useCallback(
+    (nodeId: string) => {
+      fitView({ nodes: [{ id: nodeId }], duration: 200, padding: 0.2 });
+    },
+    [fitView],
+  );
 
   // [[wiki 链接]] 定位 + 笔记链接打开/新建（公共接线簇，见 hooks/useWikiNodeLocate、useVaultLinkHandlers）
   const { isWikiLocatable, handleLocateWiki } = useWikiNodeLocate();
-  const { handleOpenWikiNote, isVaultPathNote, handleOpenVaultPathNote, handleCreateNote } =
-    useVaultLinkHandlers();
+  const {
+    handleOpenWikiNote,
+    isVaultPathNote,
+    handleOpenVaultPathNote,
+    handleCreateNote,
+  } = useVaultLinkHandlers();
 
   // ===== 渲染 =====
 
@@ -591,21 +676,31 @@ export function ConversationNode({ id, width, height }: NodeProps) {
         onCreateNote: handleCreateNote,
         onOpenUrl: (url) => void useAppStore.getState().openUrl(url),
       }),
-    [isWikiLocatable, handleLocateWiki, handleOpenWikiNote, isVaultPathNote, handleOpenVaultPathNote, handleCreateNote]
+    [
+      isWikiLocatable,
+      handleLocateWiki,
+      handleOpenWikiNote,
+      isVaultPathNote,
+      handleOpenVaultPathNote,
+      handleCreateNote,
+    ],
   );
   const handleRollback = useCallback(
     (messageId: string) => rollbackTo(id, messageId),
-    [id, rollbackTo]
+    [id, rollbackTo],
   );
   // @chip 点击定位（稳定引用，气泡 memo 生效前提）
   const handleRefChipClick = useCallback(
     (refKey: string) => handleLocateRef(refKey),
-    [handleLocateRef]
+    [handleLocateRef],
   );
 
   const last = messages[messages.length - 1];
   const canRegenerate =
-    !!last && last.role === "assistant" && !streaming && !last.content.startsWith("[错误]");
+    !!last &&
+    last.role === "assistant" &&
+    !streaming &&
+    !last.content.startsWith("[错误]");
   // 输入框 overlay 分段：@提及 → 圆角标签段（可删除），其余普通文本段
   const segments = splitMentions(input, mentions);
 
@@ -619,12 +714,12 @@ export function ConversationNode({ id, width, height }: NodeProps) {
         minWidth: 280,
         minHeight: 150,
         background: "var(--bg-card)",
-        borderColor: "var(--border)",
+        borderColor: selected ? "var(--accent)" : "var(--border)",
         cursor: "default",
         position: "relative",
       }}
     >
-      <ConnectionFrame topType="target" />
+      <ConnectionFrame topType="target" selected={selected} />
 
       <header
         className="px-3 py-2 border-b rounded-t-lg flex items-center gap-2"
@@ -659,15 +754,21 @@ export function ConversationNode({ id, width, height }: NodeProps) {
         )}
         {streaming && (
           <span className="text-xs text-[var(--accent)] flex-shrink-0 inline-flex items-center gap-1">
-            <Loader2 size={12} className="animate-spin flex-shrink-0" />生成中
+            <Loader2 size={12} className="animate-spin flex-shrink-0" />
+            生成中
           </span>
         )}
 
         {/* 供应商·模型选择：节点指定优先（一步定下 provider + model），留空 = 跟随仓库默认 */}
-        <div className="ml-auto flex items-center gap-1 nodrag" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="ml-auto flex items-center gap-1 nodrag"
+          onClick={(e) => e.stopPropagation()}
+        >
           {/* 联网搜索工具开关：开启后 AI 自主决定联网搜索（需搜索源已配置，未配置发送时提示） */}
           <button
-            onClick={() => updateNodeData(id, { toolsEnabled: !nodeData?.toolsEnabled })}
+            onClick={() =>
+              updateNodeData(id, { toolsEnabled: !nodeData?.toolsEnabled })
+            }
             title={
               nodeData?.toolsEnabled
                 ? "联网搜索：已开启（AI 可自主联网搜索）"
@@ -675,14 +776,20 @@ export function ConversationNode({ id, width, height }: NodeProps) {
             }
             aria-label="联网搜索工具"
             className="nodrag rounded px-1 py-0.5 hover:opacity-80"
-            style={{ color: nodeData?.toolsEnabled ? "var(--accent)" : "var(--text-muted)" }}
+            style={{
+              color: nodeData?.toolsEnabled
+                ? "var(--accent)"
+                : "var(--text-muted)",
+            }}
           >
             <Globe size={13} className="flex-shrink-0" />
           </button>
           {/* 系统提示词：选择已标记的提示词笔记，发送时注入 system 消息（留空 = 不注入），样式与模型选择一致 */}
           <DropdownSelect
             value={sysPromptFile ?? ""}
-            onChange={(v) => updateNodeData(id, { systemPromptFile: v || undefined })}
+            onChange={(v) =>
+              updateNodeData(id, { systemPromptFile: v || undefined })
+            }
             options={[
               { value: "", label: "提示词" },
               ...promptNotes.map((n) => ({
@@ -699,7 +806,11 @@ export function ConversationNode({ id, width, height }: NodeProps) {
             title="选择系统提示词（右键笔记注册，留空 = 不注入）"
           />
           <DropdownSelect
-            value={comboOptions.some((o) => o.key === currentComboKey) ? currentComboKey : ""}
+            value={
+              comboOptions.some((o) => o.key === currentComboKey)
+                ? currentComboKey
+                : ""
+            }
             onChange={(v) => {
               if (!v) {
                 // 留空 = 全部跟随仓库默认（清空节点级指定）
@@ -707,7 +818,11 @@ export function ConversationNode({ id, width, height }: NodeProps) {
                 return;
               }
               const combo = comboOptions.find((o) => o.key === v);
-              if (combo) updateNodeData(id, { providerId: combo.providerId, model: combo.model });
+              if (combo)
+                updateNodeData(id, {
+                  providerId: combo.providerId,
+                  model: combo.model,
+                });
             }}
             options={[
               { value: "", label: defaultModelDisplay ?? "模型" },
@@ -740,76 +855,101 @@ export function ConversationNode({ id, width, height }: NodeProps) {
           }}
         >
           <span>{error}</span>
-          <button onClick={clearError} className="ml-2 hover:opacity-80"><X size={12} /></button>
+          <button onClick={clearError} className="ml-2 hover:opacity-80">
+            <X size={12} />
+          </button>
         </div>
       )}
 
-      <div className={`relative ${hasFixedHeight ? "flex-1 min-h-0 flex flex-col" : ""}`}>
+      <div
+        className={`relative ${hasFixedHeight ? "flex-1 min-h-0 flex flex-col" : ""}`}
+      >
         <div
           ref={scrollRef}
-          className={`nodrag nowheel overflow-auto px-3 pt-2 pb-6 space-y-3 ${hasFixedHeight ? 'flex-1 min-h-0' : 'max-h-[300px]'}`}
+          className={`nodrag nowheel overflow-auto px-3 pt-2 pb-6 space-y-3 ${hasFixedHeight ? "flex-1 min-h-0" : "max-h-[300px]"}`}
           onScroll={handleScroll}
           onContextMenu={handleMessagesCtx}
         >
-        {messages.length === 0 ? (
-          <p className="text-xs mt-2" style={{ color: "var(--text-muted)" }}>输入消息开始对话</p>
-        ) : (
-          messages.map((m, i) => {
-            // 进行中的最后一条消息（流式占位/未完成）不显示分支按钮：「完整状态」语义
-            const isStreamingMsg = streaming && i === messages.length - 1;
-            // 分支按钮仅在 AI 回复处显示（用户消息不分支）：以该 AI 回复（含）之前的完整状态创建子节点
-            const canBranch =
-              m.role === "assistant" && m.content.trim() !== "" && !isStreamingMsg;
-            return (
-              <ChatMessageBubble
-                key={m.id}
-                role={m.role === "user" ? "user" : "assistant"}
-                displayContent={m.role === "user" ? m.displayContent ?? m.content : undefined}
-                refs={m.refs}
-                refKeyOf={refKeyOfNodeRef}
-                onRefChipClick={handleRefChipClick}
-                content={m.content}
-                reasoningContent={m.reasoningContent}
-                isStreaming={isStreamingMsg}
-                attachments={m.attachments}
-                onMediaExtract={extractToMediaNode}
-                markdownComponents={messageMarkdownComponents}
-                streamingPlaceholder={
-                  <span
-                    className="inline-flex items-center gap-1 text-xs"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    <Loader2 size={12} className="animate-spin" /> 生成中…
-                  </span>
-                }
-                copyText={m.role === "user" ? (m.displayContent ?? m.content) : m.content}
-                messageId={m.id}
-                canRollback={canBranch}
-                onRollback={handleRollback}
-                onBranch={canBranch ? handleBranch : undefined}
-                userBubbleClass="bg-[var(--bg-tertiary)]"
-                assistantBubbleStyle={{ background: "var(--bg-primary)", border: "1px solid var(--border)" }}
-                paddingClass="px-3 py-2 text-sm leading-relaxed min-w-0"
-                stopPropagation
-              />
-            );
-          })
-        )}
+          {messages.length === 0 ? (
+            <p className="text-xs mt-2" style={{ color: "var(--text-muted)" }}>
+              输入消息开始对话
+            </p>
+          ) : (
+            messages.map((m, i) => {
+              // 进行中的最后一条消息（流式占位/未完成）不显示分支按钮：「完整状态」语义
+              const isStreamingMsg = streaming && i === messages.length - 1;
+              // 分支按钮仅在 AI 回复处显示（用户消息不分支）：以该 AI 回复（含）之前的完整状态创建子节点
+              const canBranch =
+                m.role === "assistant" &&
+                m.content.trim() !== "" &&
+                !isStreamingMsg;
+              return (
+                <ChatMessageBubble
+                  key={m.id}
+                  role={m.role === "user" ? "user" : "assistant"}
+                  displayContent={
+                    m.role === "user"
+                      ? (m.displayContent ?? m.content)
+                      : undefined
+                  }
+                  refs={m.refs}
+                  refKeyOf={refKeyOfNodeRef}
+                  onRefChipClick={handleRefChipClick}
+                  content={m.content}
+                  reasoningContent={m.reasoningContent}
+                  isStreaming={isStreamingMsg}
+                  attachments={m.attachments}
+                  onMediaExtract={extractToMediaNode}
+                  markdownComponents={messageMarkdownComponents}
+                  streamingPlaceholder={
+                    <span
+                      className="inline-flex items-center gap-1 text-xs"
+                      style={{ color: "var(--text-muted)" }}
+                    >
+                      <Loader2 size={12} className="animate-spin" /> 生成中…
+                    </span>
+                  }
+                  copyText={
+                    m.role === "user"
+                      ? (m.displayContent ?? m.content)
+                      : m.content
+                  }
+                  messageId={m.id}
+                  canRollback={canBranch}
+                  onRollback={handleRollback}
+                  onBranch={canBranch ? handleBranch : undefined}
+                  userBubbleClass="bg-[var(--bg-tertiary)]"
+                  assistantBubbleStyle={{
+                    background: "var(--bg-primary)",
+                    border: "1px solid var(--border)",
+                  }}
+                  paddingClass="px-3 py-2 text-sm leading-relaxed min-w-0"
+                  stopPropagation
+                />
+              );
+            })
+          )}
 
-        {canRegenerate && (
-          <div className="flex justify-end">
-            <button
-              onClick={() => void regenerate(id)}
-              className="text-xs px-2 py-0.5 rounded border hover:opacity-80 inline-flex items-center gap-1"
-              style={{ color: "var(--text-secondary)", borderColor: "var(--border)", background: "var(--bg-tertiary)" }}
-              title="重新生成最后一条回复"
-            >
-              <RefreshCw size={12} className="flex-shrink-0" /> 重新生成
-            </button>
-          </div>
-        )}
+          {canRegenerate && (
+            <div className="flex justify-end">
+              <button
+                onClick={() => void regenerate(id)}
+                className="text-xs px-2 py-0.5 rounded border hover:opacity-80 inline-flex items-center gap-1"
+                style={{
+                  color: "var(--text-secondary)",
+                  borderColor: "var(--border)",
+                  background: "var(--bg-tertiary)",
+                }}
+                title="重新生成最后一条回复"
+              >
+                <RefreshCw size={12} className="flex-shrink-0" /> 重新生成
+              </button>
+            </div>
+          )}
         </div>
-        {showJumpToBottom && <JumpToBottomButton onClick={jumpToBottom} className="nodrag" />}
+        {showJumpToBottom && (
+          <JumpToBottomButton onClick={jumpToBottom} className="nodrag" />
+        )}
       </div>
 
       {/* 划词浮动菜单（文本提取） */}
@@ -867,7 +1007,10 @@ export function ConversationNode({ id, width, height }: NodeProps) {
           }}
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="px-3 py-1.5 text-xs truncate" style={{ color: "var(--text-muted)" }}>
+          <div
+            className="px-3 py-1.5 text-xs truncate"
+            style={{ color: "var(--text-muted)" }}
+          >
             「{confirmMenu.label}」已在历史消息中注入过
           </div>
           <button
@@ -913,7 +1056,10 @@ export function ConversationNode({ id, width, height }: NodeProps) {
         <button
           onClick={() => fileInputRef.current?.click()}
           className="px-2 rounded text-sm nodrag hover:opacity-80"
-          style={{ color: "var(--text-secondary)", background: "var(--bg-tertiary)" }}
+          style={{
+            color: "var(--text-secondary)",
+            background: "var(--bg-tertiary)",
+          }}
           title="添加附件（Ctrl+V 粘贴图片 / 拖拽文件）"
         >
           <Plus size={16} />
@@ -941,11 +1087,15 @@ export function ConversationNode({ id, width, height }: NodeProps) {
                 const y = (taRect?.bottom ?? 0) - (nodeRect?.top ?? 0);
                 const yBottom = (nodeRect?.bottom ?? 0) - (taRect?.bottom ?? 0);
                 // 下方视口空间不足（估算菜单高 ~264）→ 向上弹出
-                const openUp = (window.innerHeight - (taRect?.bottom ?? 0)) < 264;
+                const openUp = window.innerHeight - (taRect?.bottom ?? 0) < 264;
                 setPicker({ x, y, openUp, yBottom, query: "" });
               }
               // IME 组合期间 Enter 是「上屏候选词」而非发送（中文输入法必踩，防半成品拼音发送）
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              if (
+                e.key === "Enter" &&
+                !e.shiftKey &&
+                !e.nativeEvent.isComposing
+              ) {
                 e.preventDefault();
                 handleSend();
               }
@@ -953,7 +1103,12 @@ export function ConversationNode({ id, width, height }: NodeProps) {
             onPaste={handlePaste}
             placeholder="输入消息…（@ 引用画布资产，Shift+Enter 换行）"
             rows={2}
-            backgroundLayer={<div className="absolute inset-0 rounded" style={{ background: "var(--input-bg)" }} />}
+            backgroundLayer={
+              <div
+                className="absolute inset-0 rounded"
+                style={{ background: "var(--input-bg)" }}
+              />
+            }
             overlayClassName="z-10 rounded px-2 py-1 text-sm"
             textareaClassName="relative w-full h-full rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-[var(--accent)] nodrag nowheel overflow-y-auto"
           />
@@ -993,4 +1148,3 @@ export function ConversationNode({ id, width, height }: NodeProps) {
     </div>
   );
 }
-

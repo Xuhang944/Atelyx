@@ -8,13 +8,24 @@
 import { useEffect, useRef, useState } from "react";
 import { NodeResizeControl, type NodeProps } from "@xyflow/react";
 import { useCanvasStore } from "@/stores/canvasStore";
-import { DEFAULT_GROUP_HEIGHT, DEFAULT_GROUP_WIDTH, GROUP_COLORS } from "@/constants/canvas";
+import {
+  DEFAULT_GROUP_HEIGHT,
+  DEFAULT_GROUP_WIDTH,
+  GROUP_COLORS,
+} from "@/constants/canvas";
 import type { GroupFileData } from "@/types";
 import { ConnectionFrame } from "./ConnectionFrame";
 import { useInlineEdit } from "@/hooks/useInlineEdit";
 
 /** 色板顺序（色块按钮循环展示用）：1-5 + 默认（无色）。 */
-const COLOR_OPTIONS: (string | undefined)[] = ["1", "2", "3", "4", "5", undefined];
+const COLOR_OPTIONS: (string | undefined)[] = [
+  "1",
+  "2",
+  "3",
+  "4",
+  "5",
+  undefined,
+];
 
 export function GroupNode({ id, data, width, height, selected }: NodeProps) {
   const { label, color } = data as unknown as GroupFileData;
@@ -38,7 +49,10 @@ export function GroupNode({ id, data, width, height, selected }: NodeProps) {
   useEffect(() => {
     if (!colorMenu) return;
     const onDown = (e: MouseEvent) => {
-      if (colorMenuRef.current && !colorMenuRef.current.contains(e.target as Node)) {
+      if (
+        colorMenuRef.current &&
+        !colorMenuRef.current.contains(e.target as Node)
+      ) {
         setColorMenu(false);
       }
     };
@@ -70,11 +84,12 @@ export function GroupNode({ id, data, width, height, selected }: NodeProps) {
         background: `${base}1f`,
         border: `1.5px solid ${selected ? "var(--accent)" : base}`,
         position: "relative",
+        // 仅标题栏可拖拽移动；主体指针穿透由 CSS（.react-flow__node-group）统一处理
       }}
     >
       {/* 无向关联可连线（有向模式下被 isValidConnection 拦截）；低 zIndex 下 handle 随组 DOM，
           被上层节点覆盖的区域不可达，从组边缘空白处拉线即可 */}
-      <ConnectionFrame topType="source" />
+      <ConnectionFrame topType="source" selected={selected} />
 
       <header
         className="px-3 py-1.5 text-sm font-medium flex-shrink-0 select-none flex items-center gap-1.5 rounded-t-xl"
@@ -82,6 +97,7 @@ export function GroupNode({ id, data, width, height, selected }: NodeProps) {
           // 标题行背景：色板色高不透明度（与主体 12% 填充拉开层次），文字用主色保证清晰
           background: `${base}40`,
           color: "var(--text-primary)",
+          cursor: "grab",
         }}
       >
         {labelEdit.editing ? (
@@ -90,7 +106,10 @@ export function GroupNode({ id, data, width, height, selected }: NodeProps) {
             autoFocus
             onClick={(e) => e.stopPropagation()}
             className="nodrag w-full min-w-0 rounded px-1 text-xs outline-none focus:ring-1 focus:ring-[var(--accent)]"
-            style={{ background: "var(--input-bg)", color: "var(--text-primary)" }}
+            style={{
+              background: "var(--input-bg)",
+              color: "var(--text-primary)",
+            }}
           />
         ) : (
           <span
@@ -124,7 +143,10 @@ export function GroupNode({ id, data, width, height, selected }: NodeProps) {
         <div
           ref={colorMenuRef}
           className="absolute top-7 left-3 z-10 flex items-center gap-1.5 p-1.5 rounded-md border shadow-lg"
-          style={{ background: "var(--bg-tertiary)", borderColor: "var(--border)" }}
+          style={{
+            background: "var(--bg-tertiary)",
+            borderColor: "var(--border)",
+          }}
           onClick={(e) => e.stopPropagation()}
         >
           {COLOR_OPTIONS.map((c) => {

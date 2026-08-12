@@ -16,7 +16,7 @@ export function findFreeSpot(
   nodes: SpotNode[],
   base: { x: number; y: number },
   size: { w: number; h: number },
-  gap = 24
+  gap = 24,
 ): { x: number; y: number } {
   // 已有节点的矩形（取用户 resize 尺寸，回退测量值，再回退经验默认）
   const rects = nodes.map((n) => ({
@@ -27,7 +27,13 @@ export function findFreeSpot(
   }));
   const intersects = (x: number, y: number) =>
     rects.some(
-      (r) => !(x + size.w <= r.x || x >= r.x + r.w || y + size.h <= r.y || y >= r.y + r.h)
+      (r) =>
+        !(
+          x + size.w <= r.x ||
+          x >= r.x + r.w ||
+          y + size.h <= r.y ||
+          y >= r.y + r.h
+        ),
     );
 
   // 1. 基准点
@@ -70,7 +76,7 @@ export interface NodeRect {
  */
 export function pickEdgeHandles(
   source: NodeRect,
-  target: NodeRect
+  target: NodeRect,
 ): { sourceHandle: string; targetHandle: string } {
   const dx = target.x + target.w / 2 - (source.x + source.w / 2);
   const dy = target.y + target.h / 2 - (source.y + source.h / 2);
@@ -82,4 +88,57 @@ export function pickEdgeHandles(
   return dy >= 0
     ? { sourceHandle: "bottom-source", targetHandle: "top-target" }
     : { sourceHandle: "top-source", targetHandle: "bottom-target" };
+}
+
+/** 分组拖拽联动的成员候选（仅需 id/类型/位置/尺寸）。 */
+interface MemberCandidate {
+  id: string;
+  type?: string;
+  position: { x: number; y: number };
+  width?: number | null;
+  height?: number | null;
+  measured?: { width?: number; height?: number };
+}
+
+/**
+ * 分组拖拽联动：收集「中心点落在组矩形内」的成员节点（组自身与嵌套组排除）。
+ * 判定时机 = 拖拽开始（基于拖前位置一次快照，拖动中不重算，防止组边界扫过其他节点时误加入）。
+ * 用中心点而非完全包含：resize 过的组/部分重叠的节点也能被带动，更符合直觉。
+ * 嵌套组内节点跳过：其中心点虽在外层组内，但所属嵌套组不随外层组联动，
+ * 带动它会从嵌套组里漂出——该节点应由所属嵌套组的拖动负责。
+ */
+export function collectGroupMembers(
+  nodes: MemberCandidate[],
+  groupId: string,
+  groupRect: { x: number; y: number; w: number; h: number },
+): MemberCandidate[] {
+  // 嵌套组判定复用：中心点落在某 group 矩形内即视为「属于该组」（与成员判定同规则）
+  const centerInRect = (
+    n: MemberCandidate,
+    r: { x: number; y: number; w: number; h: number },
+  ) => {
+    const w = n.width ?? n.measured?.width ?? 200;
+    const h = n.height ?? n.measured?.height ?? 100;
+    const cx = n.position.x + w / 2;
+    const cy = n.position.y + h / 2;
+    return cx > r.x && cx < r.x + r.w && cy > r.y && cy < r.y + r.h;
+  };
+  const otherGroups = nodes.filter(
+    (n) => n.type === "group" && n.id !== groupId,
+  );
+  return nodes.filter((n) => {
+    if (n.id === groupId || n.type === "group") return false;
+    if (!centerInRect(n, groupRect)) return false;
+    // 中心点同时落在其他 group 内（嵌套组）→ 跳过，防漂移
+    return !otherGroups.some((g) => {
+      const gw = g.width ?? g.measured?.width ?? 200;
+      const gh = g.height ?? g.measured?.height ?? 100;
+      return centerInRect(n, {
+        x: g.position.x,
+        y: g.position.y,
+        w: gw,
+        h: gh,
+      });
+    });
+  });
 }

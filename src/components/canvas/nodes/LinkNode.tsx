@@ -32,7 +32,7 @@ function hostOf(raw: string): string {
   }
 }
 
-export function LinkNode({ data, width, height }: NodeProps) {
+export function LinkNode({ data, width, height, selected }: NodeProps) {
   const { url } = data as unknown as LinkFileData;
   const openUrl = useAppStore((s) => s.openUrl);
   // 只读白板（外部白板格式）：禁 resize（手柄不渲染）
@@ -52,13 +52,13 @@ export function LinkNode({ data, width, height }: NodeProps) {
         minWidth: 160,
         minHeight: 60,
         background: "var(--bg-card)",
-        borderColor: "var(--border)",
+        borderColor: selected ? "var(--accent)" : "var(--border)",
         position: "relative",
       }}
       onClick={handleOpen}
       title={url ? (isOpenableUrl(url) ? `打开 ${url}` : url) : undefined}
     >
-      <ConnectionFrame topType="source" />
+      <ConnectionFrame topType="source" selected={selected} />
 
       <div className="flex-1 min-h-0 flex flex-col justify-center px-3 py-2 gap-1">
         <span

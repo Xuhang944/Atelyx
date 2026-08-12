@@ -19,14 +19,23 @@ const IMG_MIN_WIDTH = 180;
  * - 未 resize：宽度跟随 data.displayWidth（按图片比例推导），高度 auto 让图片自然撑高；
  * - 已 resize：宽高跟随 NodeProps（用户拖拽值），内容区溢出滚动。
  */
-export function MediaNode({ id, data, width, height }: NodeProps) {
-  const { name, kind, mime, thumb, parseFailed, displayWidth, userResized, fileMissing } =
-    data as unknown as MediaData;
+export function MediaNode({ id, data, width, height, selected }: NodeProps) {
+  const {
+    name,
+    kind,
+    mime,
+    thumb,
+    parseFailed,
+    displayWidth,
+    userResized,
+    fileMissing,
+  } = data as unknown as MediaData;
   // 只读白板（外部白板格式）：禁 resize（手柄不渲染、图片加载不写显示宽度）
   const readOnly = useCanvasStore((s) => s.readOnly);
 
-  const displayName = name || (mime ? mime.split("/").pop()?.toUpperCase() : "媒体");
-  const nodeWidth = userResized ? width : displayWidth ?? 260;
+  const displayName =
+    name || (mime ? mime.split("/").pop()?.toUpperCase() : "媒体");
+  const nodeWidth = userResized ? width : (displayWidth ?? 260);
   const nodeHeight = userResized ? height : undefined;
   const hasFixedHeight = userResized;
 
@@ -39,14 +48,18 @@ export function MediaNode({ id, data, width, height }: NodeProps) {
     if (!W || !H) return;
     const longest = Math.max(W, H);
     const scale = longest > IMG_MAX_DIM ? IMG_MAX_DIM / longest : 1;
-    const w = Math.max(IMG_MIN_WIDTH, Math.min(IMG_MAX_DIM, Math.round(W * scale)));
+    const w = Math.max(
+      IMG_MIN_WIDTH,
+      Math.min(IMG_MAX_DIM, Math.round(W * scale)),
+    );
     if ((displayWidth ?? 0) !== w) {
       useCanvasStore.getState().updateNodeData(id, { displayWidth: w });
     }
   };
 
   const handleResizeStart = () => {
-    if (!userResized) useCanvasStore.getState().updateNodeData(id, { userResized: true });
+    if (!userResized)
+      useCanvasStore.getState().updateNodeData(id, { userResized: true });
   };
 
   return (
@@ -58,11 +71,11 @@ export function MediaNode({ id, data, width, height }: NodeProps) {
         minWidth: IMG_MIN_WIDTH,
         minHeight: 120,
         background: "var(--bg-card)",
-        borderColor: "var(--border)",
+        borderColor: selected ? "var(--accent)" : "var(--border)",
         position: "relative",
       }}
     >
-      <ConnectionFrame topType="source" />
+      <ConnectionFrame topType="source" selected={selected} />
 
       <header
         className="px-3 py-1.5 border-b rounded-t-lg text-xs font-medium flex-shrink-0"
@@ -87,7 +100,10 @@ export function MediaNode({ id, data, width, height }: NodeProps) {
         {fileMissing ? (
           <div
             className="rounded border flex items-center justify-center h-16 text-2xl"
-            style={{ borderColor: "var(--border)", background: "var(--bg-tertiary)" }}
+            style={{
+              borderColor: "var(--border)",
+              background: "var(--bg-tertiary)",
+            }}
           >
             <CircleHelp size={28} />
           </div>
@@ -98,13 +114,19 @@ export function MediaNode({ id, data, width, height }: NodeProps) {
             onLoad={handleImgLoad}
             // w-full h-auto：宽度填满内容区，高度按图片比例自适应
             className="rounded border w-full h-auto"
-            style={{ borderColor: "var(--border)", background: "var(--bg-tertiary)" }}
+            style={{
+              borderColor: "var(--border)",
+              background: "var(--bg-tertiary)",
+            }}
             draggable={false}
           />
         ) : (
           <div
             className="rounded border flex items-center justify-center h-16 text-2xl"
-            style={{ borderColor: "var(--border)", background: "var(--bg-tertiary)" }}
+            style={{
+              borderColor: "var(--border)",
+              background: "var(--bg-tertiary)",
+            }}
           >
             <FileText size={28} />
           </div>
@@ -117,13 +139,21 @@ export function MediaNode({ id, data, width, height }: NodeProps) {
           {displayName}
         </p>
         {fileMissing && (
-          <p className="text-xs flex items-center gap-1" style={{ color: "#f87171" }}>
-            <AlertTriangle size={14} className="flex-shrink-0" />文件缺失（已被删除或重命名）
+          <p
+            className="text-xs flex items-center gap-1"
+            style={{ color: "#f87171" }}
+          >
+            <AlertTriangle size={14} className="flex-shrink-0" />
+            文件缺失（已被删除或重命名）
           </p>
         )}
         {parseFailed && (
-          <p className="text-xs flex items-center gap-1" style={{ color: "#f87171" }}>
-            <AlertTriangle size={14} className="flex-shrink-0" />无法解析（仅作画布参考，不注入模型）
+          <p
+            className="text-xs flex items-center gap-1"
+            style={{ color: "#f87171" }}
+          >
+            <AlertTriangle size={14} className="flex-shrink-0" />
+            无法解析（仅作画布参考，不注入模型）
           </p>
         )}
       </div>

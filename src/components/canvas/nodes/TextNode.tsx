@@ -6,14 +6,21 @@ import type { TextData } from "@/types";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useAppStore } from "@/stores/appStore";
 import { useVaultStore } from "@/stores/vaultStore";
-import { DEFAULT_TEXT_NODE_HEIGHT, DEFAULT_TEXT_NODE_WIDTH } from "@/constants/canvas";
-import { MARKDOWN_PLUGINS, REHYPE_PLUGINS, markdownComponents } from "@/utils/markdown";
+import {
+  DEFAULT_TEXT_NODE_HEIGHT,
+  DEFAULT_TEXT_NODE_WIDTH,
+} from "@/constants/canvas";
+import {
+  MARKDOWN_PLUGINS,
+  REHYPE_PLUGINS,
+  markdownComponents,
+} from "@/utils/markdown";
 import { ConnectionFrame } from "./ConnectionFrame";
 import { useInlineEdit } from "@/hooks/useInlineEdit";
 import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
 import { useWikiNodeLocate } from "@/hooks/useWikiNodeLocate";
 
-export function TextNode({ id, data, width, height }: NodeProps) {
+export function TextNode({ id, data, width, height, selected }: NodeProps) {
   const { bodyMd, title, file, fileMissing } = data as unknown as TextData;
   // 只读白板（外部白板格式）：禁编辑——防经笔记写回链路把改动写进原 .md 文件
   const readOnly = useCanvasStore((s) => s.readOnly);
@@ -53,7 +60,9 @@ export function TextNode({ id, data, width, height }: NodeProps) {
     try {
       if (file) {
         const newFile = await useVaultStore.getState().renameNote(file, t);
-        useCanvasStore.getState().updateNodeData(id, { title: t, file: newFile });
+        useCanvasStore
+          .getState()
+          .updateNodeData(id, { title: t, file: newFile });
       } else {
         useCanvasStore.getState().updateNodeData(id, { title: t });
       }
@@ -65,8 +74,12 @@ export function TextNode({ id, data, width, height }: NodeProps) {
 
   // [[wiki 链接]] 定位 + 笔记链接打开/新建（公共接线簇，见 hooks/useWikiNodeLocate、useVaultLinkHandlers）
   const { isWikiLocatable, handleLocateWiki } = useWikiNodeLocate();
-  const { handleOpenWikiNote, isVaultPathNote, handleOpenVaultPathNote, handleCreateNote } =
-    useVaultLinkHandlers();
+  const {
+    handleOpenWikiNote,
+    isVaultPathNote,
+    handleOpenVaultPathNote,
+    handleCreateNote,
+  } = useVaultLinkHandlers();
   // Markdown 组件配置稳定化（回调全部稳定，useMemo 防每次渲染重建）
   const textMarkdownComponents = useMemo(
     () =>
@@ -79,7 +92,14 @@ export function TextNode({ id, data, width, height }: NodeProps) {
         onCreateNote: handleCreateNote,
         onOpenUrl: (url) => void useAppStore.getState().openUrl(url),
       }),
-    [isWikiLocatable, handleLocateWiki, handleOpenWikiNote, isVaultPathNote, handleOpenVaultPathNote, handleCreateNote]
+    [
+      isWikiLocatable,
+      handleLocateWiki,
+      handleOpenWikiNote,
+      isVaultPathNote,
+      handleOpenVaultPathNote,
+      handleCreateNote,
+    ],
   );
 
   return (
@@ -91,13 +111,13 @@ export function TextNode({ id, data, width, height }: NodeProps) {
         minWidth: 200,
         minHeight: 100,
         background: "var(--bg-card)",
-        borderColor: "var(--border)",
+        borderColor: selected ? "var(--accent)" : "var(--border)",
         // 未保存的画布内文本节点用虚线边框与笔记节点（实线）区分
         borderStyle: isSaved ? "solid" : "dashed",
         position: "relative",
       }}
     >
-      <ConnectionFrame topType="source" />
+      <ConnectionFrame topType="source" selected={selected} />
 
       <header
         className="px-3 py-1.5 border-b rounded-t-lg text-xs font-medium flex-shrink-0 flex items-center justify-between gap-1"
@@ -112,9 +132,15 @@ export function TextNode({ id, data, width, height }: NodeProps) {
             <StickyNote size={14} className="flex-shrink-0" />
           ) : (
             /* 画布内文本节点：文件图标 + 琥珀圆点标记「未保存为笔记」 */
-            <span className="inline-flex items-center flex-shrink-0" title="画布内文本，未保存为笔记">
+            <span
+              className="inline-flex items-center flex-shrink-0"
+              title="画布内文本，未保存为笔记"
+            >
               <FileText size={14} />
-              <span className="ml-1 w-1.5 h-1.5 rounded-full" style={{ background: "#f59e0b" }} />
+              <span
+                className="ml-1 w-1.5 h-1.5 rounded-full"
+                style={{ background: "#f59e0b" }}
+              />
             </span>
           )}
           {renameEdit.editing ? (
@@ -123,20 +149,28 @@ export function TextNode({ id, data, width, height }: NodeProps) {
               autoFocus
               onClick={(e) => e.stopPropagation()}
               className="nodrag w-full min-w-0 rounded px-1 text-xs outline-none focus:ring-1 focus:ring-[var(--accent)]"
-              style={{ background: "var(--input-bg)", color: "var(--text-primary)" }}
+              style={{
+                background: "var(--input-bg)",
+                color: "var(--text-primary)",
+              }}
             />
           ) : (
             <span
               className="truncate"
               title={fileMissing || readOnly ? undefined : "双击重命名"}
-              onDoubleClick={fileMissing || readOnly ? undefined : renameEdit.start}
+              onDoubleClick={
+                fileMissing || readOnly ? undefined : renameEdit.start
+              }
             >
               {title || "文本"}
             </span>
           )}
         </span>
         {!fileMissing && !readOnly && (
-          <div className="flex items-center nodrag" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="flex items-center nodrag"
+            onClick={(e) => e.stopPropagation()}
+          >
             <button
               type="button"
               title={editing ? "预览（Esc 退出）" : "编辑"}
@@ -156,8 +190,12 @@ export function TextNode({ id, data, width, height }: NodeProps) {
         onDoubleClick={fileMissing || readOnly ? undefined : enterEdit}
       >
         {fileMissing ? (
-          <p className="text-xs flex items-center gap-1" style={{ color: "#f87171" }}>
-            <AlertTriangle size={14} className="flex-shrink-0" />文件缺失（已在文件管理器中删除或重命名）
+          <p
+            className="text-xs flex items-center gap-1"
+            style={{ color: "#f87171" }}
+          >
+            <AlertTriangle size={14} className="flex-shrink-0" />
+            文件缺失（已在文件管理器中删除或重命名）
           </p>
         ) : editing ? (
           <textarea

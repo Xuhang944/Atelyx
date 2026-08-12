@@ -15,7 +15,11 @@ function isInputTarget(e: KeyboardEvent) {
   );
 }
 
-export function useCanvasHotkeys(onEscape?: () => void, enabled = true) {
+export function useCanvasHotkeys(
+  onEscape?: () => void,
+  enabled = true,
+  onPaste?: () => void,
+) {
   const getState = useCanvasStore.getState;
 
   useEffect(() => {
@@ -24,7 +28,16 @@ export function useCanvasHotkeys(onEscape?: () => void, enabled = true) {
       if (isInputTarget(e)) return;
 
       const store = getState();
-      const { nodes, edges, onNodesChange, onEdgesChange, deleteSelected, undo, redo } = store;
+      const {
+        nodes,
+        edges,
+        onNodesChange,
+        onEdgesChange,
+        deleteSelected,
+        undo,
+        redo,
+        copySelectedNodes,
+      } = store;
 
       switch (e.key) {
         case "Delete":
@@ -39,15 +52,35 @@ export function useCanvasHotkeys(onEscape?: () => void, enabled = true) {
             onNodesChange(
               nodes
                 .filter((n) => n.selected)
-                .map((n) => ({ type: "select", id: n.id, selected: false }))
+                .map((n) => ({ type: "select", id: n.id, selected: false })),
             );
             onEdgesChange(
               edges
                 .filter((e) => e.selected)
-                .map((e) => ({ type: "select", id: e.id, selected: false }))
+                .map((e) => ({ type: "select", id: e.id, selected: false })),
             );
           }
           onEscape?.();
+          break;
+        }
+
+        case "c":
+        case "C": {
+          if (e.ctrlKey || e.metaKey) {
+            // 有选中节点才接管为「复制节点」；无选中时放行浏览器默认文本复制
+            // （文本节点预览/对话气泡是普通 div，isInputTarget 不拦截，无条件
+            // preventDefault 会静默吞掉节点内的文本复制）
+            if (copySelectedNodes()) e.preventDefault();
+          }
+          break;
+        }
+
+        case "v":
+        case "V": {
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            onPaste?.();
+          }
           break;
         }
 
@@ -74,7 +107,7 @@ export function useCanvasHotkeys(onEscape?: () => void, enabled = true) {
           if ((e.ctrlKey || e.metaKey) && nodes.length > 0) {
             e.preventDefault();
             onNodesChange(
-              nodes.map((n) => ({ type: "select", id: n.id, selected: true }))
+              nodes.map((n) => ({ type: "select", id: n.id, selected: true })),
             );
           }
           break;
@@ -84,5 +117,5 @@ export function useCanvasHotkeys(onEscape?: () => void, enabled = true) {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onEscape, getState, enabled]);
+  }, [onEscape, getState, enabled, onPaste]);
 }

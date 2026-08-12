@@ -9,8 +9,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Edge, Node } from "@xyflow/react";
 import { CANVAS_SCHEMA } from "@/constants/canvas";
-import { baseName, dedupeFilename, parentDir, sanitizeFilename, stripExt } from "@/utils/filename";
-import { mapWhiteboardEdges, mapWhiteboardNodes, parseWhiteboard } from "@/utils/whiteboard";
+import {
+  baseName,
+  dedupeFilename,
+  parentDir,
+  sanitizeFilename,
+  stripExt,
+} from "@/utils/filename";
+import {
+  mapWhiteboardEdges,
+  mapWhiteboardNodes,
+  parseWhiteboard,
+} from "@/utils/whiteboard";
 import { tableToSnapshotText } from "@/utils/table";
 import { readTableVault } from "@/services/table";
 import {
@@ -64,12 +74,18 @@ export async function writeCanvasVault(
 }
 
 /** 重命名画布（更新 .atlx 内 title + 同目录重命名文件，按当前文件路径）。 */
-export async function renameCanvasVault(file: string, newTitle: string): Promise<void> {
+export async function renameCanvasVault(
+  file: string,
+  newTitle: string,
+): Promise<void> {
   await invoke("rename_canvas_vault", { file, newTitle });
 }
 
 /** 移动画布文件到新路径（跨目录；画布无外部引用，不更新任何 .atlx）。 */
-export async function moveCanvasVault(oldFile: string, newFile: string): Promise<void> {
+export async function moveCanvasVault(
+  oldFile: string,
+  newFile: string,
+): Promise<void> {
   await invoke("move_canvas_vault", { oldFile, newFile });
 }
 
@@ -106,7 +122,10 @@ export async function writeNote(file: string, content: string): Promise<void> {
  * @param oldFile 相对仓库根路径，如 `笔记/old.md`
  * @param newFile 相对仓库根路径，如 `笔记/new.md`
  */
-export async function renameNote(oldFile: string, newFile: string): Promise<void> {
+export async function renameNote(
+  oldFile: string,
+  newFile: string,
+): Promise<void> {
   await invoke("rename_note", { oldFile, newFile });
 }
 
@@ -124,12 +143,18 @@ export async function deleteAttachment(file: string): Promise<void> {
  * 复制仓库内文件为同目录副本（纯字节复制；新路径须由调用方 dedupe 防重名）。
  * `.atlx`/`.atb` 的 title/id 更新由调用方经读写命令组合，本命令不做内容特判。
  */
-export async function copyVaultFile(oldFile: string, newFile: string): Promise<void> {
+export async function copyVaultFile(
+  oldFile: string,
+  newFile: string,
+): Promise<void> {
   await invoke("copy_vault_file", { oldFile, newFile });
 }
 
 /** 复制文件夹为同父目录副本（递归复制全部内容；新路径须由调用方 dedupe 防重名）。 */
-export async function copyVaultFolder(oldDir: string, newDir: string): Promise<void> {
+export async function copyVaultFolder(
+  oldDir: string,
+  newDir: string,
+): Promise<void> {
   await invoke("copy_vault_folder", { oldDir, newDir });
 }
 
@@ -138,18 +163,16 @@ export async function copyVaultFolder(oldDir: string, newDir: string): Promise<v
  * @param oldFile 相对仓库根路径，如 `附件/old.png`
  * @param newFile 相对仓库根路径，如 `附件/new.png`
  */
-export async function renameAttachment(oldFile: string, newFile: string): Promise<void> {
+export async function renameAttachment(
+  oldFile: string,
+  newFile: string,
+): Promise<void> {
   await invoke("rename_attachment", { oldFile, newFile });
 }
 
 /** 读附件为 dataURL（`data:<mime>;base64,...`），仅图片扩展名支持；其他抛错由调用方走文本分支。 */
 export async function readAttachmentDataUrl(file: string): Promise<string> {
   return invoke<string>("read_attachment_data_url", { file });
-}
-
-/** 把系统文件导入仓库 附件/（净化 + 防重名），返回相对路径 `附件/<name>`。 */
-export async function importAttachmentVault(src: string, name: string): Promise<string> {
-  return invoke<string>("import_attachment_vault", { src, name });
 }
 
 /** 读仓库级配置（.atelyx/config.json，不存在返回 {}）。 */
@@ -188,7 +211,10 @@ export async function readChatMessages(file: string): Promise<string> {
 }
 
 /** 写会话消息正文 .md（自动建目录 + 原子写）。 */
-export async function writeChatMessages(file: string, content: string): Promise<void> {
+export async function writeChatMessages(
+  file: string,
+  content: string,
+): Promise<void> {
   await invoke("write_chat_messages", { file, content });
 }
 
@@ -203,7 +229,10 @@ export async function ensureDefaultVault(): Promise<VaultInfo> {
 }
 
 /** 新建空画布，返回 { id, file }（file = 相对仓库根路径，前端打开/保存用；dir 空 = 根目录）。 */
-export async function createCanvasVault(title: string, dir: string): Promise<CanvasCreateResult> {
+export async function createCanvasVault(
+  title: string,
+  dir: string,
+): Promise<CanvasCreateResult> {
   return invoke<CanvasCreateResult>("create_canvas_vault", { title, dir });
 }
 
@@ -218,12 +247,18 @@ export async function createFolder(dir: string): Promise<string> {
 }
 
 /** 删除文件夹（相对仓库根路径）。force=false 空目录直接删，非空返回 needsConfirm 供弹窗；确认后 force=true 递归删。 */
-export async function deleteFolder(dir: string, force: boolean): Promise<DeleteFolderResult> {
+export async function deleteFolder(
+  dir: string,
+  force: boolean,
+): Promise<DeleteFolderResult> {
   return invoke<DeleteFolderResult>("delete_folder", { dir, force });
 }
 
 /** 重命名文件夹：移动整个目录 + 扫描所有 .atlx 更新位于该目录下文件的引用（`old_dir/` 前缀 → `new_dir/`）。 */
-export async function renameFolder(oldDir: string, newDir: string): Promise<void> {
+export async function renameFolder(
+  oldDir: string,
+  newDir: string,
+): Promise<void> {
   await invoke("rename_folder", { oldDir, newDir });
 }
 
@@ -329,7 +364,14 @@ async function canvasFileToRuntime(file: CanvasFile): Promise<RuntimeCanvas> {
     directed: e.directed,
     linkMode: e.linkMode,
   }));
-  return { id: file.id, title: file.title, nodes, edges, messagesByConv, updatedAt: file.updatedAt };
+  return {
+    id: file.id,
+    title: file.title,
+    nodes,
+    edges,
+    messagesByConv,
+    updatedAt: file.updatedAt,
+  };
 }
 
 /**
@@ -355,7 +397,10 @@ async function runtimeToCanvasFile(
       if (td.file) {
         // 笔记节点：脏检测写回 `.md` + 剥离 bodyMd，data 只留 {title, file}（正文在 .md 文件）
         // 脏检测：bodyMd 与上次写入值不同才写盘（外部改 .md 后 bodyMd 未变则不写，保留外部内容）
-        if (td.bodyMd !== undefined && lastWrittenMd.get(td.file) !== td.bodyMd) {
+        if (
+          td.bodyMd !== undefined &&
+          lastWrittenMd.get(td.file) !== td.bodyMd
+        ) {
           try {
             await writeNote(td.file, td.bodyMd);
             lastWrittenMd.set(td.file, td.bodyMd);
@@ -436,7 +481,13 @@ export async function persistCanvasVault(
   messagesByConv: Record<string, Message[]>,
   baseUpdatedAt: number,
 ): Promise<number> {
-  const canvasFile = await runtimeToCanvasFile(canvasId, title, nodes, edges, messagesByConv);
+  const canvasFile = await runtimeToCanvasFile(
+    canvasId,
+    title,
+    nodes,
+    edges,
+    messagesByConv,
+  );
   return writeCanvasVault(canvasFile, file, baseUpdatedAt);
 }
 
@@ -452,7 +503,9 @@ export async function readWhiteboardVault(file: string): Promise<string> {
  * 映射规则见 `utils/whiteboard.ts`：id = 文件路径（稳定身份）、title = 文件名去扩展名、
  * 边为无向边。`updatedAt` 为 0（只读不参与乐观锁）。
  */
-export async function loadWhiteboardVault(file: string): Promise<RuntimeCanvas> {
+export async function loadWhiteboardVault(
+  file: string,
+): Promise<RuntimeCanvas> {
   const raw = await readWhiteboardVault(file);
   const whiteboard = parseWhiteboard(raw);
   const nodes = await mapWhiteboardNodes(whiteboard.nodes, {
@@ -487,8 +540,17 @@ export async function convertWhiteboardToAtlx(
   const dir = parentDir(file);
   // 净化后再去重：.canvas 文件名在 Linux 可含非法字符，Rust 侧 write_canvas_vault 会再净化一次，
   // 不先净化会导致「前端打开的路径 ≠ 落盘路径」加载失败
-  const actual = dedupeFilename(sanitizeFilename(title) || "白板", siblingTitles);
-  const canvasFile = await runtimeToCanvasFile(crypto.randomUUID(), actual, nodes, edges, {});
+  const actual = dedupeFilename(
+    sanitizeFilename(title) || "白板",
+    siblingTitles,
+  );
+  const canvasFile = await runtimeToCanvasFile(
+    crypto.randomUUID(),
+    actual,
+    nodes,
+    edges,
+    {},
+  );
   const newFile = dir ? `${dir}/${actual}.atlx` : `${actual}.atlx`;
   const updatedAt = await writeCanvasVault(canvasFile, newFile);
   return { id: canvasFile.id, title: actual, file: newFile, updatedAt };
