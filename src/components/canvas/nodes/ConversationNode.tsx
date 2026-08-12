@@ -415,15 +415,19 @@ export function ConversationNode({ id, width, height }: NodeProps) {
     const caret = textareaRef.current?.selectionStart ?? input.length;
     const insertAt = Math.min(Math.max(atIdx, 0), input.length);
     const end = Math.max(caret, insertAt);
+    // 与其他插入路径（拖线引用/面板）一致：前文非空且不以空白结尾时补分隔空格，标签后恒带一个尾随空格——
+    // 保证胶囊前后为空白区，胶囊背景外扩（.mention-capsule）不遮相邻字符
+    const before = input.slice(0, insertAt);
+    const sep = before && !/\s$/.test(before) ? " " : "";
     const mentionText = `@${mentionTextOf(node)}`;
-    setInput((prev) => prev.slice(0, insertAt) + mentionText + prev.slice(end));
+    setInput((prev) => prev.slice(0, insertAt) + sep + mentionText + " " + prev.slice(end));
     setMentions((prev) => [...prev, { nodeId: node.id, text: mentionText }]);
-    // 光标移到插入文本之后，方便继续输入
+    // 光标移到尾随空格之后（继续输入不紧贴胶囊），方便继续输入
     requestAnimationFrame(() => {
       const ta = textareaRef.current;
       if (ta) {
         ta.focus();
-        const pos = insertAt + mentionText.length;
+        const pos = insertAt + sep.length + mentionText.length + 1;
         ta.setSelectionRange(pos, pos);
       }
     });
@@ -431,20 +435,11 @@ export function ConversationNode({ id, width, height }: NodeProps) {
     setAtIdx(-1);
   };
 
-  // 删除输入框内 @提及 标签：按命中实例精确位置移除（重复 @提及 时不错位）。
-  // 取消引用：仅未消费（虚线待发送）的引用边自动断开；已消费（历史实线边，如「再次注入」）
-  // 只删 @标签 文本、不断边（连接后不可手动断开）；media 附件同步从托盘移除
+  // 胶囊被移除（MentionTextarea 已删文本 + 复位光标）→ 引用层清理：
+  // 仅未消费（虚线待发送）的引用边自动断开；已消费（历史实线边，如「再次注入」）
+  // 不断边（连接后不可手动断开）；media 附件同步从托盘移除
   const removeMention = (seg: MentionSeg) => {
     const nodeId = seg.mention?.nodeId;
-    const start = seg.start;
-    setInput((prev) => prev.slice(0, start) + prev.slice(start + seg.text.length));
-    requestAnimationFrame(() => {
-      const ta = textareaRef.current;
-      if (ta) {
-        ta.focus();
-        ta.setSelectionRange(start, start);
-      }
-    });
     setMentions((prev) => prev.filter((x) => x !== seg.mention));
     if (!nodeId) return;
     const store = useCanvasStore.getState();
@@ -779,12 +774,22 @@ export function ConversationNode({ id, width, height }: NodeProps) {
                 attachments={m.attachments}
                 onMediaExtract={extractToMediaNode}
                 markdownComponents={messageMarkdownComponents}
+                streamingPlaceholder={
+                  <span
+                    className="inline-flex items-center gap-1 text-xs"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    <Loader2 size={12} className="animate-spin" /> 生成中…
+                  </span>
+                }
                 copyText={m.role === "user" ? (m.displayContent ?? m.content) : m.content}
                 messageId={m.id}
                 canRollback={canBranch}
                 onRollback={handleRollback}
                 onBranch={canBranch ? handleBranch : undefined}
-                userBubbleClass="bg-[var(--accent)] text-[var(--accent-fg)]"
+                userBubbleClass="bg-[var(--bg-tertiary)]"
+                assistantBubbleStyle={{ background: "var(--bg-primary)", border: "1px solid var(--border)" }}
+                paddingClass="px-3 py-2 text-sm leading-relaxed min-w-0"
                 stopPropagation
               />
             );

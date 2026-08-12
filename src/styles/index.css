@@ -315,6 +315,26 @@ body {
 [data-markdown-editor] {
   min-height: 100%;
 }
+
+/* @引用 胶囊（输入框 overlay 内）：span 本体背景 + box-shadow 均随行 fragment 逐段绘制——
+   跨行 = 两行两段胶囊（绝对定位伪元素会聚合为大矩形遮后文，故弃用）；
+   span 本体必须保持文本宽（padding/宽度变化会使其后文本与 textarea 光标错位）。
+   外扩 2px 极淡金（仅留白感，不遮相邻行/字）+ 3px 处 1px 细描边；左右外扩落在插入路径
+   恒补的空格上。 */
+.mention-capsule {
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent) 6%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--accent);
+}
+
+/* 输入框胶囊选中态：金色半透明高亮（点击胶囊 = 原生选中全文，整体删除/替换） */
+.mention-input::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
 /* 实时预览 widget：链接 / wiki 链接 / 图片 / 任务复选框 */
 .md-editor-link {
   color: var(--accent);

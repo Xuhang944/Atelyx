@@ -2,12 +2,18 @@
  * @提及 输入框（画布对话节点 / AI 对话面板共用）。
  *
  * 透明 textarea 承载输入（文本即真相），overlay 渲染 @引用标签 为视觉装饰层，
- * 滚动同步（transform 位移）、光标紧贴标签末尾 Backspace 整段删除（取消引用）内置。
+ * 滚动同步（transform 位移）、胶囊整体化交互内置：
+ * - 点击胶囊 → 原生选中胶囊全文（金色高亮，.mention-input::selection）
+ * - 选中态 Backspace/Delete、光标紧贴胶囊末尾 Backspace/开头 Delete → 整删胶囊（含两侧空格）
+ * - 选中态输入字符 → 胶囊被替换，引用层同步清理（onChange 检测文本消失补调 onRemoveMention）
+ * - ←/→ 光标在胶囊内/边界 → 整体跳到对侧边界（不逐字经过）
+ * 文本删除统一由本组件负责（mentionRemoveRange），onRemoveMention 只做引用层清理（断边/清映射）。
  * 差异由 props 表达：背景层/class/占位/其他键处理（@picker 打开、Enter 发送）。
  *
  * 注意（标签对齐前提）：overlay 与 textarea 共用 INPUT_FONT——CSS 未给 textarea
- * 设 font 时 UA 默认不同会导致标签错位；@标签 只加背景 + 内阴影描边，不加
- * padding/border/nowrap（inline 元素撑高行盒会与 textarea 原始文本布局错位）。
+ * 设 font 时 UA 默认不同会导致标签错位；@标签 span 本体必须保持文本宽（padding/宽度
+ * 变化会使其后文本与 textarea 光标错位），视觉胶囊由 .mention-capsule 的背景 +
+ * box-shadow 外扩绘制（不占布局、逐行段渲染跨行正确，见 styles/index.css）。
  */
 import { useRef, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import type { MentionSeg } from "@/utils/text";
@@ -24,7 +30,7 @@ interface MentionTextareaProps {
   onChange: (value: string) => void;
   /** 输入框分段（@提及 → 标签段，其余普通文本段）。 */
   segments: MentionSeg[];
-  /** 光标紧贴 @标签 末尾退格 → 整段删除并取消引用（调用方实现断边/移出 mentions 等）。 */
+  /** 胶囊被移除（退格/Del/输入替换）→ 引用层清理（断边/移出 mentions/托盘），文本删除由本组件负责。 */
   onRemoveMention: (seg: MentionSeg) => void;
   placeholder: string;
   rows?: number;
@@ -44,7 +50,7 @@ interface MentionTextareaProps {
   spellCheck?: boolean;
 }
 
-/** @提及 输入框：透明 textarea + @标签 overlay（滚动同步 + Backspace 整删内置）。 */
+/** @提及 输入框：透明 textarea + @标签 overlay（滚动同步 + 胶囊整体化交互内置）。 */
 export function MentionTextarea({
   value,
   onChange,
@@ -62,6 +68,20 @@ export function MentionTextarea({
   spellCheck,
 }: MentionTextareaProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
+
+  /** 整删胶囊 + 引用层清理；光标复位到删除点。
+   * seg 来自 splitMentions（已吞两侧装饰空格），直接按段范围删除——不二次扩展
+   * （mentionRemoveRange 仅给按原始命中删除的路径用，防双空格场景多删）。
+   * 引用清理在此显式按段身份调用（精确，不依赖 onChange 文本检测——同名相邻段会误判）。 */
+  const removeMentionAt = (seg: MentionSeg) => {
+    onChange(value.slice(0, seg.start) + value.slice(seg.start + seg.text.length));
+    onRemoveMention(seg);
+    requestAnimationFrame(() => {
+      const ta = textareaRef?.current;
+      if (ta) ta.setSelectionRange(seg.start, seg.start);
+    });
+  };
+
   return (
     <div className={`relative ${containerClassName ?? ""}`}>
       {backgroundLayer}
@@ -74,16 +94,8 @@ export function MentionTextarea({
       >
         {segments.map((s, i) =>
           s.mention ? (
-            <span
-              key={i}
-              className="inline rounded"
-              style={{
-                background: "color-mix(in srgb, var(--accent) 22%, transparent)",
-                boxShadow: "inset 0 0 0 1px var(--accent)",
-                color: "var(--accent)",
-              }}
-            >
-              {s.mention.text}
+            <span key={i} className="mention-capsule">
+              {s.text}
             </span>
           ) : (
             <span key={i}>{s.text}</span>
@@ -93,19 +105,81 @@ export function MentionTextarea({
       <textarea
         ref={textareaRef}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => {
+          const newValue = e.target.value;
+          // 原生输入路径（选中替换/拖选删除）导致胶囊文本消失 → 引用层兜底清理。
+          // 注意：removeMentionAt 走 props onChange 不经此处，其引用清理已显式精确完成
+          for (const s of segments) {
+            if (s.mention && value.includes(s.text) && !newValue.includes(s.text)) {
+              onRemoveMention(s);
+            }
+          }
+          onChange(newValue);
+        }}
         onKeyDown={(e) => {
-          // 光标紧贴 @引用标签 末尾按退格 → 整段删除标签并取消引用（替代悬浮 X 删除按钮）
-          if (e.key === "Backspace") {
-            const cursor = textareaRef?.current?.selectionStart ?? 0;
-            const seg = segments.find((s) => s.mention && s.start + s.text.length === cursor);
-            if (seg) {
-              e.preventDefault();
-              onRemoveMention(seg);
-              return;
+          // IME 组合期间键是「上屏候选词」操作，不拦截
+          if (e.nativeEvent.isComposing) {
+            onKeyDown?.(e);
+            return;
+          }
+          const ta = textareaRef?.current;
+          const caret = ta?.selectionStart ?? 0;
+          const selEnd = ta?.selectionEnd ?? caret;
+          const selected = selEnd > caret;
+          // 与光标/选中区相关的胶囊（选中态 = 相交；光标态 = 在胶囊内/边界）
+          const seg = segments.find((s) => {
+            if (!s.mention) return false;
+            const segEnd = s.start + s.text.length;
+            if (selected) return caret < segEnd && selEnd > s.start;
+            return caret >= s.start && caret <= segEnd;
+          });
+          if (seg) {
+            const segEnd = seg.start + seg.text.length;
+            if (e.key === "Backspace" || e.key === "Delete") {
+              if (selected) {
+                // 选区恰等于胶囊范围 → 整删胶囊；跨胶囊/含其他文本的选区 → 放行原生删除整个选区
+                // （引用清理由 onChange 兜底检测完成）
+                if (caret === seg.start && selEnd === segEnd) {
+                  e.preventDefault();
+                  removeMentionAt(seg);
+                  return;
+                }
+              } else if (
+                (e.key === "Backspace" && caret === segEnd) ||
+                (e.key === "Delete" && caret === seg.start)
+              ) {
+                e.preventDefault();
+                removeMentionAt(seg);
+                return;
+              }
+            } else if (e.key === "ArrowLeft") {
+              // 光标在胶囊内/末尾 → 整体跳到开头；在开头不拦截（正常移出）
+              if (caret > seg.start && caret <= segEnd) {
+                e.preventDefault();
+                ta?.setSelectionRange(seg.start, seg.start);
+                return;
+              }
+            } else if (e.key === "ArrowRight") {
+              // 光标在胶囊内/开头 → 整体跳到末尾；在末尾不拦截（正常移出）
+              if (caret >= seg.start && caret < segEnd) {
+                e.preventDefault();
+                ta?.setSelectionRange(segEnd, segEnd);
+                return;
+              }
             }
           }
           onKeyDown?.(e);
+        }}
+        onMouseUp={() => {
+          // 点击胶囊 → 原生选中胶囊全文（整体操作：退格/Del 删除、输入替换）
+          const ta = textareaRef?.current;
+          if (!ta) return;
+          const caret = ta.selectionStart;
+          if ((ta.selectionEnd ?? caret) > caret) return; // 拖选不覆盖
+          const seg = segments.find(
+            (s) => s.mention && caret >= s.start && caret < s.start + s.text.length
+          );
+          if (seg) ta.setSelectionRange(seg.start, seg.start + seg.text.length);
         }}
         onScroll={(e) => {
           // overlay 与 textarea 滚动同步（直接改 DOM，避免滚动触发重渲染）
@@ -117,7 +191,7 @@ export function MentionTextarea({
         spellCheck={spellCheck}
         placeholder={placeholder}
         rows={rows}
-        className={`resize-none outline-none ${textareaClassName ?? ""}`}
+        className={`resize-none outline-none mention-input ${textareaClassName ?? ""}`}
         style={{
           ...INPUT_FONT,
           background: "transparent",

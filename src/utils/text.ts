@@ -99,7 +99,9 @@ export interface MentionSeg {
   mention: { nodeId: string; text: string } | null;
 }
 
-/** 按 @提及 命中把输入文本切成「普通文本 / 标签」交替段（对话节点与 AI 对话面板输入框共用）。 */
+/** 按 @提及 命中把输入文本切成「普通文本 / 标签」交替段（对话节点与 AI 对话面板输入框共用）。
+ * 标签段吞相邻空格（插入路径恒补「前导分隔 + 尾随」空格）：胶囊金底覆盖空格 = 视觉整体，
+ * 与 textarea 真实文本一致不破坏对齐；前导空格不吞前段已占的位置（防相邻胶囊争抢同一空格）。 */
 export function splitMentions(
   input: string,
   mentions: { nodeId: string; text: string }[]
@@ -107,10 +109,26 @@ export function splitMentions(
   const segs: MentionSeg[] = [];
   let cursor = 0;
   for (const h of scanMentionHits(input, mentions)) {
-    if (h.start > cursor) segs.push({ text: input.slice(cursor, h.start), start: cursor, mention: null });
-    segs.push({ text: h.mention.text, start: h.start, mention: h.mention });
-    cursor = h.end;
+    let start = h.start;
+    let end = h.end;
+    if (start > 0 && input[start - 1] === " " && start - 1 >= cursor) start -= 1;
+    if (end < input.length && input[end] === " ") end += 1;
+    if (start > cursor) segs.push({ text: input.slice(cursor, start), start: cursor, mention: null });
+    segs.push({ text: input.slice(start, end), start, mention: h.mention });
+    cursor = end;
   }
   if (cursor < input.length) segs.push({ text: input.slice(cursor), start: cursor, mention: null });
   return segs;
+}
+
+/** @引用 胶囊的删除范围：胶囊文本 + 两侧紧邻的装饰空格（插入路径恒补空格，删除时应一并移除）。 */
+export function mentionRemoveRange(
+  input: string,
+  seg: Pick<MentionSeg, "start" | "text">
+): { start: number; end: number } {
+  let start = seg.start;
+  let end = seg.start + seg.text.length;
+  if (start > 0 && input[start - 1] === " ") start -= 1;
+  if (end < input.length && input[end] === " ") end += 1;
+  return { start, end };
 }

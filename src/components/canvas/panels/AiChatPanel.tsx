@@ -39,6 +39,7 @@ import { markdownComponents } from "@/utils/markdown";
 import {
   modelDisplayName,
   modelNameAcrossProviders,
+  mentionRemoveRange,
   scanMentionHits,
   splitMentions,
   type MentionSeg,
@@ -151,16 +152,14 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
     useChatPanelStore.getState().clearPendingMentions();
   }, [pendingMentions, mentions]);
 
-  /** 从输入框移除指定笔记的 @引用（自动 @ 跟随替换用）：按精确位置删 @标签 文本 + 移出 mentions。 */
+  /** 从输入框移除指定笔记的 @引用（自动 @ 跟随替换用）：按精确位置删 @标签（含两侧空格）+ 移出 mentions。 */
   const removeAutoMention = (ref: EditorChatMessageRef) => {
     setMentions((prev) => prev.filter((m) => m.file !== ref.file));
     setInput((prev) => {
       const hits = scanMentionHits(prev, [{ nodeId: ref.file, text: `@${ref.label}` }]);
       if (hits.length === 0) return prev;
-      const { start, end } = hits[0];
-      // 连同紧邻的尾随空格一起删（追加时标签后恒带一个空格）——否则反复切换笔记会残留空格累加
-      const removeEnd = end < prev.length && prev[end] === " " ? end + 1 : end;
-      return prev.slice(0, start) + prev.slice(removeEnd);
+      const { start, end } = mentionRemoveRange(prev, { start: hits[0].start, text: hits[0].mention.text });
+      return prev.slice(0, start) + prev.slice(end);
     });
   };
 
@@ -243,17 +242,8 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
     void send(text, mentions);
   };
 
-  // 删除输入框内 @引用 标签：按命中实例精确位置移除（重复引用时不错位），同时移出 mentions
+  // 胶囊被移除（MentionTextarea 已删文本 + 复位光标）→ 引用层清理：移出 mentions
   const removeMention = (seg: MentionSeg) => {
-    const start = seg.start;
-    setInput((prev) => prev.slice(0, start) + prev.slice(start + seg.text.length));
-    requestAnimationFrame(() => {
-      const ta = textareaRef.current;
-      if (ta) {
-        ta.focus();
-        ta.setSelectionRange(start, start);
-      }
-    });
     if (seg.mention) {
       setMentions((prev) => prev.filter((m) => m.file !== seg.mention?.nodeId));
     }
@@ -426,7 +416,6 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
                   refs={m.refs}
                   refKeyOf={refKeyOfPanelRef}
                   onRefChipClick={handleRefChipClick}
-                  renderUserMarkdown
                   content={m.content}
                   reasoningContent={m.reasoningContent}
                   isStreaming={isStreamingMsg}

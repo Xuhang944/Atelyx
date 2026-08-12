@@ -1,10 +1,10 @@
 /**
  * 聊天消息气泡（画布对话节点 / AI 对话面板共用）。
  *
- * 收敛两处的重复实现：气泡容器 + @引用 chip（去重/剔除）+ 附件缩略 + 思考折叠 +
+ * 收敛两处的重复实现：气泡容器 + @引用胶囊（按原文位置内嵌）+ 附件缩略 + 思考折叠 +
  * Markdown 渲染 + 操作按钮组（复制/回到此处/分支/重新生成）。
- * 差异由 props 表达：配色变体、@chip 点击行为（画布 = 定位节点，面板 = 打开笔记）、
- * 附件（仅画布有）、user 正文是否走 Markdown（面板有）。
+ * user/assistant 消息统一 Markdown 渲染；差异由 props 表达：配色变体、@胶囊 点击行为
+ * （画布 = 定位节点，面板 = 打开笔记）、附件（仅画布有）、分支/重新生成（入口各自）。
  *
  * memo 生效前提：markdownComponents 必须 useMemo 稳定化、onRollback/onBranch 等
  * 回调 useCallback——流式期间历史消息靠引用不变跳过重渲染（assistant 消息无 refs/
@@ -16,19 +16,13 @@ import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import { ThinkingBlock } from "@/components/common/ThinkingBlock";
 import { MARKDOWN_PLUGINS, REHYPE_PLUGINS } from "@/utils/markdown";
-import { scanMentionHits } from "@/utils/text";
+import { splitMentions } from "@/utils/text";
 import type { Attachment } from "@/types";
-
-/** @引用 chip 数据源（调用方把消息 refs 归一化为 {key, label}：画布 key = nodeId，面板 key = file）。 */
-export interface BubbleMentionRef {
-  key: string;
-  label: string;
-}
 
 interface ChatMessageBubbleProps {
   /** 消息归属：user = 右对齐 + 用户底色；assistant = 左对齐。 */
   role: "user" | "assistant";
-  /** user 气泡显示文本（原始输入含 @标签，组件内剔除后渲染）。 */
+  /** user 气泡显示文本（原始输入含 @标签，组件内按原文位置渲染胶囊）。 */
   displayContent?: string;
   /**
    * 消息原始 refs（直接传消息对象自带数组，**不要 map 出新数组**——
@@ -40,15 +34,13 @@ interface ChatMessageBubbleProps {
   refKeyOf?: (ref: { label: string }) => string;
   /** @chip 点击（画布 = 定位节点；面板 = 打开笔记）。 */
   onRefChipClick?: (refKey: string, label: string) => void;
-  /** user 正文是否走 Markdown 渲染（面板 = true；画布 = 纯文本）。 */
-  renderUserMarkdown?: boolean;
   /** assistant 气泡 Markdown 原文（空时显示占位/思考块）。 */
   content?: string;
   /** 模型思考过程（折叠展示）。 */
   reasoningContent?: string;
   /** 是否进行中的流式消息（思考块折叠态显示等待动画）。 */
   isStreaming: boolean;
-  /** 流式且无内容时的占位（画布缺省 = "..."，面板 = Loader2 生成中…）。 */
+  /** 流式且无内容时的占位（调用方不传时 = "..."）。 */
   streamingPlaceholder?: ReactNode;
   /** 历史消息附件缩略（仅画布消息有；面板消息无附件）。 */
   attachments?: Attachment[];
@@ -66,11 +58,11 @@ interface ChatMessageBubbleProps {
   onBranch?: (messageId: string) => void;
   /** 重新生成（仅 AI 对话面板有）。 */
   onRegenerate?: () => void;
-  /** user 气泡底色（画布 = accent 金底；面板 = bg-tertiary）。 */
+  /** user 气泡底色类（画布与面板均 = bg-tertiary 灰底）。 */
   userBubbleClass?: string;
-  /** assistant 气泡额外样式（面板 = 边框；画布无）。 */
+  /** assistant 气泡额外样式（两入口同款 = bg-primary + 边框）。 */
   assistantBubbleStyle?: CSSProperties;
-  /** 气泡内边距类（画布紧凑 / 面板宽松）。 */
+  /** 气泡内边距类（两入口同款宽松）。 */
   paddingClass?: string;
   /** React Flow 内使用时阻止事件冒泡（画布传 true，防拖动/连线误触）。 */
   stopPropagation?: boolean;
@@ -82,7 +74,6 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
   refs,
   refKeyOf,
   onRefChipClick,
-  renderUserMarkdown,
   content,
   reasoningContent,
   isStreaming,
@@ -116,28 +107,18 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
     if (!refs || !refKeyOf) return undefined;
     return refs.map((r) => ({ key: refKeyOf(r), label: r.label }));
   }, [refs, refKeyOf]);
-  // user 气泡显示文本：原始输入剔除 @引用标签（引用内容已随消息注入历史，气泡不重复展示 @标题）
-  const cleanText = useMemo(() => {
-    if (!displayContent) return "";
-    const hits = scanMentionHits(
+  // user 气泡按原文位置切分（@引用 → 胶囊段，其余普通文本段）——胶囊与输入框同位置就地渲染，
+  // 不另起独立 chip 行；无引用时 = 单普通段整段渲染，行为与未切分一致
+  const userSegs = useMemo(() => {
+    if (!displayContent) return undefined;
+    return splitMentions(
       displayContent,
       (mentionRefs ?? []).map((r) => ({ nodeId: r.key, text: `@${r.label}` }))
     );
-    let out = "";
-    let last = 0;
-    for (const h of hits) {
-      if (h.start > last) out += displayContent.slice(last, h.start);
-      last = h.end;
-    }
-    if (last < displayContent.length) out += displayContent.slice(last);
-    return out;
   }, [displayContent, mentionRefs]);
-  // @chip 按源去重（同一节点/笔记被重复引用时气泡只显示一个 @标题，不累计）
-  const uniqueRefs = useMemo(() => {
-    if (!mentionRefs) return undefined;
-    const seen = new Set<string>();
-    return mentionRefs.filter((r) => (seen.has(r.key) ? false : (seen.add(r.key), true)));
-  }, [mentionRefs]);
+  // 分段渲染的 Markdown 组件：段落内联化（p → span）——纯文本碎片段与 @胶囊 同一文本流不独占行，
+  // 段内块级语法（列表/代码块等）照常块级；依赖 markdownComponents（调用方 useMemo 稳定）→ 引用稳定（气泡 memo 前提）
+  const segComponents = useMemo(() => ({ ...markdownComponents, p: InlineP }), [markdownComponents]);
   const stopProps = stopPropagation
     ? {
         onClick: (e: React.MouseEvent) => e.stopPropagation(),
@@ -193,36 +174,29 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
             )}
           </div>
         )}
-        {isUser && (uniqueRefs?.length ?? 0) > 0 && (
-          /* @chip 组：显示 @引用标题，点击行为由调用方绑定（画布 = 定位节点，面板 = 打开笔记） */
-          <div className="flex flex-wrap gap-1 mb-1">
-            {uniqueRefs!.map((ref) => (
-              <button
-                key={ref.key}
-                onClick={() => onRefChipClick?.(ref.key, ref.label)}
-                title={`定位到 ${ref.label}`}
-                className="inline-flex items-center text-xs rounded px-1.5 py-0.5 border max-w-40 hover:opacity-80"
-                style={{ background: "rgba(255,255,255,.15)", borderColor: "rgba(255,255,255,.3)", color: "#fff" }}
-              >
-                <span className="truncate">@{ref.label}</span>
-              </button>
-            ))}
-          </div>
-        )}
         {isUser ? (
-          renderUserMarkdown ? (
-            <div className="markdown-body max-w-none break-words">
-              <ReactMarkdown
-                remarkPlugins={MARKDOWN_PLUGINS}
-                rehypePlugins={REHYPE_PLUGINS}
-                components={markdownComponents}
-              >
-                {cleanText}
-              </ReactMarkdown>
-            </div>
-          ) : (
-            <div className="whitespace-pre-wrap break-words">{cleanText}</div>
-          )
+          <div className="markdown-body max-w-none break-words">
+            {userSegs?.map((seg, i) =>
+              seg.mention ? (
+                <RefChip
+                  key={i}
+                  text={seg.text}
+                  nodeId={seg.mention.nodeId}
+                  label={seg.mention.text.slice(1)}
+                  onRefChipClick={onRefChipClick}
+                />
+              ) : (
+                <ReactMarkdown
+                  key={i}
+                  remarkPlugins={MARKDOWN_PLUGINS}
+                  rehypePlugins={REHYPE_PLUGINS}
+                  components={segComponents}
+                >
+                  {seg.text}
+                </ReactMarkdown>
+              )
+            )}
+          </div>
         ) : (
           <div className="markdown-body max-w-none break-words">
             {reasoningContent ? (
@@ -294,3 +268,34 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
     </div>
   );
 });
+
+/** 段落内联化（p → span）：分段渲染的普通文本碎片段与 @胶囊 同一文本流（块级 p 会独占行把句子拆开）。 */
+const InlineP = ({ children }: { children?: ReactNode }) => <span>{children}</span>;
+
+/** user 气泡内嵌 @引用 胶囊（与输入框标签同位置渲染，点击行为由调用方绑定：画布 = 定位节点，面板 = 打开笔记）。 */
+function RefChip({
+  text,
+  nodeId,
+  label,
+  onRefChipClick,
+}: {
+  text: string;
+  nodeId: string;
+  label: string;
+  onRefChipClick?: (refKey: string, label: string) => void;
+}) {
+  return (
+    <button
+      onClick={() => onRefChipClick?.(nodeId, label)}
+      title={`定位到 ${label}`}
+      className="inline-flex items-center rounded-full px-2 py-0.5 border align-baseline transition-all hover:brightness-110"
+      style={{
+        background: "color-mix(in srgb, var(--accent) 18%, transparent)",
+        borderColor: "color-mix(in srgb, var(--accent) 45%, transparent)",
+        color: "var(--accent)",
+      }}
+    >
+      {text}
+    </button>
+  );
+}
