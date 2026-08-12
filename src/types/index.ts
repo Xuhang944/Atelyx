@@ -41,6 +41,7 @@ export {
   type CanvasViewport,
   type CanvasFile,
   type CanvasFileNode,
+  type CanvasPatch,
   type ConversationFileData,
   type TextFileData,
   type MediaFileData,
@@ -88,6 +89,7 @@ export type {
   TableField,
   TableRow,
   TableFile,
+  TablePatch,
   TableCreateResult,
 } from "./table";
 

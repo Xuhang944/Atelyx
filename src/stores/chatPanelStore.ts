@@ -4,6 +4,7 @@ import {
   writeEditorChats,
   readChatMessages,
   writeChatMessages,
+  appendChatMessages,
   deleteChatMessages,
   readNote,
 } from "@/services/vault";
@@ -43,7 +44,7 @@ import type {
  * - 面板一次只流式一个会话（单输入框），无工具循环（联网搜索不做，YAGNI）
  * - 错误占位沿用 `[错误]` 前缀过滤约定
  * - provider/model 解析：`settingsStore.resolveChatTarget(modelOverride)`（面板覆盖 → 跟随仓库默认，与画布同源）
- * - 持久化 debounce 500ms：消息变化重写会话 .md，元数据变化写索引（均不在 watcher 监听范围，无自写回环）
+ * - 持久化 debounce 500ms：消息变化追加式写会话 .md（纯增长只追加新增段），元数据变化写索引（均不在 watcher 监听范围，无自写回环）
  */
 
 const ERROR_PREFIX = "[错误]";
@@ -111,6 +112,13 @@ let lastLoadedVaultId: string | null = null;
 let dirty = false;
 /** 需要重写消息 .md 的会话 id 集合（发送/流式结束时标记；persistNow 统一写盘后清空）。 */
 const dirtyMessageFiles = new Set<string>();
+/**
+ * 各会话消息 .md 的追加式转写基线：上次写盘时的消息数组引用。
+ * 纯增长（旧消息引用逐一相同）→ 只追加新增段（省全量重拼与 IPC 载荷）；
+ * 流式中途落盘（消息引用变化/截断）→ 全量重写（幂等）。基线只在写成功后推进，
+ * 失败清除——下次重试全量重写，防追加重复。消息 .md 是转写而非协作增量源。
+ */
+const transcriptBaseline = new Map<string, EditorChatMessage[]>();
 
 /** 防抖持久化控制器：timer 管理 + 代数防吞统一在此；extra = flush 传入的期望仓库 ID（定时写盘不传）。 */
 const persistCtl = createPersistController<string | null>({
@@ -218,22 +226,53 @@ async function persistNow(guardVaultId?: string | null): Promise<void> {
     return;
   }
   const { sessions, activeSessionId, modelOverride } = useChatPanelStore.getState();
-  // 1) 重写脏会话的消息 .md（转写）。写成功才移除——失败保留待下次 debounce/flush 重试（防消息只存在于内存而 .md 丢失）；
+  // 1) 写脏会话的消息 .md（转写）。写成功才移除——失败保留待下次 debounce/flush 重试（防消息只存在于内存而 .md 丢失）；
   //    写盘期间并发 schedulePersist 新标记的会话不在本次快照，保留由下一轮再写（防误清）。
+  //    追加式：纯增长只追加新增段（基线引用逐一相同）；流式中途落盘/截断/基线缺失 → 全量重写（幂等）。
   const pendingIds = [...dirtyMessageFiles];
   await Promise.all(
     pendingIds.map(async (id) => {
       const s = sessions.find((x) => x.id === id);
       if (!s) {
-        // 会话已删：删除路径已处理 .md，仅清标记
+        // 会话已删：删除路径已处理 .md，仅清标记与基线
         dirtyMessageFiles.delete(id);
+        transcriptBaseline.delete(id);
         return;
       }
+      const baseline = transcriptBaseline.get(id);
       try {
-        await writeChatMessages(s.file, stringifyChatMessages(s.id, s.messages));
+        if (
+          baseline !== undefined &&
+          s.messages.length > baseline.length &&
+          baseline.every((m, i) => s.messages[i] === m)
+        ) {
+          // 纯增长（旧消息引用逐一相同）：只追加新增段，省全量重拼与 IPC 载荷
+          await appendChatMessages(
+            s.file,
+            s.messages.slice(baseline.length).map((m) => ({
+              role: m.role,
+              text: m.role === "user" ? (m.displayContent ?? m.content) : m.content,
+            })),
+          );
+        } else {
+          // 截断/流式中途落盘/基线缺失：全量重写（幂等）
+          await writeChatMessages(s.file, stringifyChatMessages(s.id, s.messages));
+        }
+        // 基线只在写成功后推进：失败时保留旧值（文件未变），下次重试仍从旧基线追加；
+        // 流式中途的全量重写同样以当前数组为基线（最终内容由 onDone 保存覆盖）
+        transcriptBaseline.set(id, s.messages);
         dirtyMessageFiles.delete(id);
-      } catch (e) {
-        console.error("保存会话消息失败", e);
+      } catch {
+        // 追加失败（含外部删文件导致文件缺失）：回落全量重写（幂等，重建历史/防追加重复）；
+        // 仍失败保留脏待下次重试 + 基线清除
+        try {
+          await writeChatMessages(s.file, stringifyChatMessages(s.id, s.messages));
+          transcriptBaseline.set(id, s.messages);
+          dirtyMessageFiles.delete(id);
+        } catch (e2) {
+          transcriptBaseline.delete(id);
+          console.error("保存会话消息失败", e2);
+        }
       }
     }),
   );
@@ -467,6 +506,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     // 清残留 debounce timer（防旧仓库 timer 写新仓库状态）+ 脏会话标记
     persistCtl.cancel();
     dirtyMessageFiles.clear();
+    transcriptBaseline.clear();
     autoNamedSessions.clear();
     // 切仓库让路：中止旧仓库进行中的命名请求，防其后台空转/误写
     abortAutoTitle();
@@ -485,6 +525,8 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
           } catch (e) {
             console.error("迁移会话消息失败", e);
           }
+          // 迁移即全量落盘：追加式基线 = 内嵌消息数组
+          transcriptBaseline.set(s.id, s.messages);
           sessions.push({
             id: s.id,
             title: s.title,
@@ -502,6 +544,8 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
           const messages = await readChatMessages(s.file)
             .then((md) => parseChatMessages(md, s.id))
             .catch(() => []);
+          // 追加式基线 = 磁盘解析结果（未写盘过的新会话在首次保存时走全量重写）
+          transcriptBaseline.set(s.id, messages);
           sessions.push({ ...s, messages });
         }
       }
@@ -566,6 +610,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     const target = get().sessions.find((s) => s.id === id);
     const sessions = get().sessions.filter((s) => s.id !== id);
     dirtyMessageFiles.delete(id); // 不再重写已删会话的消息 .md
+    transcriptBaseline.delete(id);
     if (target?.file) {
       // 立即删消息 .md（异步，失败仅记日志——索引已删，下次 load 不再引用）
       void deleteChatMessages(target.file).catch((e) =>

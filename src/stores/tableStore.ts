@@ -10,6 +10,7 @@ import { create } from "zustand";
 import { CALC_TYPES_BY_FIELD, TABLE_SCHEMA } from "@/constants/table";
 import {
   exportTableXlsx,
+  patchTableVault,
   readExternalImageDataUrl,
   readTableVault,
   writeTableVault,
@@ -208,19 +209,19 @@ function abortEditSession(): void {
 /**
  * 防抖持久化控制器：写盘期间又有新变更（persistCtl.version 已变）则保留 dirty，
  * 由下一轮 timer 再写，防写盘成功回调吞掉新编辑。force = 保留本地（绕过乐观锁强制覆盖）。
+ * 增量保存：与 lastSaved 快照按引用 diff，只写变化实体（见 patchTableVault）；
+ * 空补丁（撤销回退到已存状态等）跳过 IPC 仅清脏标志。
  */
 const persistCtl = createPersistController<boolean>({
   persist: async (force = false) => {
     const versionAtStart = persistCtl.version;
     const { tableFile, id, title, fields, rows, baseUpdatedAt } = useTableStore.getState();
     if (!tableFile) return;
-    try {
-      markSelfSave(tableFile);
-      const updatedAt = await writeTableVault(
-        { schema: TABLE_SCHEMA, id, title, fields, rows, createdAt: 0, updatedAt: Date.now() },
-        tableFile,
-        force ? undefined : baseUpdatedAt,
-      );
+    // 写盘成功后的统一收尾（markSelfSave 先于守卫：写已发生，watcher 回放须抑制）
+    const finish = (updatedAt: number | null, newFile?: string) => {
+      if (updatedAt !== null) {
+        markSelfSave(newFile && newFile !== tableFile ? [tableFile, newFile] : tableFile);
+      }
       // 竞态守卫：await 期间可能已切换表格（load 替换了状态），旧表的写盘结果不得覆盖新表
       // 的乐观锁基准/脏标记（否则新表下次保存被误判冲突、脏编辑被吞）
       if (useTableStore.getState().tableFile !== tableFile) return;
@@ -229,8 +230,18 @@ const persistCtl = createPersistController<boolean>({
         useTableStore.setState({ saving: false });
         return;
       }
-      useTableStore.setState({ dirty: false, saving: false, baseUpdatedAt: updatedAt, error: null });
-    } catch (e) {
+      if (newFile && newFile !== tableFile) {
+        useTableStore.setState({ tableFile: newFile });
+      }
+      useTableStore.setState({
+        ...(updatedAt !== null ? { baseUpdatedAt: updatedAt } : {}),
+        dirty: false,
+        saving: false,
+        error: null,
+      });
+      syncLastSaved();
+    };
+    const reportError = (e: unknown) => {
       const msg = typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
       if (msg.includes("已被外部修改")) {
         // 乐观锁冲突：不覆盖磁盘，提示用户重载（本地改动保留在内存供查看）
@@ -238,6 +249,34 @@ const persistCtl = createPersistController<boolean>({
       } else {
         console.error("表格自动保存失败", e);
         useTableStore.setState({ error: "自动保存失败，请检查磁盘空间或权限", saving: false });
+      }
+    };
+    try {
+      const result = await patchTableVault({
+        file: tableFile,
+        tableId: id,
+        fields,
+        rows,
+        lastSaved: { fields: lastSavedFields, rows: lastSavedRows },
+        baseUpdatedAt,
+        force,
+      });
+      finish(result ? result.updatedAt : null, result?.file);
+    } catch (e) {
+      if (typeof e === "string" && e.includes("表格文件不存在（已从磁盘删除）")) {
+        // 磁盘文件被外部删除：补丁只含变化实体，重建会丢未变化部分——回退全量写（与旧行为一致）
+        try {
+          const updatedAt = await writeTableVault(
+            { schema: TABLE_SCHEMA, id, title, fields, rows, createdAt: 0, updatedAt: Date.now() },
+            tableFile,
+            force ? undefined : baseUpdatedAt,
+          );
+          finish(updatedAt);
+        } catch (e2) {
+          reportError(e2);
+        }
+      } else {
+        reportError(e);
       }
     }
   },
@@ -249,6 +288,22 @@ function schedulePersist(): void {
   const st = useTableStore.getState();
   if (!st.tableFile) return;
   persistCtl.schedule();
+}
+
+/**
+ * 增量保存基线快照：上次落盘时的 fields/rows 引用。
+ * store 不可变更新——未变实体引用不变，保存时与快照按引用 diff，只序列化变化实体
+ * （image dataURL 大字段不重传）。load/保存成功时同步；撤销不在此同步
+ * （基线恒为「已写盘状态」，撤销产生的差异经 diff 自然落盘）。
+ */
+let lastSavedFields: TableField[] = [];
+let lastSavedRows: TableRow[] = [];
+
+/** 把当前运行时 fields/rows 引用记为「已落盘基线」。 */
+function syncLastSaved(): void {
+  const s = useTableStore.getState();
+  lastSavedFields = s.fields;
+  lastSavedRows = s.rows;
 }
 
 export const useTableStore = create<TableStoreState>((set, get) => ({
@@ -289,6 +344,8 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
         selection: null,
         undoResetCell: null,
       });
+      // 已落盘基线 = 加载的磁盘状态（后续保存按引用 diff，未变实体不重写）
+      syncLastSaved();
     } catch (e) {
       console.error("加载表格失败", e);
       // 复位文件态：读失败时上一张表的内容/路径不得残留——继续编辑会写进错误的表文件
@@ -346,6 +403,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
       selection: null,
       undoResetCell: null,
     });
+    syncLastSaved();
   },
 
   clearError: () => set({ error: null }),

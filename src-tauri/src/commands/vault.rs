@@ -10,6 +10,7 @@
 //! - 同名自动加序号（-2、-3）保证唯一性（`sanitize_filename` + 递增循环，见 `vault.rs`）；
 //! - rename_canvas 时同时重命名文件；重命名/删除后所有引用它的画布内引用同步更新。
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
@@ -19,19 +20,21 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
 use crate::vault::{
-    collect_md_link_updates, copy_folder as copy_folder_impl, create_folder as create_folder_impl,
+    append_chat_messages_file, cache_put_canvas, collect_md_link_updates,
+    copy_folder as copy_folder_impl, create_folder as create_folder_impl,
     delete_folder as delete_folder_impl, delete_vault_file, flush_md_updates,
     import_attachment as import_attachment_vault_impl, init_vault_dirs, list_canvas_files,
-    list_vault_tree as list_vault_tree_impl, markdown_link_path, read_canvas_file, read_file_bytes,
-    read_note as read_note_file, read_vault_config as read_vault_config_file, refresh_wiki_index,
-    rename_folder as rename_folder_impl, rename_note_file, resolve_link_target,
-    rewrite_internal_links, safe_join, sanitize_filename, walk_md_in, write_canvas_file,
-    write_note as write_note_file, write_vault_config as write_vault_config_file,
+    list_vault_tree as list_vault_tree_impl, markdown_link_path, read_canvas_file,
+    read_canvas_file_cached, read_file_bytes, read_note as read_note_file,
+    read_vault_config as read_vault_config_file, refresh_wiki_index,
+    rename_folder as rename_folder_impl, rename_note_file, rel_with_new_title,
+    resolve_link_target, rewrite_internal_links, safe_join, same_physical_file,
+    sanitize_filename, walk_md_in, write_canvas_file, write_note as write_note_file, write_vault_config as write_vault_config_file,
     read_editor_chats_file, read_prompt_notes_file, write_prompt_notes_file,
     write_editor_chats_file, read_chat_messages_file, write_chat_messages_file,
-    delete_chat_messages_file, BacklinkRow, CanvasFile, CanvasFileRow, DeleteFolderResult,
-    EditorChatsFile, FileTreeNode, VaultConfig, VaultState, WikiIndex, CANVAS_SCHEMA,
-    query_wiki_backlinks,
+    delete_chat_messages_file, BacklinkRow, CanvasFile, CanvasFileRow, CanvasPatch,
+    ChatSegment, DeleteFolderResult, EditorChatsFile, FileTreeNode, VaultConfig, VaultState,
+    WikiIndex, CANVAS_SCHEMA, query_wiki_backlinks,
 };
 use crate::watcher;
 
@@ -117,6 +120,7 @@ pub fn read_canvas_vault(file: String, state: State<'_, VaultState>) -> Result<C
 /// `file`：画布相对仓库根路径（前端持有，画布任意文件夹存放）。
 /// `base_updated_at`：前端基于的磁盘版本（加载时的 updatedAt）。磁盘版本更新则拒绝写
 /// （乐观并发，防多用户/外部同步静默覆盖丢更新）；None = 不检查。
+/// 乐观锁检查与 createdAt 保留共走一次带缓存读（指纹校验失效，外部改动即时感知）。
 #[tauri::command]
 pub fn write_canvas_vault(
     mut canvas: CanvasFile,
@@ -140,30 +144,102 @@ pub fn write_canvas_vault(
         }
     }
     let now = Utc::now().timestamp();
-    // 乐观并发：磁盘版本比前端基准新 → 拒绝覆盖（仅当磁盘文件可读时检查；新画布/文件缺失跳过）
-    if let Some(base) = base_updated_at {
-        if let Ok(disk) = read_canvas_file(&old_path) {
+    // 乐观并发 + createdAt 保留共读一次（缓存命中免重读；文件缺失 = 新画布用 now）
+    if old_path.exists() {
+        let (_, disk) = read_canvas_file_cached(&state, &root, &file)
+            .map_err(|e| format!("磁盘画布文件损坏，无法保存：{} ({e})", old_path.display()))?;
+        if let Some(base) = base_updated_at {
             if disk.updated_at > base {
                 return Err("画布已被外部修改，请重载后再编辑".to_string());
             }
         }
-    }
-    // 保留原 createdAt：读旧文件，新画布用 now；旧文件损坏 → 拒绝覆盖（防损坏文件被整体覆盖丢数据）
-    canvas.created_at = if old_path.exists() {
-        read_canvas_file(&old_path)
-            .map(|c| c.created_at)
-            .map_err(|e| format!("磁盘画布文件损坏，无法保存：{} ({e})", old_path.display()))?
+        canvas.created_at = disk.created_at;
     } else {
-        now
-    };
+        canvas.created_at = now;
+    }
     canvas.updated_at = now;
     write_canvas_file(&new_path, &canvas)?;
-    if old_path != new_path && old_path.exists() {
+    // case-only 重命名（Windows 大小写不敏感文件系统）指向同一物理文件：不删旧文件（删即丢数据）
+    if old_path != new_path && old_path.exists() && !same_physical_file(&old_path, &new_path) {
         // 旧文件已不在需要，删除；失败须报错，否则同 id 双文件会歧义（列表读到旧内容）
         std::fs::remove_file(&old_path).map_err(|e| format!("删除旧画布文件失败：{e}"))?;
     }
+    cache_put_canvas(&state, &new_path, &rel_with_new_title(&file, &canvas.title, "atlx"), &canvas);
     // 返回写入的 updated_at，前端保存成功后同步乐观锁基准（防下次保存误判冲突）
     Ok(now)
+}
+
+/// 增量保存 .atlx（自动保存主路径）：只写变化/新增/删除的实体（前端按引用 diff 计算补丁），
+/// 按稳定 id 合并到磁盘全量文件——乐观锁 / createdAt 保留 / title 重命名 / 原子写语义
+/// 与 write_canvas_vault 完全一致，IPC 载荷从整画布缩到变化实体。
+/// 返回 (updatedAt, 写盘后的相对路径)——title 变更重命名文件时前端按新路径更新 canvasFile。
+#[tauri::command]
+pub fn patch_canvas_vault(
+    patch: CanvasPatch,
+    file: String,
+    base_updated_at: Option<i64>,
+    state: State<'_, VaultState>,
+) -> Result<(i64, String), String> {
+    let root = state.root()?;
+    let old_path = safe_join(&root, &file, false)?;
+    // 磁盘文件缺失（外部删除）：补丁只有变化实体，重建会丢未变化部分——拒绝并回退全量写
+    if !old_path.exists() {
+        return Err("画布文件不存在（已从磁盘删除）".to_string());
+    }
+    let (_, mut canvas) = read_canvas_file_cached(&state, &root, &file)?;
+    // 防串文件守卫：补丁属于另一画布（陈旧保存回调）→ 拒绝，防跨文件混写
+    if patch.id != canvas.id {
+        return Err("画布身份不匹配，已中止保存".to_string());
+    }
+    if let Some(title) = &patch.title {
+        canvas.title = title.clone();
+    }
+    let parent = old_path
+        .parent()
+        .ok_or_else(|| format!("非法路径：{}", file))?;
+    let new_path = parent.join(format!("{}.atlx", sanitize_filename(&canvas.title)));
+    let new_rel = rel_with_new_title(&file, &canvas.title, "atlx");
+    // 新路径已存在且 id 不同（前端 dedupe 被绕过/同步盘合并）：拒绝覆盖，防静默丢失另一画布。
+    // 仅路径漂移（title 变更）时检查——同名时文件就是本次基底，id 必然一致，免每次保存全量重读
+    if old_path != new_path && new_path.exists() {
+        if let Ok(existing) = read_canvas_file(&new_path) {
+            if existing.id != canvas.id {
+                return Err(format!("画布名冲突：另一画布已使用名称「{}」", canvas.title));
+            }
+        }
+    }
+    let now = Utc::now().timestamp();
+    // 乐观并发：磁盘版本比前端基准新 → 拒绝覆盖（缓存已按指纹保证磁盘最新）
+    if let Some(base) = base_updated_at {
+        if canvas.updated_at > base {
+            return Err("画布已被外部修改，请重载后再编辑".to_string());
+        }
+    }
+    // 按稳定 id 合并（removed 幂等；upsert 覆盖同 id 或追加）
+    let removed_nodes: HashSet<&String> = patch.removed_node_ids.iter().collect();
+    canvas.nodes.retain(|n| !removed_nodes.contains(&n.id));
+    for n in &patch.upsert_nodes {
+        match canvas.nodes.iter_mut().find(|x| x.id == n.id) {
+            Some(existing) => *existing = n.clone(),
+            None => canvas.nodes.push(n.clone()),
+        }
+    }
+    let removed_edges: HashSet<&String> = patch.removed_edge_ids.iter().collect();
+    canvas.edges.retain(|e| !removed_edges.contains(&e.id));
+    for e in &patch.upsert_edges {
+        match canvas.edges.iter_mut().find(|x| x.id == e.id) {
+            Some(existing) => *existing = e.clone(),
+            None => canvas.edges.push(e.clone()),
+        }
+    }
+    canvas.updated_at = now;
+    write_canvas_file(&new_path, &canvas)?;
+    // case-only 重命名（Windows 大小写不敏感文件系统）指向同一物理文件：不删旧文件（删即丢数据）
+    if old_path != new_path && old_path.exists() && !same_physical_file(&old_path, &new_path) {
+        std::fs::remove_file(&old_path).map_err(|e| format!("删除旧画布文件失败：{e}"))?;
+    }
+    cache_put_canvas(&state, &new_path, &new_rel, &canvas);
+    Ok((now, new_rel))
 }
 
 /// 重命名画布：更新 .atlx 内 title + 同目录重命名文件（按当前文件路径）。
@@ -184,7 +260,8 @@ pub fn rename_canvas_vault(
     let new_path = parent.join(format!("{}.atlx", sanitize_filename(&canvas.title)));
     // 先写新文件再删旧文件，保证不丢数据
     write_canvas_file(&new_path, &canvas)?;
-    if old_path != new_path {
+    // case-only 重命名（Windows 大小写不敏感文件系统）指向同一物理文件：不删旧文件（删即丢数据）
+    if old_path != new_path && !same_physical_file(&old_path, &new_path) {
         // 删除失败须报错（同 id 双文件歧义），但新文件已落盘，下次保存会重试清理
         std::fs::remove_file(&old_path).map_err(|e| format!("删除旧画布文件失败：{e}"))?;
     }
@@ -625,6 +702,18 @@ pub fn write_chat_messages(
 ) -> Result<(), String> {
     let root = state.root()?;
     write_chat_messages_file(&root, &file, &content)
+}
+
+/// 追加式写会话消息正文 .md（消息增长场景：前端只传新增段，省全量重拼与 IPC 载荷；
+/// 文件缺失报错由前端回落全量重写；截断场景仍走 write_chat_messages 全量重写）。
+#[tauri::command]
+pub fn append_chat_messages(
+    state: State<'_, VaultState>,
+    file: String,
+    segments: Vec<ChatSegment>,
+) -> Result<(), String> {
+    let root = state.root()?;
+    append_chat_messages_file(&root, &file, &segments)
 }
 
 /// 删会话消息正文 .md（不存在视为成功——幂等）。

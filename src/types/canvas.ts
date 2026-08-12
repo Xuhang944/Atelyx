@@ -46,7 +46,7 @@ export interface CanvasFileNode {
     | TableFileData;
 }
 
-/** 对话节点：messages 嵌在此处（替代独立 messages 表，整体随 .atlx 写）。 */
+/** 对话节点：messages 嵌在此处，随画布增量补丁（仅变化节点）落盘。 */
 export interface ConversationFileData {
   providerId: string;
   model: string;
@@ -115,6 +115,22 @@ export interface CanvasFileEdge {
   /** 关联边的箭头模式（仅 directed: false 生效；缺省 = 无向） */
   linkMode?: LinkMode;
   createdAt: number;
+}
+
+/**
+ * 增量保存补丁（patch_canvas_vault，自动保存主路径）：只含变化/新增/删除的实体。
+ * 前端按「上次保存快照引用 diff」计算（store 不可变更新，未变实体引用相同）；
+ * Rust 按稳定 id 合并到磁盘全量文件——为未来协作按 id 增量合并铺路。
+ */
+export interface CanvasPatch {
+  /** 画布 id（防串文件守卫）。 */
+  id: string;
+  /** 标题变化时更新（title 变更 = 同目录改文件名，写盘后返回新相对路径）。 */
+  title?: string;
+  upsertNodes: CanvasFileNode[];
+  removedNodeIds: string[];
+  upsertEdges: CanvasFileEdge[];
+  removedEdgeIds: string[];
 }
 
 /** 画布列表行（递归扫描全仓库 .atlx 得到，不含拓扑）。 */

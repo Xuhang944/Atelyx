@@ -51,3 +51,19 @@ export interface TableCreateResult {
   id: string;
   file: string;
 }
+
+/**
+ * 增量保存补丁（patch_table_vault，自动保存主路径）：只含变化/新增/删除的字段与行。
+ * 前端按「上次保存快照引用 diff」计算（store 不可变更新，未变实体引用相同）；
+ * Rust 按稳定 id 合并到磁盘全量文件——image dataURL 大字段不重传。
+ */
+export interface TablePatch {
+  /** 表格 id（防串文件守卫）。 */
+  id: string;
+  /** 标题变化时更新（title 变更 = 同目录改文件名 + 同步画布 table 节点引用）。 */
+  title?: string;
+  upsertFields: TableField[];
+  removedFieldIds: string[];
+  upsertRows: TableRow[];
+  removedRowIds: string[];
+}

@@ -30,6 +30,7 @@ import {
   type CanvasFileNode,
   type CanvasFileRow,
   type CanvasEdge,
+  type CanvasPatch,
   type ConversationFileData,
   type DeleteFolderResult,
   type EditorChatsFile,
@@ -218,6 +219,15 @@ export async function writeChatMessages(
   await invoke("write_chat_messages", { file, content });
 }
 
+/** 追加式写会话消息正文 .md（消息增长场景：只传新增段；文件缺失报错由调用方回落全量重写）。
+ * 截断场景（回到此处/重新生成）仍走 writeChatMessages 全量重写。 */
+export async function appendChatMessages(
+  file: string,
+  segments: { role: string; text: string }[],
+): Promise<void> {
+  await invoke("append_chat_messages", { file, segments });
+}
+
 /** 删会话消息正文 .md（幂等）。 */
 export async function deleteChatMessages(file: string): Promise<void> {
   await invoke("delete_chat_messages", { file });
@@ -375,6 +385,81 @@ async function canvasFileToRuntime(file: CanvasFile): Promise<RuntimeCanvas> {
 }
 
 /**
+ * 单个运行时节点 → 磁盘节点。
+ * - text 笔记节点：脏检测写回 `.md`（lastWrittenMd 基线）+ 剥离 bodyMd，data 只留 {title, file}
+ * - conversation 节点：嵌入 `messagesByConv[id]` 到 `data.messages`
+ * - 扁平 position → x/y
+ */
+async function toFileNode(
+  n: Node,
+  messagesByConv: Record<string, Message[]>,
+): Promise<CanvasFileNode> {
+  let data: Record<string, unknown>;
+  if (n.type === "text") {
+    const td = n.data as unknown as TextData;
+    if (td.file) {
+      // 笔记节点：脏检测写回 `.md` + 剥离 bodyMd，data 只留 {title, file}（正文在 .md 文件）
+      // 脏检测：bodyMd 与上次写入值不同才写盘（外部改 .md 后 bodyMd 未变则不写，保留外部内容）
+      if (
+        td.bodyMd !== undefined &&
+        lastWrittenMd.get(td.file) !== td.bodyMd
+      ) {
+        try {
+          await writeNote(td.file, td.bodyMd);
+          lastWrittenMd.set(td.file, td.bodyMd);
+        } catch (e) {
+          console.error("写笔记失败", e);
+        }
+      }
+      data = { title: td.title || "未命名", file: td.file };
+    } else {
+      // 画布内文本节点（无 file）：bodyMd 随 .atlx 内嵌持久化，不落 `.md`（右键「保存为笔记」才写文件）
+      data = { title: td.title || "未命名", bodyMd: td.bodyMd ?? "" };
+    }
+  } else if (n.type === "conversation") {
+    data = { ...n.data, messages: messagesByConv[n.id] ?? [] };
+  } else if (n.type === "group") {
+    // 分组节点：只落 label/color（color 未设置时 undefined 字段随 JSON.stringify 丢弃）
+    data = {
+      label: (n.data as unknown as { label?: string }).label ?? "分组",
+      color: (n.data as unknown as { color?: string }).color,
+    };
+  } else if (n.type === "link") {
+    data = { url: (n.data as unknown as { url?: string }).url ?? "" };
+  } else if (n.type === "table") {
+    // 表格节点：只落 {title, file}（快照在 .atb 文件，运行时填充/剥离）
+    const td = n.data as unknown as TableData;
+    data = { title: td.title || "未命名", file: td.file };
+  } else {
+    // media/search：原样保留（media 的 thumb 暂随 .atlx 持久化，TODO 后续落盘）
+    data = { ...n.data };
+  }
+  return {
+    id: n.id,
+    type: n.type as CanvasFileNode["type"],
+    x: n.position.x,
+    y: n.position.y,
+    width: n.width,
+    height: n.height,
+    data: data as unknown as CanvasFileNode["data"],
+  };
+}
+
+/** 运行时边 → 磁盘边（createdAt 传 0，Rust 保留原值）。 */
+function toFileEdge(e: CanvasEdge): CanvasFileEdge {
+  return {
+    id: e.id,
+    source: e.source,
+    target: e.target,
+    sourceHandle: e.sourceHandle ?? undefined,
+    targetHandle: e.targetHandle ?? undefined,
+    directed: e.directed,
+    linkMode: e.linkMode,
+    createdAt: 0,
+  };
+}
+
+/**
  * 运行时 → 磁盘 CanvasFile。
  * - text 节点：写 `.md` + 剥离 bodyMd，data 只留 `{title, file}`
  * - conversation 节点：嵌入 `messagesByConv[id]` 到 `data.messages`
@@ -391,66 +476,9 @@ async function runtimeToCanvasFile(
 ): Promise<CanvasFile> {
   const fileNodes: CanvasFileNode[] = [];
   for (const n of nodes) {
-    let data: Record<string, unknown>;
-    if (n.type === "text") {
-      const td = n.data as unknown as TextData;
-      if (td.file) {
-        // 笔记节点：脏检测写回 `.md` + 剥离 bodyMd，data 只留 {title, file}（正文在 .md 文件）
-        // 脏检测：bodyMd 与上次写入值不同才写盘（外部改 .md 后 bodyMd 未变则不写，保留外部内容）
-        if (
-          td.bodyMd !== undefined &&
-          lastWrittenMd.get(td.file) !== td.bodyMd
-        ) {
-          try {
-            await writeNote(td.file, td.bodyMd);
-            lastWrittenMd.set(td.file, td.bodyMd);
-          } catch (e) {
-            console.error("写笔记失败", e);
-          }
-        }
-        data = { title: td.title || "未命名", file: td.file };
-      } else {
-        // 画布内文本节点（无 file）：bodyMd 随 .atlx 内嵌持久化，不落 `.md`（右键「保存为笔记」才写文件）
-        data = { title: td.title || "未命名", bodyMd: td.bodyMd ?? "" };
-      }
-    } else if (n.type === "conversation") {
-      data = { ...n.data, messages: messagesByConv[n.id] ?? [] };
-    } else if (n.type === "group") {
-      // 分组节点：只落 label/color（color 未设置时 undefined 字段随 JSON.stringify 丢弃）
-      data = {
-        label: (n.data as unknown as { label?: string }).label ?? "分组",
-        color: (n.data as unknown as { color?: string }).color,
-      };
-    } else if (n.type === "link") {
-      data = { url: (n.data as unknown as { url?: string }).url ?? "" };
-    } else if (n.type === "table") {
-      // 表格节点：只落 {title, file}（快照在 .atb 文件，运行时填充/剥离）
-      const td = n.data as unknown as TableData;
-      data = { title: td.title || "未命名", file: td.file };
-    } else {
-      // media/search：原样保留（media 的 thumb 暂随 .atlx 持久化，TODO 后续落盘）
-      data = { ...n.data };
-    }
-    fileNodes.push({
-      id: n.id,
-      type: n.type as CanvasFileNode["type"],
-      x: n.position.x,
-      y: n.position.y,
-      width: n.width,
-      height: n.height,
-      data: data as unknown as CanvasFileNode["data"],
-    });
+    fileNodes.push(await toFileNode(n, messagesByConv));
   }
-  const fileEdges: CanvasFileEdge[] = edges.map((e) => ({
-    id: e.id,
-    source: e.source,
-    target: e.target,
-    sourceHandle: e.sourceHandle ?? undefined,
-    targetHandle: e.targetHandle ?? undefined,
-    directed: e.directed,
-    linkMode: e.linkMode,
-    createdAt: 0,
-  }));
+  const fileEdges: CanvasFileEdge[] = edges.map(toFileEdge);
   return {
     schema: CANVAS_SCHEMA,
     id: canvasId,
@@ -461,6 +489,89 @@ async function runtimeToCanvasFile(
     createdAt: 0,
     updatedAt: Date.now(),
   };
+}
+
+/** 增量保存基线快照（与当前运行时状态按引用 diff：未变实体引用相同，O(N) 指针比对无深比较）。 */
+export interface CanvasSaveSnapshot {
+  nodes: Node[];
+  edges: CanvasEdge[];
+  messagesByConv: Record<string, Message[]>;
+  title: string;
+}
+
+/**
+ * 增量保存画布（自动保存主路径）：与上次保存快照按引用 diff，只序列化变化/新增/删除的实体，
+ * 经 `patch_canvas_vault` 按稳定 id 合并到磁盘全量文件（乐观锁语义同全量写）。
+ * 脏 text 节点 .md 写回在此（同全量路径的 lastWrittenMd 门控）。
+ * 空补丁（无变化实体）返回 null——调用方跳过 IPC（磁盘已一致）。
+ * 返回写入后的 { updatedAt, file }（title 变更重命名时 file = 新相对路径）。
+ */
+export async function patchCanvasVault(opts: {
+  file: string;
+  canvasId: string;
+  title: string;
+  nodes: Node[];
+  edges: CanvasEdge[];
+  messagesByConv: Record<string, Message[]>;
+  lastSaved: CanvasSaveSnapshot;
+  baseUpdatedAt: number;
+}): Promise<{ updatedAt: number; file: string } | null> {
+  const { file, canvasId, title, nodes, edges, messagesByConv, lastSaved, baseUpdatedAt } = opts;
+  // 节点 diff：引用不同 = 变化/新增；对话节点消息变化时节点引用不变，按 conv id 补进 upsert
+  const upsertNodeIds = new Set<string>();
+  for (const n of nodes) {
+    const ls = lastSaved.nodes.find((x) => x.id === n.id);
+    if (!ls || ls !== n) upsertNodeIds.add(n.id);
+  }
+  for (const [convId, msgs] of Object.entries(messagesByConv)) {
+    if (lastSaved.messagesByConv[convId] !== msgs) upsertNodeIds.add(convId);
+  }
+  const currentNodeIds = new Set(nodes.map((n) => n.id));
+  const removedNodeIds = lastSaved.nodes
+    .filter((n) => !currentNodeIds.has(n.id))
+    .map((n) => n.id);
+  const upsertEdgeIds = new Set<string>();
+  for (const e of edges) {
+    const ls = lastSaved.edges.find((x) => x.id === e.id);
+    if (!ls || ls !== e) upsertEdgeIds.add(e.id);
+  }
+  const currentEdgeIds = new Set(edges.map((e) => e.id));
+  const removedEdgeIds = lastSaved.edges
+    .filter((e) => !currentEdgeIds.has(e.id))
+    .map((e) => e.id);
+
+  const upsertNodes: CanvasFileNode[] = [];
+  for (const n of nodes) {
+    if (!upsertNodeIds.has(n.id)) continue;
+    upsertNodes.push(await toFileNode(n, messagesByConv));
+  }
+  const upsertEdges: CanvasFileEdge[] = edges
+    .filter((e) => upsertEdgeIds.has(e.id))
+    .map(toFileEdge);
+
+  if (
+    upsertNodes.length === 0 &&
+    upsertEdges.length === 0 &&
+    removedNodeIds.length === 0 &&
+    removedEdgeIds.length === 0 &&
+    title === lastSaved.title
+  ) {
+    return null;
+  }
+  const patch: CanvasPatch = {
+    id: canvasId,
+    upsertNodes,
+    removedNodeIds,
+    upsertEdges,
+    removedEdgeIds,
+    // title 只随真实变化携带（Rust 据此改文件名；避免每次保存触发路径校验与重命名扫描）
+    ...(title !== lastSaved.title ? { title } : {}),
+  };
+  return invoke<{ updatedAt: number; file: string }>("patch_canvas_vault", {
+    patch,
+    file,
+    baseUpdatedAt,
+  });
 }
 
 /** 加载画布（运行时格式，供 canvasStore.load 消费）。file = 相对仓库根路径。 */

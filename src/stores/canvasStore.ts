@@ -14,6 +14,7 @@ import {
   loadCanvasVault,
   loadWhiteboardVault,
   persistCanvasVault,
+  patchCanvasVault,
   readAttachmentDataUrl,
   readCanvasVault,
   readNote,
@@ -82,6 +83,10 @@ interface GroupDragState {
   members: { id: string; start: { x: number; y: number } }[];
 }
 let groupDragState: GroupDragState | null = null;
+
+/** 节点拖拽进行中（dragStart 置位 / dragStop 清除）：期间 position 变更只更新内存，
+ * 落盘统一到 dragStop——连续拖动中的高频 position change 不再每帧重置 debounce/触发保存。 */
+let dragInProgress = false;
 
 /** 复制/粘贴剪贴板（模块级）：复制选中节点深拷贝快照，粘贴重新生成 id（不带边，语义同右键「复制节点」）。 */
 interface ClipboardNode {
@@ -332,8 +337,30 @@ function touchRedo(): void {
 }
 
 /**
+ * 增量保存基线快照：上次落盘时的状态引用。
+ * 利用 store 不可变更新——未变实体引用不变，保存时与快照按引用 diff，只序列化变化实体。
+ * 基线只在 load（=磁盘内容）与保存成功后同步；撤销/重做/合并不同步——基线恒为「已写盘状态」，
+ * 撤销产生的差异经 diff 自然落盘（回退到恰等于已写盘状态时空补丁自动跳过写盘）。
+ */
+let lastSavedNodes: Node[] = [];
+let lastSavedEdges: Edge[] = [];
+let lastSavedMessages: Record<string, Message[]> = {};
+let lastSavedTitle = "";
+
+/** 把当前运行时状态引用记为「已落盘基线」（load/保存成功后调用）。 */
+function syncLastSaved(): void {
+  const s = useCanvasStore.getState();
+  lastSavedNodes = s.nodes;
+  lastSavedEdges = s.edges;
+  lastSavedMessages = s.messagesByConv;
+  lastSavedTitle = s.canvasTitle;
+}
+
+/**
  * 立即持久化当前画布（flush 与保存 timer 共用；timer 回调里读最新 state，
  * 确保流式完成时 onDone 触发的保存拿到最终消息内容）。
+ * 增量保存：与 lastSaved 快照按引用 diff，只写变化实体（见 patchCanvasVault）；
+ * 空补丁（撤销回退到已存状态等）跳过 IPC 仅清脏标志。
  * 写盘期间若又有新变更（persistCtl.version 已变）则保留 dirty，由下一轮 timer 再写。
  */
 async function persistNow(): Promise<void> {
@@ -348,34 +375,39 @@ async function persistNow(): Promise<void> {
     baseUpdatedAt,
   } = useCanvasStore.getState();
   if (!canvasId || !canvasFile) return;
-  try {
-    const newUpdatedAt = await persistCanvasVault(
-      canvasId,
-      canvasFile,
-      canvasTitle,
-      nodes,
-      edges,
-      messagesByConv,
-      baseUpdatedAt,
-    );
-    markSelfSave(canvasFile);
+  // 写盘成功后的统一收尾：先抑制回放（watcher 同路径事件 2s 窗口），再同步新路径/
+  // 乐观锁基准/快照/脏标志。updatedAt = null 表示空补丁（磁盘未动，无需标记自写）。
+  const finish = (updatedAt: number | null, newFile?: string) => {
+    if (updatedAt !== null) {
+      markSelfSave(
+        newFile && newFile !== canvasFile ? [canvasFile, newFile] : canvasFile,
+      );
+    }
     // 竞态守卫：await 期间可能已切换画布/清空状态（load 异步读盘），旧画布的写盘结果
     // 不得覆盖新画布的乐观锁基准/脏标记（否则新画布下次保存被误判冲突、脏编辑被吞）
     const cur = useCanvasStore.getState();
     if (cur.canvasId !== canvasId || cur.canvasFile !== canvasFile) return;
     if (persistCtl.version !== versionAtStart) {
-      // 写盘期间有新变更（已挂新 timer）：保留 dirty，由下一轮 timer 再写盘，防本次成功吞掉新编辑
+      // 写盘期间有新变更（已挂新 timer）：保留 dirty，由下一轮 timer 再写盘，防本次成功吞掉新编辑；
+      // 不推进快照/基准——下一轮 diff 仍以旧快照为基线（已写盘部分重发同内容 upsert，幂等）
       useCanvasStore.setState({ saving: false });
       return;
     }
-    // 同步乐观锁基准为本次写入的磁盘版本，避免下次保存误判冲突
-    useCanvasStore.setState({
-      error: null,
-      dirty: false,
-      saving: false,
-      baseUpdatedAt: newUpdatedAt,
-    });
-  } catch (e) {
+    if (newFile && newFile !== canvasFile) {
+      // title 变更导致路径漂移：同步 canvasFile + appStore.currentCanvasFile（同源）
+      useCanvasStore.setState({ canvasFile: newFile });
+      if (useAppStore.getState().currentCanvasFile === canvasFile) {
+        useAppStore.setState({ currentCanvasFile: newFile });
+      }
+    }
+    if (updatedAt !== null) {
+      // 同步乐观锁基准为本次写入的磁盘版本，避免下次保存误判冲突
+      useCanvasStore.setState({ baseUpdatedAt: updatedAt });
+    }
+    useCanvasStore.setState({ error: null, dirty: false, saving: false });
+    syncLastSaved();
+  };
+  const reportError = (e: unknown) => {
     useCanvasStore.setState({ saving: false });
     if (typeof e === "string" && e.includes("已被外部修改")) {
       // 乐观锁冲突：不覆盖磁盘，提示用户重载（本地改动保留在内存供查看）
@@ -383,6 +415,44 @@ async function persistNow(): Promise<void> {
     } else {
       console.error("自动保存失败", e);
       useCanvasStore.setState({ error: "自动保存失败，请检查磁盘空间或权限" });
+    }
+  };
+  try {
+    const result = await patchCanvasVault({
+      file: canvasFile,
+      canvasId,
+      title: canvasTitle,
+      nodes,
+      edges,
+      messagesByConv,
+      lastSaved: {
+        nodes: lastSavedNodes,
+        edges: lastSavedEdges,
+        messagesByConv: lastSavedMessages,
+        title: lastSavedTitle,
+      },
+      baseUpdatedAt,
+    });
+    finish(result ? result.updatedAt : null, result?.file);
+  } catch (e) {
+    if (typeof e === "string" && e.includes("画布文件不存在（已从磁盘删除）")) {
+      // 磁盘文件被外部删除：补丁只含变化实体，重建会丢未变化部分——回退全量写（与旧行为一致）
+      try {
+        const newUpdatedAt = await persistCanvasVault(
+          canvasId,
+          canvasFile,
+          canvasTitle,
+          nodes,
+          edges,
+          messagesByConv,
+          baseUpdatedAt,
+        );
+        finish(newUpdatedAt);
+      } catch (e2) {
+        reportError(e2);
+      }
+    } else {
+      reportError(e);
     }
   }
 }
@@ -394,7 +464,7 @@ const persistCtl = createPersistController({
 });
 
 /**
- * debounce 500ms 持久化画布到仓库（拓扑 + messages 整体写 .atlx，text 正文写 .md）。
+ * debounce 500ms 持久化画布到仓库（增量补丁：只写变化实体，text 正文写 .md）。
  */
 function schedulePersist() {
   // 只读画布（外部白板格式）永不落盘：内容来自原 .canvas 文件，本应用不写该格式
@@ -549,7 +619,7 @@ async function autoNameConversation(conversationId: string): Promise<void> {
  * - onDelta 用 rAF 合并高频 token，避免每 token 一次 setState 卡 UI。
  * - abort/空回复：移除占位 assistant，避免残留空气泡（streamChat 在 abort 时走 onDone）。
  * - 错误：占位 assistant 写入 `[错误] …` 并随 .atlx 持久化；下次请求历史过滤此类消息，不污染上下文。
- * - 持久化：messages 嵌在对话节点 data 内，随 schedulePersist 整体写 .atlx，不再单条 upsert。
+ * - 持久化：messages 嵌在对话节点 data 内，随 schedulePersist 增量补丁写 .atlx（仅变化实体）。
  */
 async function runStream(conversationId: string): Promise<void> {
   const store = useCanvasStore;
@@ -740,7 +810,7 @@ async function runStream(conversationId: string): Promise<void> {
             },
           }));
         }
-        // messages 随 .atlx 整体写（替代旧 upsertMessage/deleteMessage 单条持久化）
+        // messages 随 .atlx 增量补丁落盘（流式结束统一写，不逐 token 写）
         schedulePersist();
         abortControllers.delete(conversationId);
       },
@@ -906,6 +976,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     // 中止旧画布进行中的命名请求（防其后台空转/误写；与面板 load 对称）
     abortAutoTitle();
     groupDragState = null;
+    dragInProgress = false;
     set({ loading: true, error: null, selectedNodeId: null });
     try {
       // 外部白板格式（.canvas）走只读加载：映射为运行时节点 + 无向边，永不落盘
@@ -930,6 +1001,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         loading: false,
       });
       undoMgr.clear();
+      // 已落盘基线 = 加载的磁盘状态（后续保存按引用 diff，未变实体不重写）
+      syncLastSaved();
       // 恢复补命名：加载后对首个未命名对话节点重试（覆盖上次命名被中断/丢失的窗口；
       // 仅补一个防并发请求轰炸模型端点）；无 title 无消息的节点由消息检查自然跳过
       if (!isWhiteboard) {
@@ -968,6 +1041,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       if (useAppStore.getState().currentCanvasFile === canvasFile) {
         useAppStore.setState({ currentCanvasFile: newFile });
       }
+      // 文件已由 Rust 改名：同步标题基线，下次保存不再携带 title（无冗余重命名扫描）
+      lastSavedTitle = title;
       await get().syncBaseUpdatedAt();
     } catch (e) {
       console.error("重命名失败", e);
@@ -1016,8 +1091,20 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         return;
       }
     }
-    // 纯选中变化（select）不落盘：点选/框选节点不应触发 .atlx 写入与「保存中」闪烁
-    if (changesNow.some((c) => c.type !== "select")) schedulePersist();
+    // 纯选中变化（select）不落盘：点选/框选节点不应触发 .atlx 写入与「保存中」闪烁。
+    // 拖拽进行中的 position 变更不落盘（dragStop 统一保存一次）；resize 进行中的
+    // dimensions 变更不落盘（resizing:false 结束事件已在上方处理）——拖动不松手不再持续保存
+    const draggingNow = dragInProgress;
+    if (
+      changesNow.some(
+        (c) =>
+          c.type !== "select" &&
+          !(c.type === "position" && (c.dragging || draggingNow)) &&
+          !(c.type === "dimensions" && c.resizing === true),
+      )
+    ) {
+      schedulePersist();
+    }
   },
   onEdgesChange: (changes) => {
     const edges = applyEdgeChanges(changes, get().edges);
@@ -1121,6 +1208,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   },
   onNodeDragStart: (_event, node) => {
     get().pushUndo();
+    dragInProgress = true;
     // 组节点：快照组内成员（中心点在内，拖前位置一次判定），拖动期间按组位移联动平移
     groupDragState = null;
     if (get().readOnly || node.type !== "group") return;
@@ -1152,9 +1240,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     const next = recalcEdgeHandles(get().edges, get().nodes, ids);
     if (next) {
       set({ edges: next });
-      schedulePersist();
     }
+    dragInProgress = false;
     groupDragState = null;
+    // 拖拽期间 position 变更不落盘（见 onNodesChange），此处统一保存一次——
+    // 未移动（点按即松）时补丁为空，自动跳过写盘
+    schedulePersist();
   },
   copySelectedNodes: () => {
     const sel = get().nodes.filter((n) => n.selected);
@@ -1791,7 +1882,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       },
     });
 
-    // 持久化 user 消息（随 .atlx 整体写）
+    // 持久化 user 消息（随画布自动保存增量落盘）
     schedulePersist();
 
     // 影子节点：无来源的附件发送后静默归档为媒体节点，
@@ -1981,7 +2072,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       messagesByConv: { ...messagesByConv, [childId]: childMsgs },
     });
 
-    // 文件化后 messages 嵌对话节点 data，无 FK 约束，整体随 .atlx 写（替代先落节点再 upsert 消息的两步）
+    // 文件化后 messages 嵌对话节点 data，无 FK 约束，随画布自动保存增量落盘
     schedulePersist();
   },
   abort: (conversationId) => {
@@ -1993,6 +2084,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     persistCtl.cancel();
     abortAllStreams();
     groupDragState = null;
+    dragInProgress = false;
     set({
       canvasId: null,
       canvasFile: null,
@@ -2012,6 +2104,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       baseUpdatedAt: 0,
     });
     undoMgr.clear();
+    syncLastSaved();
   },
   retrySearch: async (nodeId, query) => {
     const settings = useSettingsStore.getState();
@@ -2045,7 +2138,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       return;
 
     // 记录被删的对话节点 id，删除后清理其消息内存
-    // （持久化层：messages 嵌对话节点，随 .atlx 整体写，删节点即删其消息）
+    // （持久化层：messages 嵌对话节点，随画布自动保存增量落盘，删节点即删其消息）
     const deletedConvIds = nodes
       .filter((n) => selectedNodeIds.has(n.id) && n.type === "conversation")
       .map((n) => n.id);

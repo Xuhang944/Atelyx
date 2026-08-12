@@ -22,11 +22,23 @@ pub struct DirNames {
     pub attachments: String,
 }
 
+/// 磁盘文件缓存条目：mtime（纳秒）+ 长度作失效指纹——外部编辑/同步盘改动命中指纹变化，
+/// 命中克隆免每次保存重读重解析（乐观锁检查 + createdAt 保留 + 补丁基底共用）。
+pub struct CachedFile<T> {
+    mtime_nanos: u128,
+    len: u64,
+    data: T,
+}
+
 /// 当前仓库会话状态，由 lib.rs app.manage 注入，命令通过 State<VaultState> 读取。
 pub struct VaultState {
     pub session: Mutex<Option<VaultSession>>,
     /// 反链索引缓存：纯内存、磁盘为真相（每次查询按指纹 diff 自愈）；切换仓库时随 set 清空，查询时懒构建。
     pub wiki: Mutex<Option<WikiIndex>>,
+    /// 已解析 `.atlx` 缓存（key = 相对仓库根路径）：指纹校验失效，切仓库随 set 清空。
+    pub canvas_cache: Mutex<HashMap<String, CachedFile<CanvasFile>>>,
+    /// 已解析 `.atb` 缓存（同 canvas_cache）。
+    pub table_cache: Mutex<HashMap<String, CachedFile<TableFile>>>,
 }
 
 /// 一次仓库会话：根路径 + 该仓库生效的文件面板配置（open_vault/ensure_default_vault 时从配置解析）。
@@ -43,6 +55,8 @@ impl Default for VaultState {
         Self {
             session: Mutex::new(None),
             wiki: Mutex::new(None),
+            canvas_cache: Mutex::new(HashMap::new()),
+            table_cache: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -98,6 +112,13 @@ impl VaultState {
         if let Ok(mut wiki) = self.wiki.lock() {
             *wiki = None;
         }
+        // 切仓库清空文件缓存：不同仓库的同名相对路径不得混用
+        if let Ok(mut cache) = self.canvas_cache.lock() {
+            cache.clear();
+        }
+        if let Ok(mut cache) = self.table_cache.lock() {
+            cache.clear();
+        }
         Ok(())
     }
 }
@@ -105,7 +126,7 @@ impl VaultState {
 // ===== .atlx 文件结构（对应前端 types/canvas.ts）=====
 // data 用 serde_json::Value，不耦合业务字段；rename_all = "camelCase" 对齐前端。
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CanvasFile {
     #[serde(default)]
@@ -124,7 +145,7 @@ pub struct CanvasFile {
     pub updated_at: i64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CanvasFileNode {
     pub id: String,
@@ -139,7 +160,7 @@ pub struct CanvasFileNode {
     pub data: serde_json::Value,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CanvasFileEdge {
     pub id: String,
@@ -317,6 +338,171 @@ pub fn read_canvas_file(path: &Path) -> Result<CanvasFile, String> {
 pub fn write_canvas_file(path: &Path, canvas: &CanvasFile) -> Result<(), String> {
     let json = serde_json::to_string_pretty(canvas).map_err(|e| e.to_string())?;
     atomic_write(path, &json)
+}
+
+// ===== 已解析文件缓存（.atlx/.atb，写/补丁路径共用）=====
+
+/// 文件 mtime（纳秒）+ 长度指纹；读不到（不存在/IO 错误）返回 None（不命中缓存，调用方按缺失处理）。
+fn file_fingerprint(path: &Path) -> Option<(u128, u64)> {
+    let md = std::fs::metadata(path).ok()?;
+    let mtime = md
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some((mtime, md.len()))
+}
+
+/// 带缓存读 .atlx：指纹命中返回克隆，未命中读盘后入缓存。返回（绝对路径, 数据）。
+/// 文件缺失/损坏直接透传 read_canvas_file 错误（调用方按路径存在性区分场景）。
+pub fn read_canvas_file_cached(
+    state: &VaultState,
+    root: &Path,
+    file: &str,
+) -> Result<(PathBuf, CanvasFile), String> {
+    let path = safe_join(root, file, false)?;
+    if let Some(fp) = file_fingerprint(&path) {
+        let mut cache = state.canvas_cache.lock().map_err(|e| e.to_string())?;
+        if let Some(entry) = cache.get(file) {
+            if entry.mtime_nanos == fp.0 && entry.len == fp.1 {
+                return Ok((path, entry.data.clone()));
+            }
+        }
+        let data = read_canvas_file(&path)?;
+        cache.insert(
+            file.to_string(),
+            CachedFile {
+                mtime_nanos: fp.0,
+                len: fp.1,
+                data: data.clone(),
+            },
+        );
+        return Ok((path, data));
+    }
+    Ok((path.clone(), read_canvas_file(&path)?))
+}
+
+/// 带缓存读 .atb（语义同 read_canvas_file_cached）。
+pub fn read_table_file_cached(
+    state: &VaultState,
+    root: &Path,
+    file: &str,
+) -> Result<(PathBuf, TableFile), String> {
+    let path = safe_join(root, file, false)?;
+    if let Some(fp) = file_fingerprint(&path) {
+        let mut cache = state.table_cache.lock().map_err(|e| e.to_string())?;
+        if let Some(entry) = cache.get(file) {
+            if entry.mtime_nanos == fp.0 && entry.len == fp.1 {
+                return Ok((path, entry.data.clone()));
+            }
+        }
+        let data = read_table_file(&path)?;
+        cache.insert(
+            file.to_string(),
+            CachedFile {
+                mtime_nanos: fp.0,
+                len: fp.1,
+                data: data.clone(),
+            },
+        );
+        return Ok((path, data));
+    }
+    Ok((path.clone(), read_table_file(&path)?))
+}
+
+/// 写盘成功后更新缓存（file = 写盘后的相对路径；重命名路径变化时先清旧 key）。
+pub fn cache_put_canvas(state: &VaultState, path: &Path, file: &str, data: &CanvasFile) {
+    if let Ok(mut cache) = state.canvas_cache.lock() {
+        cache.retain(|k, _| k != file);
+        if let Some(fp) = file_fingerprint(path) {
+            cache.insert(
+                file.to_string(),
+                CachedFile {
+                    mtime_nanos: fp.0,
+                    len: fp.1,
+                    data: data.clone(),
+                },
+            );
+        }
+    }
+}
+
+/// 写盘成功后更新 .atb 缓存（语义同 cache_put_canvas）。
+pub fn cache_put_table(state: &VaultState, path: &Path, file: &str, data: &TableFile) {
+    if let Ok(mut cache) = state.table_cache.lock() {
+        cache.retain(|k, _| k != file);
+        if let Some(fp) = file_fingerprint(path) {
+            cache.insert(
+                file.to_string(),
+                CachedFile {
+                    mtime_nanos: fp.0,
+                    len: fp.1,
+                    data: data.clone(),
+                },
+            );
+        }
+    }
+}
+
+/// 由旧相对路径 + 新标题算新相对路径（同目录改文件名；净化规则与落盘一致）。
+/// 画布/表格共用（ext = "atlx" / "atb"）。
+pub fn rel_with_new_title(old_file: &str, new_title: &str, ext: &str) -> String {
+    let filename = format!("{}.{ext}", sanitize_filename(new_title));
+    match old_file.rfind('/') {
+        Some(i) => format!("{}/{}", &old_file[..i], filename),
+        None => filename,
+    }
+}
+
+/// 两路径是否指向同一物理文件（case-only 重命名在大小写不敏感文件系统上的场景）。
+/// 都 canonicalize 成功且相等才豁免；任一失败（身份不明）不豁免（宁可拒绝覆盖，不可删错文件）。
+/// 画布/表格写路径共用：Windows NTFS 下 `Foo.atlx` → `foo.atlx` 新旧路径是同一文件，
+/// 写新后删旧会删掉刚写入的文件（删即丢数据）。
+pub fn same_physical_file(a: &Path, b: &Path) -> bool {
+    match (dunce::canonicalize(a), dunce::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// 画布增量保存补丁（对应前端 types/canvas.ts 的 CanvasPatch）：只含变化/新增/删除的实体，
+/// 按稳定 id 合并——removed 幂等（缺 id 不报错），upsert 覆盖同 id 或追加。
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasPatch {
+    /// 画布 id（防串文件守卫）。
+    pub id: String,
+    /// 标题变化时更新（title 变更 = 同目录改文件名，写盘后返回新相对路径）。
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub upsert_nodes: Vec<CanvasFileNode>,
+    #[serde(default)]
+    pub removed_node_ids: Vec<String>,
+    #[serde(default)]
+    pub upsert_edges: Vec<CanvasFileEdge>,
+    #[serde(default)]
+    pub removed_edge_ids: Vec<String>,
+}
+
+/// 表格增量保存补丁（对应前端 types/table.ts 的 TablePatch）。
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TablePatch {
+    /// 表格 id（防串文件守卫）。
+    pub id: String,
+    /// 标题变化时更新（title 变更 = 同目录改文件名 + 同步画布 table 节点引用）。
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub upsert_fields: Vec<TableField>,
+    #[serde(default)]
+    pub removed_field_ids: Vec<String>,
+    #[serde(default)]
+    pub upsert_rows: Vec<TableRow>,
+    #[serde(default)]
+    pub removed_row_ids: Vec<String>,
 }
 
 /// 递归扫描仓库内全部 `.atlx`（跳过隐藏/排除目录与 `.tmp`），返回列表行（按 updatedAt 倒序）。
@@ -773,6 +959,35 @@ pub fn write_chat_messages_file(root: &Path, file: &str, content: &str) -> Resul
     std::fs::create_dir_all(root.join(CHAT_HISTORY_DIR)).map_err(|e| e.to_string())?;
     let path = chat_messages_path(root, file)?;
     atomic_write(&path, content)
+}
+
+/// 追加段：消息 .md 转写的增量（role + 正文，格式与 stringifyChatMessages 对齐）。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSegment {
+    pub role: String,
+    pub text: String,
+}
+
+/// 追加式写会话消息正文 .md（消息增长场景：前端只传新增段，省全量重拼与 IPC 载荷）。
+/// 文件缺失直接报错（前端回落全量重写重建历史——新建会话首次落盘走全量写路径，追加永不该建新文件）。
+/// 截断场景（回到此处/重新生成删消息）仍走 write_chat_messages_file 全量重写。
+/// 读旧内容 + 拼接 + 原子写：失败时文件保持原状，前端按「写成功才推进基线」重试。
+pub fn append_chat_messages_file(
+    root: &Path,
+    file: &str,
+    segments: &[ChatSegment],
+) -> Result<(), String> {
+    std::fs::create_dir_all(root.join(CHAT_HISTORY_DIR)).map_err(|e| e.to_string())?;
+    let path = chat_messages_path(root, file)?;
+    if !path.exists() {
+        return Err("会话消息文件缺失，请重写".to_string());
+    }
+    let mut content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    for seg in segments {
+        content.push_str(&format!("\n## {}:\n\n{}\n", seg.role, seg.text));
+    }
+    atomic_write(&path, &content)
 }
 
 /// 删会话消息正文 .md（不存在视为成功——幂等，删除会话时调用）。
