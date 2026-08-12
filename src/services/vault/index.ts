@@ -241,6 +241,11 @@ export function recordNoteDiskContent(file: string, content: string): void {
   lastWrittenMd.set(file, content);
 }
 
+/** 判断磁盘内容是否为应用自写（与最近已知磁盘内容基线逐字节相等）。自写回波返回 true，内存态不更旧。 */
+export function isKnownNoteDiskContent(file: string, content: string): boolean {
+  return lastWrittenMd.get(file) === content;
+}
+
 /** 加载后的运行时画布（对齐原 loadCanvas 返回结构，供 canvasStore 消费）。 */
 export interface RuntimeCanvas {
   /** 磁盘文件内的画布 id（运行时身份；文件名不再含 id） */

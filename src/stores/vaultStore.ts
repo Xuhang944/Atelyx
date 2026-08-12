@@ -18,6 +18,7 @@ import {
   deleteAttachment,
   deleteFolder as deleteFolderSvc,
   deleteNote,
+  isKnownNoteDiskContent as isKnownNoteDiskContentSvc,
   listVaultTree,
   readAttachmentDataUrl as readAttachmentDataUrlSvc,
   readNote,
@@ -88,6 +89,11 @@ export function lastFolderRenameTarget(file: string): string | null {
   const { oldDir, newDir } = lastFolderRename;
   const prefix = `${oldDir}/`;
   return file.startsWith(prefix) ? `${newDir}/${file.slice(prefix.length)}` : null;
+}
+
+/** 磁盘内容是否为应用自写（组件不直连 service：NoteEditor 跨编辑面自写识别用）。 */
+export function isKnownNoteDiskContent(file: string, content: string): boolean {
+  return isKnownNoteDiskContentSvc(file, content);
 }
 
 /** loadFiles 并发守卫：递增序号，仅最后一次发起者的扫描结果落盘（后台填充与 watcher 触发并发时防旧结果覆盖）。 */
@@ -773,7 +779,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
           // 跳过重读防误触 reloadFromDisk 读已不存在的旧路径
           if (
             c.path === store.canvasFile &&
-            !isSelfSaveEcho() &&
+            !isSelfSaveEcho(c.path) &&
             !isPendingFolderRenameOldPath(c.path)
           ) {
             if (store.dirty) {
@@ -787,7 +793,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
           // 外部新建/删除/重命名画布：刷新画布列表 + 文件树（.atlx 行随文件变化增删改名）。
           // 自写回放（isSelfSaveEcho）跳过：画布 CRUD 已在 appStore 内主动刷新两数据源，
           // 纯自动保存只改 mtime、树行不显示时间，无需重扫全仓库
-          if (!isSelfSaveEcho()) {
+          if (!isSelfSaveEcho(c.path)) {
             void useAppStore.getState().loadList();
             void get().loadFiles();
           }
@@ -812,7 +818,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
           const store = useTableStore.getState();
           if (
             c.path === store.tableFile &&
-            !isSelfSaveEcho() &&
+            !isSelfSaveEcho(c.path) &&
             !isPendingRenameOldPath(c.path) &&
             !isPendingFolderRenameOldPath(c.path)
           ) {

@@ -10,7 +10,7 @@
 import { Check, MoreHorizontal, Pencil } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { useVaultStore, lastFolderRenameTarget, lastNoteRenameTarget, type NoteSaveStatus } from "@/stores/vaultStore";
+import { useVaultStore, lastFolderRenameTarget, lastNoteRenameTarget, isKnownNoteDiskContent, type NoteSaveStatus } from "@/stores/vaultStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
 import type { BacklinkRow } from "@/types";
@@ -145,8 +145,10 @@ export function NoteEditor({ file }: { file: string }) {
     };
   }, [file, readNoteContent, saveNoteContent, setSaveStatus]);
 
-  // 外部修改感知：磁盘内容 ≠ 最后写盘基准 = 真实外部变化（自写回放磁盘 = 基准，天然跳过）。
-  // 无本地改动 → 静默刷新为磁盘最新（实时同步）；有本地改动 → 冲突提示 + 暂停自动保存，防覆盖外部修改
+  // 外部修改感知：磁盘内容 ≠ 自身最后写盘基准（lastSavedRef） = 变化（自写回放或真实外部变化）。
+  // 无本地改动 → 静默刷新为磁盘最新（实时同步，含应用内其他编辑面——画布文本节点——的写盘回波）；
+  // 有本地改动 → 磁盘 = 应用级基线（应用内写盘）则静默保留本地输入，否则冲突提示 + 暂停自动保存，
+  // 防覆盖外部修改
   useEffect(() => {
     if (externalEditSeq <= processedSeqRef.current) return;
     processedSeqRef.current = externalEditSeq;
@@ -155,6 +157,9 @@ export function NoteEditor({ file }: { file: string }) {
       .then((disk) => {
         if (cancelled || !mountedRef.current || disk === lastSavedRef.current) return;
         if (dirtyRef.current) {
+          // 应用内其他编辑面写入（画布文本节点写盘）：静默保留本地输入，不弹「外部修改冲突」
+          // （磁盘 = 应用最近已知内容，见 isKnownNoteDiskContent）
+          if (isKnownNoteDiskContent(file, disk)) return;
           // 取消挂起的 debounce 保存（外部修改前已调度），防到点写盘覆盖外部修改
           if (timerRef.current) {
             clearTimeout(timerRef.current);

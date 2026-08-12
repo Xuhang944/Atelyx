@@ -20,6 +20,7 @@ import {
   recordNoteDiskContent,
   renameCanvasVault,
   importAttachmentVault,
+  isKnownNoteDiskContent,
 } from "@/services/vault";
 import { readTableVault } from "@/services/table";
 import { tableToSnapshotText } from "@/utils/table";
@@ -233,19 +234,36 @@ const undoMgr = createUndoManager<Snapshot>({
 });
 
 // ===== 自写回放抑制（watcher）=====
-// schedulePersist 写完成时记录时刻；watcher 收到 .atlx 事件时若在抑制窗口内则视为自我回放，
-// 不弹「画布已被外部修改」误提示。.md/附件事件不抑制（刷新幂等，silent 更新不 persist）。
-let lastSelfSaveAt = 0;
+// 写盘/CRUD 完成时按「文件路径」记录时刻；watcher 收到同路径事件且在抑制窗口内 → 视为自写回放，
+// 不弹「已被外部修改」误提示。重命名/移动类操作经 Rust 扫盘改写多个 .atlx（前端不知全集），
+// 用全局标记兜底。.md/附件事件不抑制（刷新幂等，silent 更新不 persist）。
 const SELF_SAVE_SUPPRESS_MS = 2000;
+/** 路径级自写时刻（保存/CRUD 记录具体文件，防跨文件误抑制——存表格不再吞掉画布外部修改）。 */
+const selfSavedAt = new Map<string, number>();
+let globalSelfSaveAt = 0;
 
-/** watcher 事件处理器判断当前 .atlx 事件是否为 app 自写的回放。 */
-export function isSelfSaveEcho(): boolean {
-  return Date.now() - lastSelfSaveAt < SELF_SAVE_SUPPRESS_MS;
+/** watcher 事件处理器判断路径为 path 的事件是否为 app 自写的回放（未命中路径时按全局兜底）。 */
+export function isSelfSaveEcho(path?: string): boolean {
+  const now = Date.now();
+  if (now - globalSelfSaveAt < SELF_SAVE_SUPPRESS_MS) return true;
+  if (path && now - (selfSavedAt.get(path) ?? 0) < SELF_SAVE_SUPPRESS_MS) return true;
+  return false;
 }
 
-/** 供其他 store（appStore/vaultStore）在「软件内写 .atlx」后标记自写，抑制 watcher 误报。 */
-export function markSelfSave(): void {
-  lastSelfSaveAt = Date.now();
+/** 供其他 store（appStore/vaultStore）在「软件内写文件」后标记自写，抑制 watcher 误报。
+ * path = 本次写过的具体文件（保存/CRUD）；省略 = 全局（重命名扫盘改写的文件集合未知）。 */
+export function markSelfSave(path?: string | string[]): void {
+  const now = Date.now();
+  // 顺带清理过期条目：抑制窗口外的记录不再需要，防长会话累积（重命名每次新增旧+新两键）
+  for (const [p, at] of selfSavedAt) {
+    if (now - at >= SELF_SAVE_SUPPRESS_MS) selfSavedAt.delete(p);
+  }
+  if (path === undefined) {
+    globalSelfSaveAt = now;
+    return;
+  }
+  const paths = typeof path === "string" ? [path] : path;
+  for (const p of paths) selfSavedAt.set(p, now);
 }
 
 /** 非 pushUndo 的数据变更后调用：作废 redo 栈。
@@ -274,7 +292,7 @@ async function persistNow(): Promise<void> {
       messagesByConv,
       baseUpdatedAt
     );
-    lastSelfSaveAt = Date.now();
+    markSelfSave(canvasFile);
     // 竞态守卫：await 期间可能已切换画布/清空状态（load 异步读盘），旧画布的写盘结果
     // 不得覆盖新画布的乐观锁基准/脏标记（否则新画布下次保存被误判冲突、脏编辑被吞）
     const cur = useCanvasStore.getState();
@@ -771,11 +789,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     set({ canvasTitle: title });
     try {
       await renameCanvasVault(canvasFile, title);
-      // 软件内重命名写 .atlx 文件，标记自写抑制 watcher 误报 + 同步乐观锁基准防下次保存误冲突
-      markSelfSave();
-      // 同目录改文件名：同步 canvasFile 到新路径（防下次保存写旧路径 → createdAt 重置/乐观锁失效/
-      // 外部修改失配）；appStore.currentCanvasFile 同源（打开路径/文件面板高亮），一并同步
+      // 同目录改文件名：先算新路径再标记自写（旧路径删除 + 新路径创建两路事件一并抑制），
+      // 并同步乐观锁基准防下次保存误冲突
       const newFile = siblingPath(canvasFile, `${sanitizeFilename(title)}.atlx`);
+      markSelfSave([canvasFile, newFile]);
+      // 同步 canvasFile 到新路径（防下次保存写旧路径 → createdAt 重置/乐观锁失效/
+      // 外部修改失配）；appStore.currentCanvasFile 同源（打开路径/文件面板高亮），一并同步
       set({ canvasFile: newFile });
       if (useAppStore.getState().currentCanvasFile === canvasFile) {
         useAppStore.setState({ currentCanvasFile: newFile });
@@ -1032,6 +1051,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     if (ids.length === 0) return;
     try {
       const bodyMd = await readNote(file);
+      // 自写回波守卫：磁盘内容 == 应用最近已知磁盘内容（自写回波）→ 跳过覆盖。
+      // 防「提交编辑 A → 保存写盘 → 回波到达前又提交编辑 B → 回波把 B 覆盖回 A」的竞态丢字；
+      // 内存态要么与磁盘一致、要么更新，跳过恒安全（真实外部变化内容必不相等，仍走刷新）
+      if (isKnownNoteDiskContent(file, bodyMd)) return;
       // 同步磁盘基线（lastWrittenMd）：外部编辑刷新后用户「改回旧值」时脏检测能感知差异
       // （基线陈旧会导致回退被误判为「与上次写入一致」而跳过写盘，外部内容永久覆盖用户回退）
       recordNoteDiskContent(file, bodyMd);

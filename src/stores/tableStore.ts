@@ -215,7 +215,7 @@ const persistCtl = createPersistController<boolean>({
     const { tableFile, id, title, fields, rows, baseUpdatedAt } = useTableStore.getState();
     if (!tableFile) return;
     try {
-      markSelfSave();
+      markSelfSave(tableFile);
       const updatedAt = await writeTableVault(
         { schema: TABLE_SCHEMA, id, title, fields, rows, createdAt: 0, updatedAt: Date.now() },
         tableFile,

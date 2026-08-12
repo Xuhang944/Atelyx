@@ -445,7 +445,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const actual = dedupeFilename(title, siblings);
     try {
       const { id, file } = await createCanvasVault(actual, dir);
-      markSelfSave();
+      markSelfSave(file);
       // 画布 CRUD 需同时刷新两个数据源：canvases 列表（appStore）+ 文件树（vaultStore.tree 含 .atlx 行），
       // 漏刷会导致文件面板不显示新画布，直到重进仓库（bug 修复
       await get().loadList();
@@ -465,11 +465,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     const actual = dedupeFilename(title, siblings);
     try {
       await renameCanvasVault(row.file, actual);
-      markSelfSave();
+      // 重命名后文件名变了：先算新路径再标记自写（旧路径删除 + 新路径创建事件一并抑制），
       // 当前画布磁盘 .atlx 已被 Rust 改（title + 同目录改文件名），同步乐观锁基准防下次保存误冲突
-      await useCanvasStore.getState().syncBaseUpdatedAt();
-      // 重命名后文件名变了：同步当前画布 file（防下次保存写旧路径产生双文件）
       const newFile = siblingPath(row.file, `${sanitizeFilename(actual)}.atlx`);
+      markSelfSave([row.file, newFile]);
+      await useCanvasStore.getState().syncBaseUpdatedAt();
+      // 同步当前画布 file（防下次保存写旧路径产生双文件）
       useUiStateStore.getState().renameLastCanvas(row.file, newFile);
       if (get().currentCanvasFile === row.file) {
         useCanvasStore.setState({ canvasFile: newFile });
@@ -493,7 +494,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (newFile === row.file) return row.file;
     try {
       await moveCanvasVault(row.file, newFile);
-      markSelfSave();
+      markSelfSave([row.file, newFile]);
       // 当前打开的就是被移动的画布：同步 file，防下次保存写旧路径产生双文件
       useUiStateStore.getState().renameLastCanvas(row.file, newFile);
       if (get().currentCanvasFile === row.file) {
@@ -519,8 +520,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       const canvas = await readCanvasVault(row.file);
       canvas.id = crypto.randomUUID();
       canvas.title = actual;
-      await writeCanvasVault(canvas, siblingPath(row.file, `${sanitizeFilename(actual)}.atlx`));
-      markSelfSave();
+      const target = siblingPath(row.file, `${sanitizeFilename(actual)}.atlx`);
+      await writeCanvasVault(canvas, target);
+      markSelfSave(target);
       await get().loadList();
       // 文件树同步刷新（新增 .atlx 行）
       await useVaultStore.getState().loadFiles();
@@ -533,7 +535,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   deleteCanvas: async (row) => {
     try {
       await deleteCanvasVault(row.file);
-      markSelfSave();
+      markSelfSave(row.file);
       const { currentCanvasId, currentCanvasFile } = get();
       // 删除的是当前画布：清空 canvasStore（含未落盘 saveTimer / 进行中的流），
       // 否则残留 timer 会重写已删文件、watcher 事件匹配旧 id 产生误导 reload
@@ -584,7 +586,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       .map((c) => c.title);
     try {
       const row = await convertWhiteboardToAtlx(file, title, siblings);
-      markSelfSave();
+      markSelfSave(row.file);
       // 转换生成了新 .atlx：刷新两个数据源（画布列表 + 文件树），成功后打开新画布
       await get().loadList();
       await useVaultStore.getState().loadFiles();
