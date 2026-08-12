@@ -46,13 +46,6 @@ export type TableSelection =
   | { kind: "all" }
   | null;
 
-/** 覆盖编辑瞬态意图（选中单元格后打字触发；initial = 覆盖初始内容，IME 为 ""）。 */
-export interface CellOverwriteTarget {
-  rowId: string;
-  fieldId: string;
-  initial: string;
-}
-
 interface TableStoreState {
   /** 当前打开的 .atb 相对仓库根路径（null = 未打开）。 */
   tableFile: string | null;
@@ -71,8 +64,6 @@ interface TableStoreState {
   selectedRowId: string | null;
   /** 当前选中范围（单元格/行/列/整表互斥；表格视图高亮用，时间线只读 selectedRowId）。 */
   selection: TableSelection;
-  /** 覆盖编辑瞬态意图（打字触发 → TableCell 消费后清除；不持久化）。 */
-  overwriteTarget: CellOverwriteTarget | null;
   view: TableView;
   /** 最近一次撤销回退的编辑会话单元格（undo 弹掉会话入口时置位；TableCell 按布尔 selector 订阅回退草稿，无关撤销为 null）。 */
   undoResetCell: { rowId: string; fieldId: string } | null;
@@ -136,10 +127,6 @@ interface TableStoreState {
   selectField: (fieldId: string) => void;
   /** 选中整个表格（左上角点击）。 */
   selectAll: () => void;
-  /** 请求目标单元格进入覆盖编辑（清空原值写入 initial；表格视图键盘监听触发）。 */
-  triggerOverwrite: (rowId: string, fieldId: string, initial: string) => void;
-  /** 消费覆盖意图（TableCell 匹配本单元格后清除）。 */
-  clearOverwriteTarget: () => void;
   setView: (view: TableView) => void;
   /** 保存当前快照到 undo 栈（清空 redo 栈）。结构变更方法内置；拖拽/编辑会话入口由调用方触发。 */
   pushUndo: () => void;
@@ -184,7 +171,6 @@ const undoMgr = createUndoManager<TableSnapshot>({
         selection: stale ? null : sel,
         selectedRowId:
           s.selectedRowId && !rowIds.has(s.selectedRowId) ? null : s.selectedRowId,
-        overwriteTarget: null,
       };
     }),
 });
@@ -278,7 +264,6 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   error: null,
   selectedRowId: null,
   selection: null,
-  overwriteTarget: null,
   view: "table",
   undoResetCell: null,
 
@@ -302,7 +287,6 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
         error: null,
         selectedRowId: null,
         selection: null,
-        overwriteTarget: null,
         undoResetCell: null,
       });
     } catch (e) {
@@ -321,7 +305,6 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
         error: e instanceof Error ? e.message : String(e),
         selectedRowId: null,
         selection: null,
-        overwriteTarget: null,
         undoResetCell: null,
       });
     }
@@ -361,7 +344,6 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
       error: null,
       selectedRowId: null,
       selection: null,
-      overwriteTarget: null,
       undoResetCell: null,
     });
   },
@@ -387,7 +369,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
           : r,
       ),
     }));
-    // 编辑会话的提交（入栈点在会话入口：triggerOverwrite/双击）；任何新变更作废 redo
+    // 编辑会话的提交（入栈点在会话入口：选中打字/双击）；任何新变更作废 redo
     touchRedo();
     schedulePersist();
   },
@@ -664,14 +646,6 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   selectField: (fieldId) => set({ selection: { kind: "column", fieldId }, selectedRowId: null }),
 
   selectAll: () => set({ selection: { kind: "all" }, selectedRowId: null }),
-
-  triggerOverwrite: (rowId, fieldId, initial) => {
-    // 覆盖编辑会话开始（此刻旧值仍在）：提交时才确认撤销单元，Esc/无改动不产生空撤销
-    beginEditSession(rowId, fieldId);
-    set({ overwriteTarget: { rowId, fieldId, initial } });
-  },
-
-  clearOverwriteTarget: () => set({ overwriteTarget: null }),
 
   setView: (view) => set({ view }),
 

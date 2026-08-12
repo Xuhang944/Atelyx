@@ -32,6 +32,7 @@ export function ImageLightbox({ images, index, onIndexChange, onClose }: Props) 
 
   return (
     <div
+      data-lightbox
       className="fixed inset-0 z-[100] flex items-center justify-center"
       style={{ background: "rgba(0,0,0,0.85)" }}
       onClick={onClose}

@@ -6,8 +6,9 @@
  *
  * 交互要点：
  * - 选中体系（互斥）：左上角整格单击全选（角标示意）/ 右键全选并弹菜单；表头单击选整列；
- *   行首单击选整行；单元格单击仅选中（td 金色内描边，编辑时保持单元格大小）。选中后打字 = 覆盖编辑；
- *   双击单元格 = 进入编辑。
+ *   行首单击选整行；单元格按下不动（<5px）松手 = 选中（td 金色内描边，进入隐藏编辑态，
+ *   编辑时保持单元格大小），拖动（>5px）= 区域选择/移动手势预留（不进编辑）。
+ *   选中后打字直达常驻输入框，首个字符/IME 组合覆盖原值；双击 = 取消覆盖（保留原值）。
  * - 行拖拽为 pointer 模拟（HTML5 DnD 在 WebView2 不可靠，与文件面板同策略）：
  *   行首手柄按下 → 位移超 5px 激活 → 按行元素中点计算插入位（金色插入线指示）→ 松手 moveRow。
  * - 列宽：列头右缘拖拽（钳制 MIN/MAX）；行高：行首底缘拖拽。表头/行首/整表选中后右键菜单
@@ -21,7 +22,7 @@ import { FileOutput, GripVertical, MoreHorizontal, MoveDiagonal, Plus, Sigma } f
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
-import { TableCell } from "@/components/table/TableCell";
+import { TableCell, clearCell, navigateCell, navDirection } from "@/components/table/TableCell";
 import { TableTimeline } from "@/components/table/TableTimeline";
 import {
   AddFieldMenu,
@@ -43,7 +44,7 @@ import {
 } from "@/constants/table";
 import type { TableField, TableRow } from "@/types";
 
-/** 表格编辑器：areaId 用于聚焦判定（覆盖编辑键盘监听门控，同画布快捷键惯例）。 */
+/** 表格编辑器：areaId 用于聚焦判定（撤销/重做快捷键门控，同画布快捷键惯例）。 */
 export function TableEditor({ areaId }: { areaId: string }) {
   const fields = useTableStore((s) => s.fields);
   const rows = useTableStore((s) => s.rows);
@@ -52,7 +53,6 @@ export function TableEditor({ areaId }: { areaId: string }) {
   const selectCell = useTableStore((s) => s.selectCell);
   const selectField = useTableStore((s) => s.selectField);
   const selectAll = useTableStore((s) => s.selectAll);
-  const triggerOverwrite = useTableStore((s) => s.triggerOverwrite);
   const focusedAreaId = useUiStateStore((s) => s.focusedAreaId);
   const addRow = useTableStore((s) => s.addRow);
   const view = useTableStore((s) => s.view);
@@ -128,59 +128,114 @@ export function TableEditor({ areaId }: { areaId: string }) {
     dragRef.current = { rowId, startX: e.clientX, startY: e.clientY, active: false };
   }, []);
 
-  // ===== 选中单元格后打字 = 覆盖编辑 + Ctrl+Z/Y 撤销/重做（全局键盘监听；单击仅选中不聚焦，字符键直达覆盖）=====
+  // ===== Ctrl+Z/Y 撤销/重做 + 选中态焦点兜底导航（全局键盘监听；选中单元格的覆盖输入由常驻输入框承接，不经此监听）=====
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey || e.metaKey || e.altKey) {
-        // 撤销/重做：仅表格面积聚焦时生效（同画布快捷键门控惯例）；编辑框聚焦也接管
-        // （受控 input/textarea 原生撤销不可靠，整编辑会话一步撤销与 Esc 放弃编辑互补）
-        const ctrl = e.ctrlKey || e.metaKey;
-        if (ctrl && !e.altKey && focusedAreaId === areaId) {
-          const key = e.key.toLowerCase();
-          if (key === "z" && !e.shiftKey) {
-            e.preventDefault();
-            useTableStore.getState().undo();
-            return;
-          }
-          if (key === "y" || (key === "z" && e.shiftKey)) {
-            e.preventDefault();
-            useTableStore.getState().redo();
-            return;
-          }
+      // 仅表格面积聚焦时生效（同画布快捷键门控惯例）；编辑框聚焦同样接管
+      // （受控 input/textarea 原生撤销不可靠，整编辑会话一步撤销与 Esc 放弃编辑互补）
+      const ctrl = e.ctrlKey || e.metaKey;
+      if (ctrl && !e.altKey && focusedAreaId === areaId) {
+        const key = e.key.toLowerCase();
+        if (key === "z" && !e.shiftKey) {
+          e.preventDefault();
+          useTableStore.getState().undo();
+          return;
         }
-        return;
+        if (key === "y" || (key === "z" && e.shiftKey)) {
+          e.preventDefault();
+          useTableStore.getState().redo();
+          return;
+        }
       }
-      if (e.key === "Escape" || e.key === "Enter" || e.key === "Tab" || e.key === "Backspace" || e.key === "Delete") return;
-      if (e.key.startsWith("Arrow") || e.key === "Home" || e.key === "End" || e.key === "PageUp" || e.key === "PageDown") return;
-      if (/^F\d{1,2}$/.test(e.key)) return;
+      if (ctrl || e.altKey) return;
+      if (focusedAreaId !== areaId) return;
+      // —— 焦点兜底导航 ——
+      // 导航撞上非文本字段单元格（singleSelect/image 无常驻输入框）或点击空白后焦点落 body，
+      // 方向键默认行为会滚动表格：此处按选中态语义接管导航；输入框聚焦（编辑态/选中态）时
+      // 自身 keydown 已处理，不重复；lightbox 打开时方向键归其切图，不接管。
       const st = useTableStore.getState();
       if (st.view !== "table") return;
       const sel = st.selection;
       if (sel?.kind !== "cell") return;
-      // 仅表格面积聚焦时生效（跨面积打字不误写单元格，同画布快捷键门控惯例）
-      if (focusedAreaId !== areaId) return;
-      // 仅文本类字段支持覆盖输入（singleSelect/image 无文本编辑，不产生覆盖意图）
-      const field = st.fields.find((f) => f.id === sel.fieldId);
-      if (!field || (field.type !== "text" && field.type !== "number" && field.type !== "duration")) return;
-      // 编辑态/其他输入元素聚焦时忽略（防重复触发与误吞打字）
       const el = document.activeElement;
-      if (
-        el &&
-        (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.tagName === "SELECT" ||
-          (el as HTMLElement).isContentEditable)
-      ) {
+      if (el && el !== document.body && el !== document.documentElement) return;
+      if (document.querySelector("[data-lightbox]")) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        st.selectRow(null); // 取消并清选中
         return;
       }
-      // IME 组合开始（中文拼音）→ 覆盖为空，组合继续输入；可打印字符 → 直接覆盖为该字符
-      if (e.isComposing || e.key === "Process") {
-        st.triggerOverwrite(sel.rowId, sel.fieldId, "");
-      } else if (e.key.length === 1) {
-        st.triggerOverwrite(sel.rowId, sel.fieldId, e.key);
+      if (e.key === "Backspace" || e.key === "Delete") {
+        e.preventDefault(); // 防浏览器默认（滚动/后退）
+        // 输入框失焦时（点了表格空白）清空语义照常：文本类字段清空，其余无操作
+        const field = st.fields.find((f) => f.id === sel.fieldId);
+        if (field && (field.type === "text" || field.type === "number" || field.type === "duration")) {
+          clearCell(sel.rowId, sel.fieldId);
+        }
+        return;
+      }
+      const dir = navDirection(e.key);
+      if (dir) {
+        e.preventDefault();
+        navigateCell(sel.rowId, sel.fieldId, dir); // 移动选中（高亮跟随，输入框回到文本列自动聚焦）
+        return;
+      }
+      // 可打印字符（焦点落空后打字）：重新聚焦常驻输入框，不 preventDefault——
+      // 字符随 keydown 默认行为落入新焦点元素，覆盖编辑照常（同步聚焦机制）
+      if (e.key.length === 1) {
+        const field = st.fields.find((f) => f.id === sel.fieldId);
+        if (field && (field.type === "text" || field.type === "number" || field.type === "duration")) {
+          rowsElRef.current
+            ?.querySelector<HTMLTextAreaElement | HTMLInputElement>("[data-cell-editor]")
+            ?.focus();
+        }
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [triggerOverwrite, focusedAreaId, areaId]);
+  }, [focusedAreaId, areaId]);
+
+  // ===== 单元格按下手势：<5px 松手 = 选中（进入隐藏编辑态）；>5px 拖动 = 区域选择/移动手势预留（不进编辑）=====
+  const cellPressRef = useRef<{ rowId: string; fieldId: string; x: number; y: number; active: boolean } | null>(null);
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const p = cellPressRef.current;
+      if (!p) return;
+      if (!p.active && Math.hypot(e.clientX - p.x, e.clientY - p.y) > 5) {
+        cellPressRef.current = { ...p, active: true };
+      }
+    };
+    const onUp = () => {
+      cellPressRef.current = null;
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    return () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+    };
+  }, []);
+
+  const startCellPress = useCallback((e: React.PointerEvent, rowId: string, fieldId: string) => {
+    if (e.button !== 0) return;
+    cellPressRef.current = { rowId, fieldId, x: e.clientX, y: e.clientY, active: false };
+  }, []);
+
+  /** 单元格松手（未拖动）→ 选中 + 标记面积聚焦（点 td 不冒泡到面积层，快捷键门控需显式标记）+
+   *  聚焦常驻输入框（已选中单元格的再次点击不触发重渲染，须直接聚焦防失焦后打字失效）。 */
+  const releaseCellPress = useCallback(
+    (rowId: string, fieldId: string) => {
+      const p = cellPressRef.current;
+      if (!p || p.active) return;
+      cellPressRef.current = null;
+      useUiStateStore.getState().setFocusedArea(areaId);
+      selectCell(rowId, fieldId);
+      rowsElRef.current
+        ?.querySelector<HTMLTextAreaElement | HTMLInputElement>("[data-cell-editor]")
+        ?.focus();
+    },
+    [areaId, selectCell],
+  );
 
   // ===== 列宽 / 行高拖拽调整（指针模拟，与行拖拽同策略）=====
   const resizeRef = useRef<
@@ -525,10 +580,9 @@ export function TableEditor({ areaId }: { areaId: string }) {
                         background: highlightBg(colHighlighted(f.id)),
                         boxShadow: cellSelected(row.id, f.id) ? "inset 0 0 0 2px var(--accent)" : undefined,
                       }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        selectCell(row.id, f.id);
-                      }}
+                      onPointerDown={(e) => startCellPress(e, row.id, f.id)}
+                      onPointerUp={() => releaseCellPress(row.id, f.id)}
+                      onClick={(e) => e.stopPropagation()}
                     >
                       <TableCell field={f} row={row} />
                     </td>
