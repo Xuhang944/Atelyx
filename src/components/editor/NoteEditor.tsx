@@ -7,12 +7,14 @@
  *   写入完成时若已有更新输入则保持「保存中…」，避免误报「已自动保存」；状态写 vaultStore 由面积 header 展示。
  * - 分层：走 vaultStore（readNoteContent / saveNoteContent），不直调 service。
  */
-import { Check, MoreHorizontal, Pencil } from "lucide-react";
+import { Check, MoreHorizontal, Pencil, Wand2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { useVaultStore, lastFolderRenameTarget, lastNoteRenameTarget, isKnownNoteDiskContent, type NoteSaveStatus } from "@/stores/vaultStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
+import { useChatPanelStore } from "@/stores/chatPanelStore";
+import { Menu, MenuItem } from "@/components/common/Menu";
 import type { BacklinkRow } from "@/types";
 import {
   MARKDOWN_PLUGINS,
@@ -43,6 +45,35 @@ export function NoteEditor({ file }: { file: string }) {
   const [sourceMode, setSourceMode] = useState(false);
   /** 右上角「···」浮层菜单开关。 */
   const [showMenu, setShowMenu] = useState(false);
+  /** 划词 AI 改写菜单（右键时的视口坐标 + 选中文本）；null = 关闭。 */
+  const [rewriteMenu, setRewriteMenu] = useState<{
+    x: number;
+    y: number;
+    text: string;
+  } | null>(null);
+  /** 划词改写菜单第二阶段：评论输入框（repositionDeps 切换菜单内容）。 */
+  const [rewriteOpen, setRewriteOpen] = useState(false);
+  /** 划词改写评论草稿。 */
+  const [rewriteComment, setRewriteComment] = useState("");
+
+  /** 内容区右键：有划词选区（且落在编辑器内容区内）→ 弹「AI 改写」菜单（三模式共用 DOM 选区）。 */
+  const handleContentContextMenu = (e: React.MouseEvent) => {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const text = sel.toString().trim();
+    if (!text) return;
+    // 选区须落在内容区内（data-note-content），顶部条/属性区/反链区的选区不触发
+    const container = sel.getRangeAt(0).commonAncestorContainer;
+    const inContent =
+      container instanceof Element
+        ? !!container.closest("[data-note-content]")
+        : !!container.parentElement?.closest("[data-note-content]");
+    if (!inContent) return;
+    e.preventDefault();
+    setRewriteComment("");
+    setRewriteOpen(false);
+    setRewriteMenu({ x: e.clientX, y: e.clientY, text });
+  };
   /** 非用户编辑的 content 更新序号（加载完成/外部刷新/冲突重载时递增），MarkdownEditor 据此同步正文。 */
   const [editorSyncSeq, setEditorSyncSeq] = useState(0);
   /** 外部修改冲突：本地有未保存改动 + 磁盘已被外部改过。状态存 vaultStore 由面积 header 展示，期间暂停自动保存防覆盖。 */
@@ -326,7 +357,12 @@ export function NoteEditor({ file }: { file: string }) {
   };
 
   return (
-    <div ref={editorRootRef} className="h-full flex flex-col" style={{ background: "var(--bg-primary)" }}>
+    <div
+      ref={editorRootRef}
+      className="h-full flex flex-col"
+      style={{ background: "var(--bg-primary)" }}
+      onContextMenu={handleContentContextMenu}
+    >
       {/* 顶部条：右侧编辑/预览切换（保存状态已移至面积 header） */}
       <div
         className="px-3 py-1 flex items-center gap-1.5 text-xs flex-shrink-0 select-none"
@@ -418,6 +454,7 @@ export function NoteEditor({ file }: { file: string }) {
         /* 源码模式：完整 Markdown 源码 textarea（含 frontmatter）；切换回实时预览编辑时内容经 content 双向同步。
            未激活编辑（preview）时只读（阅读/编辑分离，仅可查看源码），双击激活后进入可编辑源码模式 */
         <textarea
+          data-note-content
           value={content}
           onChange={(e) => handleChange(e.target.value)}
           readOnly={preview}
@@ -443,6 +480,7 @@ export function NoteEditor({ file }: { file: string }) {
         /* 预览：只读渲染 Markdown（扩展语法公共配置；wiki 链接预览中不可定位，灰显降级）。
            四边 border 与 textarea 的全局边框（--input-border）对齐：切换预览时顶部/左右/下方边线均不再变化 */
         <div
+          data-note-content
           className="flex-1 overflow-auto markdown-body max-w-none break-words p-4 text-sm leading-relaxed"
           style={{ background: "var(--bg-primary)", color: "var(--text-primary)", border: "1px solid var(--input-border)" }}
           onDoubleClick={() => {
@@ -472,6 +510,7 @@ export function NoteEditor({ file }: { file: string }) {
            frontmatter 由属性面板管理；编辑器自身样式见 styles/index.css）；
            border 与预览/源码模式对齐（1px），accent 高亮 = 进入编辑模式（与源码模式聚焦时一致） */
         <div
+          data-note-content
           className="markdown-body flex-1 overflow-auto"
           style={{
             background: "var(--bg-primary)",
@@ -528,6 +567,87 @@ export function NoteEditor({ file }: { file: string }) {
       >
         {content.length} 字
       </div>
+
+      {/* 划词 AI 改写菜单：第一阶段 = 「AI 改写」入口；确认后追加评论输入框（repositionDeps 换内容），
+          确认 → 改写请求入队面板（queueNoteRewrite），面板输入框自动插入指令文本 */}
+      {rewriteMenu && (
+        <Menu
+          x={rewriteMenu.x}
+          y={rewriteMenu.y}
+          onClose={() => {
+            setRewriteMenu(null);
+            setRewriteOpen(false);
+          }}
+          widthClass="w-72"
+          contentClassName="p-1.5"
+          repositionDeps={[rewriteOpen]}
+        >
+          {!rewriteOpen ? (
+            <MenuItem onClick={() => setRewriteOpen(true)}>
+              <Wand2 size={14} className="flex-shrink-0" /> AI 处理（发送到对话面板）
+            </MenuItem>
+          ) : (
+            <div>
+              <textarea
+                autoFocus
+                value={rewriteComment}
+                onChange={(e) => setRewriteComment(e.target.value)}
+                placeholder="追加评论/要求（可选，如：语气更专业）"
+                rows={3}
+                spellCheck={false}
+                className="w-full resize-none outline-none rounded border px-2 py-1.5 text-xs leading-relaxed"
+                style={{
+                  background: "var(--input-bg)",
+                  color: "var(--text-primary)",
+                  borderColor: "var(--input-border)",
+                }}
+                onKeyDown={(e) => {
+                  // Enter 确认 / Shift+Enter 换行；IME 组合期间 Enter 上屏不触发
+                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault();
+                    useChatPanelStore.getState().queueNoteRewrite({
+                      noteFile: file,
+                      label: noteTitleFromFile(file),
+                      selectedText: rewriteMenu.text,
+                      comment: rewriteComment.trim(),
+                    });
+                    setRewriteMenu(null);
+                    setRewriteOpen(false);
+                  }
+                }}
+              />
+              <div className="flex justify-end gap-1 mt-1.5">
+                <button
+                  onClick={() => {
+                    setRewriteMenu(null);
+                    setRewriteOpen(false);
+                  }}
+                  className="px-2 py-1 rounded text-xs hover:opacity-80"
+                  style={{ color: "var(--text-secondary)" }}
+                >
+                  取消
+                </button>
+                <button
+                  onClick={() => {
+                    useChatPanelStore.getState().queueNoteRewrite({
+                      noteFile: file,
+                      label: noteTitleFromFile(file),
+                      selectedText: rewriteMenu.text,
+                      comment: rewriteComment.trim(),
+                    });
+                    setRewriteMenu(null);
+                    setRewriteOpen(false);
+                  }}
+                  className="px-2 py-1 rounded text-xs"
+                  style={{ background: "var(--accent)", color: "var(--accent-fg)" }}
+                >
+                  发送到面板
+                </button>
+              </div>
+            </div>
+          )}
+        </Menu>
+      )}
     </div>
   );
 }

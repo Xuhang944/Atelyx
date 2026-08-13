@@ -15,26 +15,13 @@ import {
   readTableVault,
   writeTableVault,
 } from "@/services/table";
-import { chatOnce } from "@/services/ai/client";
 import { pickFile, saveFile } from "@/services/dialog";
 import { markSelfSave } from "@/stores/canvasStore";
-import { useSettingsStore } from "@/stores/settingsStore";
+import { useVaultStore } from "@/stores/vaultStore";
 import { createPersistController } from "@/utils/persist";
 import { createUndoManager } from "@/utils/undoStack";
-import { parseFillRows } from "@/utils/table";
-import type { CalcType, CellValue, FieldType, Message, TableField, TableRow } from "@/types";
-
-/** AI 填行 system 提示词：字段定义内联 + 严格 JSON 数组输出约束。 */
-const FILL_ROWS_SYSTEM_PROMPT = `你是表格数据填充助手。根据字段定义与用户提供的对话内容，生成表格行数据。
-字段定义（名称、类型、选项）：
-{fields}
-
-输出要求：
-1. 只输出一个 JSON 数组，每个元素是一个对象，键 = 字段名称，值 = 该字段的值；
-2. 文本字段输出字符串；数字/时长字段输出数字（秒）；单选字段只能从选项中选择；
-3. 图片字段不输出；
-4. 没有合适内容的字段省略该键；
-5. 除 JSON 数组外不要输出任何文字。`;
+import { coerceRowsJson } from "@/utils/table";
+import type { CalcType, CellValue, FieldType, TableField, TableRow } from "@/types";
 
 /** 编辑器视图：表格 / 时间线（内存态不持久化）。 */
 export type TableView = "table" | "timeline";
@@ -90,15 +77,14 @@ interface TableStoreState {
   /** 导出 xlsx：系统保存对话框选目标路径 → 导出当前内容。成功返回 true。 */
   exportXlsx: () => Promise<boolean>;
   /**
-   * AI 填行：对话节点右键「生成到表格」——读取目标表字段定义，按对话消息内容
-   * 请求 LLM 生成行数据并**追加**到表尾（不清空已有行），成功后表格成为当前打开表。
-   * selection = 源对话节点的 {providerId, model}（null = 跟随仓库默认）。
+   * AI 自主填行（append_table_row 工具）：按标题匹配目标表，字段名强转后**追加**行。
+   * 目标表非当前打开 → 先落盘当前表再加载目标表（切换为用户可见行为）。
+   * 返回回填给 AI 的结果（成功追加行数 / 失败原因，summary 供工具可视化块展示）。
    */
-  generateRowsFromConversation: (
-    tableFile: string,
-    selection: { providerId?: string; model?: string } | null,
-    messages: Message[],
-  ) => Promise<{ ok: boolean; reason?: string }>;
+  appendRowsFromAi: (
+    tableTitle: string,
+    rows: unknown[],
+  ) => Promise<{ ok: boolean; summary: string }>;
   addField: (name: string, type: FieldType) => void;
   insertField: (index: number, name: string, type: FieldType) => void;
   renameField: (fieldId: string, name: string) => void;
@@ -479,48 +465,48 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
     }
   },
 
-  generateRowsFromConversation: async (tableFile, selection, messages) => {
-    // 目标表不是当前打开表：先落盘当前表（防脏编辑丢失）再加载目标表（其字段成为生成基准）
-    if (get().tableFile !== tableFile) {
+  appendRowsFromAi: async (tableTitle, rows) => {
+    // 按标题匹配（文件名 = 标题，含 .atb 扩展名；大小写不敏感兜底）
+    const tables = useVaultStore.getState().tableList;
+    const target =
+      tables.find((t) => t.name.replace(/\.atb$/i, "") === tableTitle) ??
+      tables.find(
+        (t) => t.name.toLowerCase().replace(/\.atb$/i, "") === tableTitle.toLowerCase(),
+      );
+    if (!target) {
+      const available = tables.map((t) => t.name.replace(/\.atb$/i, "")).join("、");
+      return {
+        ok: false,
+        summary: `未找到标题为「${tableTitle}」的表格（可用标题：${available || "无"}）`,
+      };
+    }
+    // 目标表非当前打开：先落盘当前表（防脏编辑丢失）再加载目标表（其字段成为强转基准）
+    if (get().tableFile !== target.file) {
       await get().flush();
-      await get().load(tableFile);
-      if (get().tableFile !== tableFile) return { ok: false, reason: "读取目标表格失败" };
+      await get().load(target.file);
+      if (get().tableFile !== target.file) {
+        return { ok: false, summary: "读取目标表格失败" };
+      }
     }
     const { fields, title } = get();
-    if (fields.length === 0) return { ok: false, reason: "目标表格没有字段，请先添加字段" };
-    // 模型解析链与对话发送一致：节点指定 → 仓库默认（未配置报错）
-    const target = useSettingsStore.getState().resolveChatTarget(selection);
-    if (!target.ok) return { ok: false, reason: target.error };
-    const fieldLines = fields
-      .map((f) => {
-        const opts = f.type === "singleSelect" && f.options?.length ? `（选项：${f.options.join("/")}）` : "";
-        return `${f.name}：${f.type}${opts}`;
-      })
-      .join("\n");
-    const transcript = messages
-      .map((m) => `${m.role === "user" ? "用户" : "AI"}: ${m.content}`)
-      .join("\n\n");
-    try {
-      const raw = await chatOnce({
-        baseUrl: target.provider.baseUrl,
-        apiKey: target.provider.apiKey,
-        model: target.model,
-        messages: [
-          { role: "system", content: FILL_ROWS_SYSTEM_PROMPT.replace("{fields}", fieldLines) },
-          { role: "user", content: `表格名称：${title}\n\n对话内容：\n${transcript}` },
-        ],
-      });
-      const rows = parseFillRows(raw, fields);
-      if (rows.length === 0) return { ok: false, reason: "AI 未返回有效行数据，请重试" };
-      // 填行 = 一步撤销单元（结构性追加，用户预期可撤销）
-      undoMgr.push();
-      set((s) => ({ rows: [...s.rows, ...rows] }));
-      schedulePersist();
-      return { ok: true };
-    } catch (e) {
-      console.error("AI 填行失败", e);
-      return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+    if (fields.length === 0) {
+      return { ok: false, summary: "目标表格没有字段，请先添加字段" };
     }
+    // 字段名强转兜底；空行（字段名全不匹配）丢弃
+    const coerced = coerceRowsJson(rows, fields).filter(
+      (r) => Object.keys(r.values).length > 0,
+    );
+    if (coerced.length === 0) {
+      return {
+        ok: false,
+        summary: `行数据与字段不匹配（字段：${fields.map((f) => f.name).join("、")}）`,
+      };
+    }
+    // 追加 = 一步撤销单元（结构性变更，用户预期可撤销）
+    undoMgr.push();
+    set((s) => ({ rows: [...s.rows, ...coerced] }));
+    schedulePersist();
+    return { ok: true, summary: `已向「${title}」追加 ${coerced.length} 行` };
   },
 
   addField: (name, type) => {

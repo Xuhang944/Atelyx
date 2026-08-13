@@ -8,11 +8,15 @@ import {
   deleteChatMessages,
   readNote,
 } from "@/services/vault";
-import { toApiMessages, type ChatParams } from "@/services/ai/client";
+import { toApiMessages } from "@/services/ai/client";
 import { abortAutoTitle } from "@/services/ai/autoTitle";
-import { runSearch } from "@/services/search";
-import { WEB_SEARCH_TOOL } from "@/constants/tools";
-import { runStreamExchange, decideCleanup, runAutoNaming } from "./streaming";
+import { AGENT_TOOLS, DEFAULT_AGENT_TOOLS } from "@/constants/tools";
+import {
+  runStreamExchange,
+  decideCleanup,
+  runAutoNaming,
+} from "./streaming";
+import { runToolCalls } from "./toolRunner";
 import { prefix, scanMentionHits } from "@/utils/text";
 import { baseName } from "@/utils/filename";
 import { createPersistController } from "@/utils/persist";
@@ -30,7 +34,10 @@ import type {
   EditorChatModelOverride,
   EditorChatSession,
   EditorChatsFile,
+  NoteRewriteRequest,
   ProviderConfig,
+  ToolDef,
+  ToolRun,
 } from "@/types";
 
 /**
@@ -41,10 +48,11 @@ import type {
  * 笔记上下文统一走 @引用（新会话自动 @ 当前打开笔记 / 手动拖入，发送时就地替换注入）。
  *
  * 与画布对话（canvasStore.runStream）的差异：
- * - 面板一次只流式一个会话（单输入框），无工具循环（联网搜索不做，YAGNI）
+ * - 面板一次只流式一个会话（单输入框）；工具循环与画布共用 runStreamExchange（Agent 模式开关控制）
  * - 错误占位沿用 `[错误]` 前缀过滤约定
  * - provider/model 解析：`settingsStore.resolveChatTarget(modelOverride)`（面板覆盖 → 跟随仓库默认，与画布同源）
- * - 持久化 debounce 500ms：消息变化追加式写会话 .md（纯增长只追加新增段），元数据变化写索引（均不在 watcher 监听范围，无自写回环）
+ * - 持久化 debounce 500ms：消息变化追加式写会话 .md（纯增长只追加新增段，工具调用过程为 `## tool` 段），
+ *   元数据变化写索引（均不在 watcher 监听范围，无自写回环）
  */
 
 const ERROR_PREFIX = "[错误]";
@@ -60,8 +68,12 @@ interface ChatPanelState {
   pendingMentions: EditorChatMessageRef[];
   /** 新对话态（无激活会话）的待用系统提示词：发送首条消息创建会话时固化进会话；新建会话/切仓库时清空，不落盘。 */
   draftSystemPromptFile: string | undefined;
-  /** 面板级联网搜索工具开关（内存态：默认关、切仓库清空、不持久化；开着但搜索源未配置时发送提示并降级）。 */
-  toolsEnabled: boolean;
+  /** 面板级 Agent 模式开关（内存态：默认关 = 普通对话不带工具；切仓库清空、不持久化）。 */
+  agentMode: boolean;
+  /** Agent 模式启用的工具 id 列表（缺省 = 全部工具；内存态、切仓库重置）。 */
+  agentTools: string[];
+  /** 笔记划词改写请求队列（NoteEditor 划词右键确认后入队；AiChatPanel 消费后清空）。 */
+  pendingRewrites: NoteRewriteRequest[];
   /** 面板内联错误提示（未配置模型/发送失败等）。 */
   error: string | null;
   loaded: boolean;
@@ -90,10 +102,16 @@ interface ChatPanelState {
   queueMention: (ref: EditorChatMessageRef) => void;
   /** 清空待消费的笔记引用队列（AiChatPanel 消费后调用）。 */
   clearPendingMentions: () => void;
+  /** 笔记划词改写请求入队（NoteEditor 划词右键确认后调用）。 */
+  queueNoteRewrite: (req: NoteRewriteRequest) => void;
+  /** 清空待消费的划词改写队列（AiChatPanel 消费后调用）。 */
+  clearPendingRewrites: () => void;
   /** 设置系统提示词笔记引用（undefined = 清除）：有激活会话写会话；新对话态存 draft，发送首条消息时固化。 */
   setSystemPromptFile: (file: string | undefined) => void;
-  /** 切换面板联网搜索工具开关（内存态，不持久化）。 */
-  setToolsEnabled: (enabled: boolean) => void;
+  /** 切换面板 Agent 模式（内存态，不持久化）。 */
+  setAgentMode: (enabled: boolean) => void;
+  /** 勾选/取消 Agent 工具（内存态，不持久化）。 */
+  setAgentTool: (name: string, enabled: boolean) => void;
   /** 设置面板级模型覆盖（null = 跟随仓库默认）。 */
   setModelOverride: (ov: EditorChatModelOverride | null) => void;
   /** 清除面板内联错误。 */
@@ -133,7 +151,8 @@ function chatMessageFilePath(sessionId: string): string {
 }
 
 /**
- * 转写 .md：frontmatter 存会话 id（外部识别归属）+ `## user:` / `## assistant:` 消息段。
+ * 转写 .md：frontmatter 存会话 id（外部识别归属）+ `## user:` / `## assistant:` 消息段 +
+ * `## tool:` 工具调用段（单行 JSON，挂在前一条消息上；重开会话恢复展示）。
  * user 消息写 displayContent（原始输入），注入的笔记全文不落盘——.md 可读的对话转写。
  */
 function stringifyChatMessages(sessionId: string, messages: EditorChatMessage[]): string {
@@ -141,12 +160,16 @@ function stringifyChatMessages(sessionId: string, messages: EditorChatMessage[])
   for (const m of messages) {
     const text = m.role === "user" ? (m.displayContent ?? m.content) : m.content;
     lines.push(`## ${m.role}:`, "", text, "");
+    for (const run of m.toolRuns ?? []) {
+      lines.push("## tool:", "", JSON.stringify(run), "");
+    }
   }
   return lines.join("\n");
 }
 
 /**
  * 解析转写 .md → 消息（frontmatter sessionId 不匹配/结构异常返回空数组——降级不阻塞）。
+ * `## tool:` 段解析为前一条消息的 toolRuns（进行中状态归一化为完成 + 「（中断）」备注）。
  * 消息 id 每次恢复重新生成（.md 是转写而非协作增量源；画布消息才有稳定 id 需求）。
  */
 function parseChatMessages(md: string, sessionId: string): EditorChatMessage[] {
@@ -155,14 +178,36 @@ function parseChatMessages(md: string, sessionId: string): EditorChatMessage[] {
   const sidLine = fm[1].split("\n").find((l) => l.startsWith("sessionId:"));
   if (!sidLine || sidLine.slice("sessionId:".length).trim() !== sessionId) return [];
   const body = md.slice(fm[0].length);
-  // 按 `## user:` / `## assistant:` 分段（冒号可选：兼容早期无冒号写入的转写）；[pre, role, content, role, content, ...]
-  const parts = body.split(/^## (user|assistant):?$/m);
+  // 按 `## user:` / `## assistant:` / `## tool:` 分段（冒号可选：兼容早期无冒号写入的转写）；
+  // [pre, role, content, role, content, ...]
+  const parts = body.split(/^## (user|assistant|tool):?$/m);
   const messages: EditorChatMessage[] = [];
   for (let i = 1; i + 1 < parts.length; i += 2) {
-    const role = parts[i] as EditorChatMessage["role"];
+    const role = parts[i];
     const text = (parts[i + 1] ?? "").replace(/^\n+/, "").replace(/\n+$/, "");
+    if (role === "tool") {
+      // 工具调用段：挂到前一条消息（无前消息的孤儿段忽略）
+      if (messages.length === 0) continue;
+      try {
+        const run = JSON.parse(text) as ToolRun;
+        const last = messages[messages.length - 1];
+        const normalized: ToolRun =
+          run.status === "running"
+            ? { ...run, status: "done", resultSummary: run.resultSummary ?? "（中断）" }
+            : run;
+        last.toolRuns = [...(last.toolRuns ?? []), normalized];
+      } catch {
+        // 损坏 tool 段：忽略（降级不阻塞会话恢复）
+      }
+      continue;
+    }
     if (!text) continue;
-    messages.push({ id: crypto.randomUUID(), role, content: text, createdAt: messages.length });
+    messages.push({
+      id: crypto.randomUUID(),
+      role: role as EditorChatMessage["role"],
+      content: text,
+      createdAt: messages.length,
+    });
   }
   return messages;
 }
@@ -247,12 +292,19 @@ async function persistNow(guardVaultId?: string | null): Promise<void> {
           baseline.every((m, i) => s.messages[i] === m)
         ) {
           // 纯增长（旧消息引用逐一相同）：只追加新增段，省全量重拼与 IPC 载荷
+          // （toolRuns 随消息追加为 `## tool` 段，Rust 侧 role 自由字符串直接格式化）
           await appendChatMessages(
             s.file,
-            s.messages.slice(baseline.length).map((m) => ({
-              role: m.role,
-              text: m.role === "user" ? (m.displayContent ?? m.content) : m.content,
-            })),
+            s.messages.slice(baseline.length).flatMap((m) => [
+              {
+                role: m.role,
+                text: m.role === "user" ? (m.displayContent ?? m.content) : m.content,
+              },
+              ...(m.toolRuns ?? []).map((run) => ({
+                role: "tool",
+                text: JSON.stringify(run),
+              })),
+            ]),
           );
         } else {
           // 截断/流式中途落盘/基线缺失：全量重写（幂等）
@@ -368,14 +420,25 @@ async function runExchange(
   const controller = new AbortController();
   abortController = controller;
 
-  // 工具开关：面板级显式开启且搜索源已配置才携带 tools；开着但未配置 → 提示并降级
+  // Agent 模式工具组装：agentMode 关 = 普通对话不带工具；开 = 按 agentTools 勾选过滤
+  // （缺省全部）；web_search 依赖搜索源配置——勾选了但未配置时剔除并提示，其余工具不受影响
   const settings = useSettingsStore.getState();
-  const toolsWanted = useChatPanelStore.getState().toolsEnabled;
   const searchReady = settings.isSearchConfigured();
-  if (toolsWanted && !searchReady) {
-    useChatPanelStore.setState({ error: "未配置搜索源（设置 → 联网搜索），本次对话未启用联网搜索" });
+  const tools: ToolDef[] = [];
+  if (useChatPanelStore.getState().agentMode) {
+    // 面板 agentTools 初始 = DEFAULT_AGENT_TOOLS，全取消 = 空数组（明确全关，不做缺省回退）
+    const enabled = useChatPanelStore.getState().agentTools;
+    for (const meta of AGENT_TOOLS) {
+      if (!enabled.includes(meta.id)) continue;
+      if (meta.id === "web_search" && !searchReady) {
+        useChatPanelStore.setState({
+          error: "未配置搜索源（设置 → 联网搜索），本次对话未启用联网搜索",
+        });
+        continue;
+      }
+      tools.push(meta.def);
+    }
   }
-  const tools = toolsWanted && searchReady ? [WEB_SEARCH_TOOL] : undefined;
 
   // 历史含刚追加的 user 消息；过滤 [错误] 占位防污染上下文，system 提示词置首（与画布 runStream 同语义）
   const apiHistory = [...active.messages, userMsg].filter(
@@ -389,7 +452,7 @@ async function runExchange(
       ...(systemPrompt ? [{ role: "system" as const, content: systemPrompt }] : []),
       ...toApiMessages(apiHistory),
     ],
-    ...(tools ? { tools } : {}),
+    ...(tools.length ? { tools } : {}),
     signal: controller.signal,
     applyBatch: ({ content, reasoning }) => {
       useChatPanelStore.setState((state) => ({
@@ -407,6 +470,21 @@ async function runExchange(
                           : {}),
                       }
                     : m
+                ),
+              }
+            : s
+        ),
+      }));
+    },
+    // 工具调用过程可视化：running/done 更新进占位消息 toolRuns（随消息 .md 转写落盘）
+    onToolRuns: (runs) => {
+      useChatPanelStore.setState((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.id === active.id
+            ? {
+                ...s,
+                messages: s.messages.map((m) =>
+                  m.id === asstMsg.id ? { ...m, toolRuns: runs } : m
                 ),
               }
             : s
@@ -461,28 +539,9 @@ async function runExchange(
       void autoNameSession(active.id);
       abortController = null;
     },
-    executeTools: async (calls) => {
-      // 无画布产物：仅搜索回填 tool 消息
-      const toolMessages: ChatParams["messages"] = [];
-      for (const tc of calls) {
-        let query = "";
-        try {
-          query = (JSON.parse(tc.function.arguments) as { query?: string }).query ?? "";
-        } catch {
-          // 参数解析失败：按空 query 处理（下方失败回填）
-        }
-        const data = query
-          ? await runSearch(useSettingsStore.getState().searchConfig, query)
-          : { query: "", results: [], error: "搜索参数解析失败" };
-        if (controller.signal.aborted) break;
-        toolMessages.push({
-          role: "tool",
-          tool_call_id: tc.id,
-          content: data.error ? `搜索失败：${data.error}` : JSON.stringify(data.results),
-        });
-      }
-      return toolMessages;
-    },
+    executeTools: (calls) =>
+      // 公共工具执行器（画布/面板共用）；面板无画布上下文，不建产物节点
+      runToolCalls(calls, controller.signal),
   });
 }
 
@@ -493,7 +552,9 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
   modelOverride: null,
   pendingMentions: [],
   draftSystemPromptFile: undefined,
-  toolsEnabled: false,
+  agentMode: false,
+  agentTools: [...DEFAULT_AGENT_TOOLS],
+  pendingRewrites: [],
   error: null,
   loaded: false,
   sessionVaultId: null,
@@ -510,7 +571,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     autoNamedSessions.clear();
     // 切仓库让路：中止旧仓库进行中的命名请求，防其后台空转/误写
     abortAutoTitle();
-    set({ pendingMentions: [] });
+    set({ pendingMentions: [], pendingRewrites: [] });
     try {
       const f = await readEditorChats();
       const sessions: EditorChatSession[] = [];
@@ -558,12 +619,13 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
       set({
         sessions,
         // 新对话态：打开面板默认是空对话，历史会话从历史浮层手动打开；
-        // 工具开关/草稿提示词为内存态，切仓库清空
+        // Agent 开关/草稿提示词为内存态，切仓库重置
         activeSessionId: null,
         sessionVaultId: vaultId,
         modelOverride: f.modelOverride,
         draftSystemPromptFile: undefined,
-        toolsEnabled: false,
+        agentMode: false,
+        agentTools: [...DEFAULT_AGENT_TOOLS],
         loaded: true,
         error: null,
       });
@@ -825,7 +887,16 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     }
   },
 
-  setToolsEnabled: (enabled) => set({ toolsEnabled: enabled }),
+  setAgentMode: (enabled) => set({ agentMode: enabled }),
+
+  setAgentTool: (name, enabled) =>
+    set((state) => ({
+      agentTools: enabled
+        ? state.agentTools.includes(name)
+          ? state.agentTools
+          : [...state.agentTools, name]
+        : state.agentTools.filter((t) => t !== name),
+    })),
 
   setModelOverride: (ov) => {
     set({ modelOverride: ov });
@@ -843,6 +914,14 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
   },
 
   clearPendingMentions: () => set({ pendingMentions: [] }),
+
+  queueNoteRewrite: (req) => {
+    set((state) => ({
+      pendingRewrites: [...state.pendingRewrites, req],
+    }));
+  },
+
+  clearPendingRewrites: () => set({ pendingRewrites: [] }),
 
   flush: (vaultId) => {
     // 无本地改动不写盘：外部删除会话文件后切仓库/退出，不把内存副本写回（覆盖删除）

@@ -26,6 +26,22 @@ export interface MessageRef {
 }
 
 /**
+ * 单次工具调用记录（Agent 模式可视化：消息气泡内展示调用过程与结果摘要）。
+ * 仅展示性元数据：不进 API 历史（工具轮消息不落历史，重发仍无状态）。
+ */
+export interface ToolRun {
+  /** tool call id（流式累积的 id） */
+  id: string;
+  /** 工具名（web_search / write_note / append_table_row / edit_note） */
+  name: string;
+  /** 参数摘要展示文本（如「搜索「xxx」」/「修改《x》2 处」） */
+  argsSummary: string;
+  status: "running" | "done" | "error";
+  /** 结果摘要（如「修改《X》2 处」/ 错误信息；running 无） */
+  resultSummary?: string;
+}
+
+/**
  * 对话输入框的待发送附件（临时附件通道）。
  * 生命周期：进托盘 → 随 user 消息发送（转为 Attachment 持久化）→ 无源附件生成影子节点。
  */
@@ -64,5 +80,7 @@ export interface Message {
    * 用于消息气泡显示只读 @chip + 点击定位到源节点。
    */
   refs?: MessageRef[];
+  /** Agent 模式工具调用过程（assistant 消息展示用：调用了什么工具、结果摘要）。 */
+  toolRuns?: ToolRun[];
   createdAt: number;
 }

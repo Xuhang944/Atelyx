@@ -11,13 +11,27 @@
  * 附件，引用天然稳定，重渲染最贵的 ReactMarkdown 得以跳过）。
  */
 import { memo, useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { Check, Copy, FileText, GitBranch, History, RefreshCw } from "lucide-react";
+import {
+  AlertCircle,
+  Check,
+  Copy,
+  FileText,
+  FilePlus,
+  GitBranch,
+  Globe,
+  History,
+  Loader2,
+  PenLine,
+  RefreshCw,
+  Table,
+  Wrench,
+} from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import { ThinkingBlock } from "@/components/common/ThinkingBlock";
 import { MARKDOWN_PLUGINS, REHYPE_PLUGINS } from "@/utils/markdown";
 import { splitMentions } from "@/utils/text";
-import type { Attachment } from "@/types";
+import type { Attachment, ToolRun } from "@/types";
 
 interface ChatMessageBubbleProps {
   /** 消息归属：user = 右对齐 + 用户底色；assistant = 左对齐。 */
@@ -38,6 +52,8 @@ interface ChatMessageBubbleProps {
   content?: string;
   /** 模型思考过程（折叠展示）。 */
   reasoningContent?: string;
+  /** Agent 模式工具调用过程（assistant 消息：调用了什么工具、结果摘要）。 */
+  toolRuns?: ToolRun[];
   /** 是否进行中的流式消息（思考块折叠态显示等待动画）。 */
   isStreaming: boolean;
   /** 流式且无内容时的占位（调用方不传时 = "..."）。 */
@@ -76,6 +92,7 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
   onRefChipClick,
   content,
   reasoningContent,
+  toolRuns,
   isStreaming,
   streamingPlaceholder,
   attachments,
@@ -199,6 +216,13 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
           </div>
         ) : (
           <div className="markdown-body max-w-none break-words">
+            {toolRuns && toolRuns.length > 0 && (
+              <div className="mb-1.5 flex flex-col gap-1">
+                {toolRuns.map((run) => (
+                  <ToolRunRow key={run.id} run={run} />
+                ))}
+              </div>
+            )}
             {reasoningContent ? (
               <ThinkingBlock text={reasoningContent} streaming={isStreaming} />
             ) : null}
@@ -271,6 +295,58 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
 
 /** 段落内联化（p → span）：分段渲染的普通文本碎片段与 @胶囊 同一文本流（块级 p 会独占行把句子拆开）。 */
 const InlineP = ({ children }: { children?: ReactNode }) => <span>{children}</span>;
+
+/** 工具图标（按工具名分发；未知工具 = 通用扳手）。 */
+function toolIcon(name: string, size: number) {
+  switch (name) {
+    case "web_search":
+      return <Globe size={size} className="flex-shrink-0" />;
+    case "write_note":
+      return <FilePlus size={size} className="flex-shrink-0" />;
+    case "append_table_row":
+      return <Table size={size} className="flex-shrink-0" />;
+    case "edit_note":
+      return <PenLine size={size} className="flex-shrink-0" />;
+    default:
+      return <Wrench size={size} className="flex-shrink-0" />;
+  }
+}
+
+/** 工具调用行：图标 + 参数摘要 + 状态（进行中/完成/失败）+ 结果摘要——AI 做了什么、改了哪里可见。 */
+function ToolRunRow({ run }: { run: ToolRun }) {
+  const statusColor =
+    run.status === "error"
+      ? "#f87171"
+      : run.status === "done"
+        ? "var(--accent)"
+        : "var(--text-muted)";
+  return (
+    <div
+      className="flex items-center gap-1.5 text-[11px] leading-snug rounded px-1.5 py-1"
+      style={{
+        background: "color-mix(in srgb, var(--accent) 8%, transparent)",
+        border: "1px solid color-mix(in srgb, var(--accent) 22%, transparent)",
+      }}
+    >
+      <span style={{ color: statusColor }}>{toolIcon(run.name, 12)}</span>
+      <span className="min-w-0 flex-1 truncate" style={{ color: "var(--text-secondary)" }}>
+        {run.argsSummary}
+        {run.status !== "running" && run.resultSummary ? (
+          <span className="ml-1" style={{ color: statusColor }}>
+            · {run.resultSummary}
+          </span>
+        ) : null}
+      </span>
+      {run.status === "running" ? (
+        <Loader2 size={11} className="animate-spin flex-shrink-0" style={{ color: "var(--text-muted)" }} />
+      ) : run.status === "error" ? (
+        <AlertCircle size={11} className="flex-shrink-0" style={{ color: "#f87171" }} />
+      ) : (
+        <Check size={11} className="flex-shrink-0" style={{ color: "var(--accent)" }} />
+      )}
+    </div>
+  );
+}
 
 /** user 气泡内嵌 @引用 胶囊（与输入框标签同位置渲染，点击行为由调用方绑定：画布 = 定位节点，面板 = 打开笔记）。 */
 function RefChip({

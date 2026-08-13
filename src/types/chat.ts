@@ -12,6 +12,7 @@ import {
   CHAT_HISTORY_DIR,
   CHAT_MESSAGE_EXT,
 } from "@/constants/editorChats";
+import type { ToolRun } from "./message";
 
 export {
   EDITOR_CHATS_SCHEMA,
@@ -35,6 +36,21 @@ export interface EditorChatMessageRef {
   label: string;
 }
 
+/**
+ * 笔记划词 AI 改写请求（NoteEditor 划词右键确认 → 面板输入框插入指令文本）。
+ * 不改动 Agent 开关：agent 开着（勾了 edit_note）AI 直接改文件，没开则输出修改建议。
+ */
+export interface NoteRewriteRequest {
+  /** 被划词笔记的相对仓库根路径 */
+  noteFile: string;
+  /** 笔记显示名（去 .md 后缀） */
+  label: string;
+  /** 划词选中的原文片段 */
+  selectedText: string;
+  /** 用户追加的评论/要求（可为空 = 仅询问/泛化改写） */
+  comment: string;
+}
+
 export interface EditorChatMessage {
   id: string;
   role: EditorChatRole;
@@ -52,6 +68,8 @@ export interface EditorChatMessage {
   displayContent?: string;
   /** 该 user 消息发送时拖入的笔记引用（气泡显示只读 @chip，点击打开笔记；仅会话运行期有效）。 */
   refs?: EditorChatMessageRef[];
+  /** Agent 模式工具调用过程（消息 .md 转写为 `## tool` 段持久化，重开会话恢复展示）。 */
+  toolRuns?: ToolRun[];
   createdAt: number;
 }
 

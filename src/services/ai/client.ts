@@ -1,4 +1,9 @@
 import type { Attachment, Role, ToolDef } from "@/types";
+import {
+  isRetryableError,
+  isContextOverflow,
+  OVERFLOW_HINT,
+} from "@/utils/aiErrors";
 
 /**
  * OpenAI 兼容协议的客户端。
@@ -34,11 +39,20 @@ export interface ChatParams {
   maxTokens?: number;
   signal?: AbortSignal;
   tools?: ToolDef[];
+  /** 传输级重试：仅在「请求未建立或未收到任何 SSE 事件」的失败上重试（网络抖动/5xx/限流）；
+   * 流已开始后的中断不重试（防重复输出）。abort 后永不重试。缺省 = 不重试。 */
+  retry?: {
+    /** 最大重试次数（总尝试 = maxRetries + 1）。 */
+    maxRetries?: number;
+    /** 每次重试前回调（attempt 从 1 开始；供 UI 提示「正在重试」）。 */
+    onRetry?: (attempt: number, delayMs: number) => void;
+  };
 }
 
 export interface ChatStreamCallbacks {
   onDelta: (text: string) => void;
-  onDone: () => void;
+  /** 流结束（含超时/中止）。stopReason = 服务端 finish_reason（"stop"/"length"/"tool_calls"/…），未提供为 undefined。 */
+  onDone: (stopReason?: string) => void;
   onError: (err: Error) => void;
   /** 模型思考过程增量（`delta.reasoning_content`，思考型模型的推理阶段内容）。 */
   onReasoningDelta?: (text: string) => void;
@@ -59,16 +73,80 @@ interface ToolCallDelta {
   function?: { name?: string; arguments?: string };
 }
 
-/**
- * 发起流式聊天请求。
- * 边界捕获：网络/解析失败统一走 onError 降级。
- */
-export async function streamChat(
-  params: ChatParams,
-  callbacks: ChatStreamCallbacks
-): Promise<void> {
-  const { baseUrl, apiKey, model, messages, temperature, maxTokens, signal, tools } = params;
-  const url = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
+/** 服务端要求的重试延迟超过此值即放弃重试（服务器都觉得自己要挂 60s+，不值得等）。 */
+const MAX_RETRY_DELAY_MS = 60_000;
+
+/** 可中断睡眠：abort 时立即返回 false（调用方不再重试）。 */
+function sleep(ms: number, signal?: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve(false);
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** 重试延迟：优先服务端 retry-after 头（秒或 HTTP 日期），否则指数退避 0.5*2^n 秒 + 0-25% 抖动。 */
+function retryDelayMs(attempt: number, res?: Response): number | null {
+  if (res) {
+    const raw = res.headers.get("retry-after");
+    if (raw) {
+      const secs = /^\d+$/.test(raw) ? Number(raw) : NaN;
+      const ms = Number.isFinite(secs)
+        ? secs * 1000
+        : Number.isFinite(Date.parse(raw))
+          ? Math.max(0, Date.parse(raw) - Date.now())
+          : NaN;
+      if (Number.isFinite(ms)) return ms > MAX_RETRY_DELAY_MS ? null : ms;
+    }
+  }
+  const base = Math.min(500 * 2 ** attempt, 8000);
+  return base + Math.random() * base * 0.25;
+}
+
+/** 上下文溢出错误追加友好提示（防用户看到裸 API 报错不知所措）。 */
+function withOverflowHint(err: Error): Error {
+  if (isContextOverflow(err)) {
+    return new Error(`${err.message}（${OVERFLOW_HINT}）`);
+  }
+  return err;
+}
+
+/** 单次请求尝试的结果：ok = 正常结束；fatal = 不可重试失败；retryable = 可重试的传输失败。 */
+type AttemptResult =
+  | { kind: "ok" }
+  | { kind: "fatal"; err: Error }
+  | { kind: "retryable"; err: Error; delayMs: number };
+
+interface StreamRequest {
+  url: string;
+  apiKey: string;
+  model: string;
+  messages: ChatParams["messages"];
+  temperature?: number;
+  maxTokens?: number;
+  signal?: AbortSignal;
+  tools?: ToolDef[];
+}
+
+/** 发起一次流式请求并消费整个 SSE 流（重试由 streamChat 外层循环负责）。 */
+async function streamAttempt(
+  req: StreamRequest,
+  callbacks: ChatStreamCallbacks,
+): Promise<AttemptResult> {
+  const { url, apiKey, model, messages, temperature, maxTokens, signal, tools } = req;
+  // 是否收到过有效 SSE 事件：重试只发生在「事件前失败」（传输层问题）；
+  // 空流说明网关没按 stream 响应（兜底非流式解析或报错，不静默"成功"）
+  let receivedAnyEvent = false;
 
   try {
     const res = await fetch(url, {
@@ -94,21 +172,26 @@ export async function streamChat(
     if (!res.ok || !res.body) {
       // 错误信息带请求目标与 model，便于排查打错端点/模型名问题
       const bodyText = await res.text().catch(() => "");
-      throw new Error(`HTTP ${res.status} (${url} | model: ${model}): ${bodyText}`);
+      const err = new Error(`HTTP ${res.status} (${url} | model: ${model}): ${bodyText}`);
+      if (isRetryableError(err)) {
+        const delayMs = retryDelayMs(0, res);
+        if (delayMs !== null) return { kind: "retryable", err, delayMs };
+      }
+      return { kind: "fatal", err };
     }
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
-    // 是否收到过有效 SSE 事件：空流说明网关没按 stream 响应（兜底非流式解析或报错，不静默"成功"）
-    let receivedAnyEvent = false;
+    // 服务端 finish_reason（最后一个 chunk 携带，[DONE] 前收齐）
+    let stopReason: string | undefined;
     // tool_calls 按 index 累积（SSE 分段 delta：id 只在首段、name/arguments 分段）
     const toolCallAcc: ToolCallDelta[] = [];
 
     const flushToolCalls = () => {
       const calls: ToolCall[] = toolCallAcc.map((t) => ({
         id: t.id ?? "",
-        // type 恒为 "function"（当前仅定义 web_search 一个函数工具）；llama.cpp 解析
+        // type 恒为 "function"（当前仅 web_search/write_note 等函数工具）；llama.cpp 解析
         // assistant tool_calls 必须带该字段（缺失报 "Missing tool call type" 500）
         type: "function",
         function: { name: t.function?.name ?? "", arguments: t.function?.arguments ?? "" },
@@ -131,8 +214,8 @@ export async function streamChat(
         const data = line.slice(5).trim();
         if (data === "[DONE]") {
           flushToolCalls();
-          callbacks.onDone();
-          return;
+          callbacks.onDone(stopReason);
+          return { kind: "ok" };
         }
         try {
           const json = JSON.parse(data);
@@ -143,15 +226,16 @@ export async function streamChat(
             throw new Error(`SSE 错误事件: ${msg}`);
           }
           receivedAnyEvent = true;
-          const choice = json.choices?.[0]?.delta;
-          if (!choice) continue;
-          const delta = choice.content;
-          if (delta) callbacks.onDelta(delta);
-          // 思考过程增量（思考型模型在推理阶段只发 reasoning_content）
-          const reasoning = choice.reasoning_content;
+          const choice = json.choices?.[0];
+          if (choice?.finish_reason) stopReason = choice.finish_reason;
+          const delta = choice?.delta;
+          if (!delta) continue;
+          if (delta.content) callbacks.onDelta(delta.content);
+          // 思考过程增量：多字段探测（思考型模型在推理阶段只发思考字段，各家命名不一）
+          const reasoning = delta.reasoning_content ?? delta.reasoning ?? delta.reasoning_text;
           if (reasoning) callbacks.onReasoningDelta?.(reasoning);
           // 工具调用：{ index, id?, function: { name?, arguments? } }，按 index 累积
-          const tc = choice.tool_calls as ToolCallDelta[] | undefined;
+          const tc = delta.tool_calls as ToolCallDelta[] | undefined;
           if (tc) {
             for (const t of tc) {
               const slot = toolCallAcc[t.index];
@@ -184,21 +268,67 @@ export async function streamChat(
         const text: unknown = json?.choices?.[0]?.message?.content;
         if (typeof text === "string" && text) {
           callbacks.onDelta(text);
-          callbacks.onDone();
-          return;
+          callbacks.onDone(stopReason);
+          return { kind: "ok" };
         }
       } catch {
         // 不是 JSON：落报错分支
       }
       throw new Error("流式响应异常：未收到数据");
     }
-    callbacks.onDone();
+    callbacks.onDone(stopReason);
+    return { kind: "ok" };
   } catch (err) {
     if ((err as Error).name === "AbortError") {
       callbacks.onDone();
+      return { kind: "ok" };
+    }
+    const e = err as Error;
+    // 重试只对「流开始前」的失败生效（receivedAnyEvent = false）：流中错误事件/中断不重试，
+    // 否则已渲染的增量会从零重复输出
+    if (isRetryableError(e) && !receivedAnyEvent) {
+      // catch 路径无 res：退避恒非 null（?? 0 仅为类型收窄）
+      return { kind: "retryable", err: e, delayMs: retryDelayMs(0) ?? 0 };
+    }
+    // 溢出提示统一由 streamChat 的 onError 出口包裹一次（此处不包，防双重「（上下文过长…）」）
+    return { kind: "fatal", err: e };
+  }
+}
+
+/**
+ * 发起流式聊天请求。
+ * 失败降级策略：可重试的传输级失败（网络/5xx/429）按指数退避重试（尊重服务端 retry-after），
+ * 其余失败统一走 onError（溢出错误附友好提示）；abort 后永不重试、按 onDone 正常收敛。
+ */
+export async function streamChat(
+  params: ChatParams,
+  callbacks: ChatStreamCallbacks,
+): Promise<void> {
+  const { baseUrl, apiKey, model, messages, temperature, maxTokens, signal, tools, retry } = params;
+  const url = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
+  const maxRetries = retry?.maxRetries ?? 0;
+
+  for (let attempt = 0; ; attempt++) {
+    const result = await streamAttempt(
+      { url, apiKey, model, messages, temperature, maxTokens, signal, tools },
+      callbacks,
+    );
+    if (result.kind === "ok") return;
+    // 用户已中止（含重试等待期间）：按 onDone 收敛，不报错不重试
+    if (signal?.aborted) {
+      callbacks.onDone();
       return;
     }
-    callbacks.onError(err as Error);
+    if (result.kind === "fatal" || attempt >= maxRetries) {
+      callbacks.onError(withOverflowHint(result.err));
+      return;
+    }
+    retry?.onRetry?.(attempt + 1, result.delayMs);
+    const waited = await sleep(result.delayMs, signal);
+    if (!waited) {
+      callbacks.onDone();
+      return;
+    }
   }
 }
 
@@ -226,7 +356,8 @@ export async function chatOnce(params: ChatParams): Promise<string> {
     signal,
   });
   if (!res.ok) {
-    throw new Error(`HTTP ${res.status}: ${await res.text().catch(() => "")}`);
+    const err = new Error(`HTTP ${res.status}: ${await res.text().catch(() => "")}`);
+    throw withOverflowHint(err);
   }
   const json = await res.json();
   const text: unknown = json?.choices?.[0]?.message?.content;

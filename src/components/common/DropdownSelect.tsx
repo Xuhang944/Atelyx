@@ -37,6 +37,10 @@ interface Props {
   options: DropdownOption[];
   /** value 为空且无对应选项时触发按钮的兜底显示。 */
   placeholder?: ReactNode;
+  /** 触发按钮 label 前的图标（面板工具条图标按钮用；与 label/ChevronDown 同排）。 */
+  prefixIcon?: ReactNode;
+  /** options 为空时弹层内显示的占位提示（缺省 = 不显示提示，空列表）。 */
+  emptyText?: ReactNode;
   disabled?: boolean;
   /** 触发按钮样式（尺寸/颜色/边框等），完全覆盖组件默认结构类之外的样式。 */
   className?: string;
@@ -53,6 +57,8 @@ export function DropdownSelect({
   onChange,
   options,
   placeholder,
+  prefixIcon,
+  emptyText,
   disabled,
   className,
   style,
@@ -118,6 +124,7 @@ export function DropdownSelect({
         style={style}
       >
         <span className="flex-1 min-w-0 truncate text-left">
+          {prefixIcon}
           {selected ? selected.label : placeholder}
         </span>
         <ChevronDown size={12} className="flex-shrink-0" />
@@ -138,6 +145,11 @@ export function DropdownSelect({
             onClick={(e) => e.stopPropagation()}
             onPointerDown={(e) => e.stopPropagation()}
           >
+            {options.length === 0 && emptyText != null && (
+              <div className="px-3 py-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                {emptyText}
+              </div>
+            )}
             {options.map((o, i) => (
               <div key={`${o.value}-${i}`}>
                 {o.group && (i === 0 || options[i - 1].group !== o.group) && (

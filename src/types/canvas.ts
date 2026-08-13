@@ -54,6 +54,10 @@ export interface ConversationFileData {
   systemPromptFile?: string;
   /** LLM 自动生成的话题标题（首轮对话完成后命名；旧文件无此字段兼容读取）。 */
   title?: string;
+  /** Agent 模式开关（缺省关 = 普通对话不带工具；旧文件无此字段兼容读取）。 */
+  agentMode?: boolean;
+  /** Agent 模式启用的工具名列表（缺省 = 全部工具；旧文件无此字段兼容读取）。 */
+  agentTools?: string[];
   /** conversationId 字段冗余保留以复用 Message 类型，读取时可忽略。 */
   messages: Message[];
 }

@@ -12,7 +12,14 @@ export type {
   LinkMode,
 } from "./node";
 
-export type { Role, Attachment, PendingAttachment, MessageRef, Message } from "./message";
+export type {
+  Role,
+  Attachment,
+  PendingAttachment,
+  MessageRef,
+  ToolRun,
+  Message,
+} from "./message";
 
 export {
   EDITOR_CHATS_SCHEMA,
@@ -27,6 +34,7 @@ export {
   type EditorChatModelOverride,
   type EditorChatsFile,
   type EditorChatsFileOnDisk,
+  type NoteRewriteRequest,
 } from "./chat";
 
 export type {

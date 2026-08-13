@@ -45,8 +45,13 @@ import {
   DEFAULT_GROUP_WIDTH,
   DEFAULT_GROUP_HEIGHT,
 } from "@/constants/canvas";
-import { WEB_SEARCH_TOOL } from "@/constants/tools";
-import { runStreamExchange, decideCleanup, runAutoNaming } from "./streaming";
+import { AGENT_TOOLS, DEFAULT_AGENT_TOOLS } from "@/constants/tools";
+import {
+  runStreamExchange,
+  decideCleanup,
+  runAutoNaming,
+} from "./streaming";
+import { runToolCalls } from "./toolRunner";
 import { isAssetConsumed } from "@/utils/consumed";
 import { prefix, scanMentionHits } from "@/utils/text";
 import { sanitizeFilename, siblingPath } from "@/utils/filename";
@@ -63,6 +68,7 @@ import type {
   Message,
   PendingAttachment,
   SearchResultData,
+  ToolDef,
 } from "@/types";
 
 /** Undo/Redo 快照（含 messagesByConv，否则分支撤销时消息状态会撕裂） */
@@ -578,6 +584,58 @@ function createSearchNode(
   schedulePersist();
 }
 
+/** AI 写笔记产物节点：对话右侧 findFreeSpot 落点 + 对话→text 边（笔记节点，file 引用新落盘的 .md）。
+ * 走 silent set（不 pushUndo）：工具产物属业务操作（同 createSearchNode 语义）。 */
+function createWriteNoteNode(
+  conversationId: string,
+  file: string,
+  title: string,
+) {
+  const store = useCanvasStore.getState();
+  const convNode = store.nodes.find((n) => n.id === conversationId);
+  if (!convNode) return;
+  touchRedo();
+  const id = crypto.randomUUID();
+  const spot = findFreeSpot(
+    store.nodes,
+    { x: convNode.position.x + 480, y: convNode.position.y },
+    { w: DEFAULT_TEXT_NODE_WIDTH, h: DEFAULT_TEXT_NODE_HEIGHT },
+  );
+  const node: Node = {
+    id,
+    type: "text",
+    position: spot,
+    width: DEFAULT_TEXT_NODE_WIDTH,
+    height: DEFAULT_TEXT_NODE_HEIGHT,
+    data: { title, file, bodyMd: "" } as unknown as Node["data"],
+  };
+  // withHandles 传入含新节点的列表：target（text 节点）能找到，边锚点自适应
+  const nextNodes = [...store.nodes, node];
+  const edge = withHandles(
+    {
+      id: crypto.randomUUID(),
+      source: conversationId,
+      target: id,
+      sourceHandle: null,
+      targetHandle: null,
+    },
+    nextNodes,
+  );
+  useCanvasStore.setState((s) => ({
+    nodes: [...s.nodes, node],
+    edges: [...s.edges, edge],
+  }));
+  schedulePersist();
+  // 正文从磁盘读一次填充（刚写完的文件；失败标 fileMissing 降级，与 addTextNoteFromVault 同模式）
+  readNote(file)
+    .then((body) =>
+      useCanvasStore.getState().updateNodeData(id, { bodyMd: body }),
+    )
+    .catch(() =>
+      useCanvasStore.getState().updateNodeData(id, { fileMissing: true }),
+    );
+}
+
 /** 画布对话节点实时查找（命名管线回调共用：延迟后/写回前重取，已删除/切画布返回 undefined）。 */
 function findConversationNode(conversationId: string): Node | undefined {
   const node = useCanvasStore
@@ -683,16 +741,24 @@ async function runStream(conversationId: string): Promise<void> {
     );
 
   try {
-    // 工具开关：节点级显式开启且搜索源已配置才携带 tools；开着但未配置 → 提示并降级不带 tools
+    // Agent 模式工具组装：agentMode 关 = 普通对话不带工具；开 = 按 agentTools 勾选过滤
+    // （缺省全部）；web_search 依赖搜索源配置——勾选了但未配置时剔除并提示，其余工具不受影响
     const settings = useSettingsStore.getState();
-    const toolsWanted = !!nodeData?.toolsEnabled;
     const searchReady = settings.isSearchConfigured();
-    if (toolsWanted && !searchReady) {
-      store.setState({
-        error: "未配置搜索源（设置 → 联网搜索），本次对话未启用联网搜索",
-      });
+    const tools: ToolDef[] = [];
+    if (nodeData?.agentMode) {
+      const enabled = nodeData.agentTools ?? DEFAULT_AGENT_TOOLS;
+      for (const meta of AGENT_TOOLS) {
+        if (!enabled.includes(meta.id)) continue;
+        if (meta.id === "web_search" && !searchReady) {
+          store.setState({
+            error: "未配置搜索源（设置 → 联网搜索），本次对话未启用联网搜索",
+          });
+          continue;
+        }
+        tools.push(meta.def);
+      }
     }
-    const tools = toolsWanted && searchReady ? [WEB_SEARCH_TOOL] : undefined;
     // 5.4：引用已在 send 时固化进 user 消息 content（一次性注入），此处不再动态拼接
     const apiMessages: ChatParams["messages"] = toApiMessages(history);
     // 系统提示词：从引用的笔记实时读正文，注入为首条 system 消息（外部编辑即时生效）。
@@ -710,7 +776,7 @@ async function runStream(conversationId: string): Promise<void> {
       provider,
       model,
       apiMessages,
-      ...(tools ? { tools } : {}),
+      ...(tools.length ? { tools } : {}),
       signal: controller.signal,
       // 增量写入占位消息（引擎 rAF 合并后每帧调用）
       applyBatch: ({ content, reasoning }) => {
@@ -814,42 +880,28 @@ async function runStream(conversationId: string): Promise<void> {
         schedulePersist();
         abortControllers.delete(conversationId);
       },
-      executeTools: async (calls) => {
-        // 执行工具调用：web_search → 产物节点（SearchResultNode）+ tool 消息回填给 AI。
-        // 搜索走 Rust 代理（invoke 不支持 AbortSignal）：用户点停止后，已发出的请求结果回来时
-        // 被下方 aborted 检查丢弃（不建节点），引擎下一轮携已 abort 的 signal 立即收敛。
-        const toolMessages: ChatParams["messages"] = [];
-        for (const tc of calls) {
-          let query = "";
-          try {
-            query =
-              (JSON.parse(tc.function.arguments) as { query?: string }).query ??
-              "";
-          } catch {
-            // 参数解析失败：按空 query 处理（下方产生失败节点）
-          }
-          const data = query
-            ? await runSearch(useSettingsStore.getState().searchConfig, query)
-            : { query: "", results: [], error: "搜索参数解析失败" };
-          // 用户已点停止：不创建「搜索失败」节点（abort 后 runSearch 降级为 error，属预期中止而非失败）
-          if (controller.signal.aborted) break;
-          if (data.results.length > 0 || data.error) {
-            createSearchNode(
-              conversationId,
-              data.query || query || "搜索",
-              data,
-            );
-          }
-          toolMessages.push({
-            role: "tool",
-            tool_call_id: tc.id,
-            content: data.error
-              ? `搜索失败：${data.error}`
-              : JSON.stringify(data.results),
-          });
-        }
-        return toolMessages;
+      // 工具调用过程可视化：running/done 更新进占位消息 toolRuns（随消息落 .atlx）
+      onToolRuns: (runs) => {
+        store.setState((state) => {
+          const l = state.messagesByConv[conversationId] ?? [];
+          return {
+            messagesByConv: {
+              ...state.messagesByConv,
+              [conversationId]: l.map((m) =>
+                m.id === asstId ? { ...m, toolRuns: runs } : m,
+              ),
+            },
+          };
+        });
       },
+      executeTools: (calls) =>
+        // 公共工具执行器（画布/面板共用）；差异仅产物节点：画布建搜索/笔记节点，面板不建
+        runToolCalls(calls, controller.signal, {
+          onSearchResult: (query, data) =>
+            createSearchNode(conversationId, query, data),
+          onNoteCreated: (file, title) =>
+            createWriteNoteNode(conversationId, file, title),
+        }),
     });
   } catch (e) {
     console.error("流式请求失败", e);
@@ -984,11 +1036,31 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       const data = isWhiteboard
         ? await loadWhiteboardVault(file)
         : await loadCanvasVault(file);
+      // Agent 模式旧开关字段归一化：toolsEnabled/writeToolsEnabled → agentMode/agentTools
+      // （存量文件兼容，只做一次）。重建节点对象而非原位修改——增量保存按引用 diff，
+      // 原位修改引用不变会被判「无变化」跳过写盘，迁移结果永不落盘。
+      let migrated = false;
+      const nodes = !isWhiteboard
+        ? data.nodes.map((n) => {
+            if (n.type !== "conversation") return n;
+            const d = n.data as Record<string, unknown>;
+            if (d.agentMode !== undefined) return n;
+            const searchWanted = d.toolsEnabled === true;
+            const writeWanted = d.writeToolsEnabled === true;
+            if (!searchWanted && !writeWanted) return n;
+            const tools: string[] = [];
+            if (searchWanted) tools.push("web_search");
+            if (writeWanted) tools.push("write_note", "append_table_row");
+            const { toolsEnabled: _t, writeToolsEnabled: _w, ...rest } = d;
+            migrated = true;
+            return { ...n, data: { ...rest, agentMode: true, agentTools: tools } };
+          })
+        : data.nodes;
       set({
         canvasId: data.id,
         canvasFile: file,
         canvasTitle: data.title,
-        nodes: data.nodes,
+        nodes,
         edges: data.edges,
         readOnly: isWhiteboard,
         messagesByConv: data.messagesByConv,
@@ -1003,6 +1075,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       undoMgr.clear();
       // 已落盘基线 = 加载的磁盘状态（后续保存按引用 diff，未变实体不重写）
       syncLastSaved();
+      if (migrated) schedulePersist();
       // 恢复补命名：加载后对首个未命名对话节点重试（覆盖上次命名被中断/丢失的窗口；
       // 仅补一个防并发请求轰炸模型端点）；无 title 无消息的节点由消息检查自然跳过
       if (!isWhiteboard) {

@@ -15,12 +15,20 @@ import {
   type ToolCall,
 } from "@/services/ai/client";
 import { autoTitle, AUTO_NAMING_DELAY_MS } from "@/services/ai/autoTitle";
+import { summarizeToolArgs } from "@/constants/tools";
 import { useSettingsStore } from "./settingsStore";
-import type { ProviderConfig, Role, ToolDef } from "@/types";
+import type { ProviderConfig, Role, ToolDef, ToolRun } from "@/types";
 
 export interface StreamBatch {
   content: string;
   reasoning: string;
+}
+
+/** 单个工具执行的结果（可视化用：与 tool call id 对应）。 */
+export interface ToolExecResult {
+  id: string;
+  ok: boolean;
+  summary: string;
 }
 
 export interface RunStreamExchangeOptions {
@@ -39,8 +47,15 @@ export interface RunStreamExchangeOptions {
     reasoning: string;
     timedOut: boolean;
   }) => void;
-  /** 工具执行（画布 = 搜索 + 建产物节点；面板 = 仅搜索回填），返回 tool 消息由引擎回填下一轮。 */
-  executeTools: (calls: ToolCall[]) => Promise<ChatParams["messages"]>;
+  /**
+   * 工具执行（画布/面板均走 toolRunner 公共执行器，产物节点差异由调用方 hooks 消化），
+   * 返回 tool 消息由引擎回填下一轮，results 为各 tool call 的执行结果摘要（可视化用）。
+   */
+  executeTools: (
+    calls: ToolCall[],
+  ) => Promise<{ messages: ChatParams["messages"]; results: ToolExecResult[] }>;
+  /** 工具调用过程通知（可视化）：执行前发 running，执行后发 done/error。 */
+  onToolRuns?: (runs: ToolRun[]) => void;
 }
 
 export async function runStreamExchange(
@@ -111,6 +126,7 @@ export async function runStreamExchange(
   try {
     for (let round = 0; round <= maxRounds; round++) {
       let toolCalls: ToolCall[] = [];
+      let stopReason: string | undefined;
       let roundError: Error | null = null;
       // 最后一轮不带 tools：强制纯文本回复，保证占位消息有内容（否则连续工具调用会「只出工具产物、无 AI 回复」）
       const toolsForRound =
@@ -125,6 +141,8 @@ export async function runStreamExchange(
           messages: apiMessages,
           signal,
           ...(toolsForRound.length ? { tools: toolsForRound } : {}),
+          // 传输级重试：网络抖动/5xx/429 自动退避重试（最多 2 次；流开始后不重试，防重复输出）
+          retry: { maxRetries: 2 },
         },
         {
           onDelta: (delta) => {
@@ -140,8 +158,9 @@ export async function runStreamExchange(
           onToolCalls: (tc) => {
             toolCalls = tc;
           },
-          onDone: () => {
+          onDone: (sr) => {
             // 清理在循环外统一做（工具轮的占位不能提前移除）
+            stopReason = sr;
           },
           onError: (err) => {
             roundError = err;
@@ -158,10 +177,51 @@ export async function runStreamExchange(
 
       if (toolCalls.length === 0) break; // 纯文本轮：流式内容已写入占位
 
-      // 执行工具调用（搜索走 Rust 代理，invoke 不支持 AbortSignal）：用户点停止后，已发出的
-      // 请求结果回来时被下方 aborted 检查丢弃（不建产物），下一轮携已 abort 的 signal 立即收敛
-      const toolMessages = await options.executeTools(toolCalls);
-      if (signal.aborted) break;
+      // 回复被截断（finish_reason=length）：tool call 参数可能残缺，不执行工具
+      // （防残缺参数执行产生误导产物），如实报错由调用方写 [错误] 占位
+      if (stopReason === "length") {
+        cancelRaf();
+        clearIdle();
+        options.onError(
+          new Error("回复被截断（达到输出上限），工具调用未执行，请重试"),
+        );
+        return;
+      }
+
+      // 执行工具调用（走公共执行器 runToolCalls，画布/面板差异由 executeTools 回调消化）：
+      // 用户点停止后，已发出的请求结果回来时被下方 aborted 检查丢弃（不建产物），
+      // 下一轮携已 abort 的 signal 立即收敛
+      const runningRuns: ToolRun[] = toolCalls.map((tc) => ({
+        id: tc.id,
+        name: tc.function.name,
+        argsSummary: summarizeToolArgs(tc.function.name, tc.function.arguments),
+        status: "running",
+      }));
+      options.onToolRuns?.(runningRuns);
+      const { messages: toolMessages, results } = await options.executeTools(toolCalls);
+      if (signal.aborted) {
+        // 中止：工具结果不回填，但 toolRuns 归一化为终止态（否则 running 状态随消息落盘，
+        // 画布重开后工具块永久转圈；面板解析侧另有同款归一化兜底）
+        options.onToolRuns?.(
+          runningRuns.map((run) => ({
+            ...run,
+            status: "error" as const,
+            resultSummary: "（已中断）",
+          })),
+        );
+        break;
+      }
+      // 执行完成：running → done/error + 结果摘要（可视化块实时更新）
+      options.onToolRuns?.(
+        runningRuns.map((run) => {
+          const res = results.find((r) => r.id === run.id);
+          return {
+            ...run,
+            status: res && !res.ok ? ("error" as const) : ("done" as const),
+            resultSummary: res?.summary ?? "完成",
+          };
+        }),
+      );
       // 已达工具上限：本轮工具已执行（结果已沉淀），不再回填继续请求
       if (round >= maxRounds) break;
       apiMessages = [

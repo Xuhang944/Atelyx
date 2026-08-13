@@ -34,8 +34,10 @@ export interface ConversationData {
   systemPromptFile?: string;
   /** LLM 自动生成的话题标题（首轮对话完成后命名，InspectorPanel 来源/血缘显示名用；缺省 = 未命名）。 */
   title?: string;
-  /** 启用 AI 自主联网搜索工具（缺省关；开着但搜索源未配置时发送提示并降级不带 tools）。 */
-  toolsEnabled?: boolean;
+  /** 启用 AI Agent 模式（缺省关 = 普通对话，不带任何工具）：开启后 AI 可自主调用工具（见 agentTools）。 */
+  agentMode?: boolean;
+  /** Agent 模式启用的工具名列表（constants/tools.ts 的 AGENT_TOOLS id；缺省 = 全部工具）。 */
+  agentTools?: string[];
 }
 
 export interface TextData {

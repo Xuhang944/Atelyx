@@ -1,4 +1,4 @@
-import { Globe, Loader2, Plus, RefreshCw, Scissors, X } from "lucide-react";
+import { Loader2, Plus, RefreshCw, Scissors, X } from "lucide-react";
 import { useEffect, useCallback, useMemo, useRef, useState } from "react";
 import { NodeResizeControl, useReactFlow, type NodeProps } from "@xyflow/react";
 import { useShallow } from "zustand/react/shallow";
@@ -13,6 +13,7 @@ import {
   DEFAULT_TEXT_NODE_WIDTH,
   DEFAULT_TEXT_NODE_HEIGHT,
 } from "@/constants/canvas";
+import { DEFAULT_AGENT_TOOLS } from "@/constants/tools";
 import { isAssetConsumed } from "@/utils/consumed";
 import { findFreeSpot } from "@/utils/layout";
 import {
@@ -38,6 +39,7 @@ import { DropdownSelect } from "@/components/common/DropdownSelect";
 import { ChatMessageBubble } from "@/components/common/ChatMessageBubble";
 import { MentionTextarea } from "@/components/common/MentionTextarea";
 import { JumpToBottomButton } from "@/components/common/JumpToBottomButton";
+import { AgentModeToggle } from "@/components/common/AgentModeToggle";
 import { useInlineEdit } from "@/hooks/useInlineEdit";
 import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
 import { useWikiNodeLocate } from "@/hooks/useWikiNodeLocate";
@@ -764,26 +766,24 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
           className="ml-auto flex items-center gap-1 nodrag"
           onClick={(e) => e.stopPropagation()}
         >
-          {/* 联网搜索工具开关：开启后 AI 自主决定联网搜索（需搜索源已配置，未配置发送时提示） */}
-          <button
-            onClick={() =>
-              updateNodeData(id, { toolsEnabled: !nodeData?.toolsEnabled })
+          {/* Agent 模式开关：点击 = 切换模式（普通对话 ↔ 工具调用）；开启时旁侧小箭头弹出工具勾选浮层 */}
+          <AgentModeToggle
+            agentMode={!!nodeData?.agentMode}
+            onToggleMode={() =>
+              updateNodeData(id, { agentMode: !nodeData?.agentMode })
             }
-            title={
-              nodeData?.toolsEnabled
-                ? "联网搜索：已开启（AI 可自主联网搜索）"
-                : "联网搜索：关闭（点击开启）"
-            }
-            aria-label="联网搜索工具"
-            className="nodrag rounded px-1 py-0.5 hover:opacity-80"
-            style={{
-              color: nodeData?.toolsEnabled
-                ? "var(--accent)"
-                : "var(--text-muted)",
+            enabledTools={nodeData?.agentTools ?? DEFAULT_AGENT_TOOLS}
+            onToggleTool={(name, on) => {
+              const current = nodeData?.agentTools ?? DEFAULT_AGENT_TOOLS;
+              updateNodeData(id, {
+                agentTools: on
+                  ? current.includes(name)
+                    ? current
+                    : [...current, name]
+                  : current.filter((t) => t !== name),
+              });
             }}
-          >
-            <Globe size={13} className="flex-shrink-0" />
-          </button>
+          />
           {/* 系统提示词：选择已标记的提示词笔记，发送时注入 system 消息（留空 = 不注入），样式与模型选择一致 */}
           <DropdownSelect
             value={sysPromptFile ?? ""}
@@ -897,6 +897,7 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
                   onRefChipClick={handleRefChipClick}
                   content={m.content}
                   reasoningContent={m.reasoningContent}
+                  toolRuns={m.toolRuns}
                   isStreaming={isStreamingMsg}
                   attachments={m.attachments}
                   onMediaExtract={extractToMediaNode}

@@ -19,7 +19,6 @@ import {
   BookMarked,
   Cpu,
   FilePlus,
-  Globe,
   History,
   Loader2,
   MessageSquare,
@@ -47,6 +46,8 @@ import {
 import { ChatMessageBubble } from "@/components/common/ChatMessageBubble";
 import { MentionTextarea } from "@/components/common/MentionTextarea";
 import { JumpToBottomButton } from "@/components/common/JumpToBottomButton";
+import { AgentModeToggle } from "@/components/common/AgentModeToggle";
+import { DropdownSelect } from "@/components/common/DropdownSelect";
 import { noteTitleFromFile } from "@/utils/filename";
 import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
 import type { EditorChatMessage, EditorChatMessageRef } from "@/types";
@@ -61,6 +62,28 @@ const EMPTY_MESSAGES: EditorChatMessage[] = [];
 function appendMentionTags(prev: string, tags: string[]): string {
   const sep = prev && !prev.endsWith(" ") ? " " : "";
   return prev + sep + tags.join(" ") + " ";
+}
+
+/**
+ * 划词 → 面板输入框指令文本（中性化描述）：笔记路径 + 划词原文 + 用户要求。
+ * 不预设「改写」意图——用户划词提出要求，AI 自行判断用工具修改、解释还是其他；
+ * 工具可用性由 Agent 模式开关决定。注入仓库路径帮助 AI 精确匹配目标笔记
+ * （edit_note 的 note 参数支持路径匹配，同名笔记不混淆）。
+ */
+function buildRewritePrompt(r: {
+  noteFile: string;
+  selectedText: string;
+  comment: string;
+}): string {
+  const lines = [
+    `用户发来笔记（${r.noteFile}）中的以下文本：`,
+    "",
+    r.selectedText,
+  ];
+  if (r.comment.trim()) {
+    lines.push("", "要求：", r.comment.trim());
+  }
+  return lines.join("\n");
 }
 
 export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null; onOpenNote?: (file: string, title: string) => void }) {
@@ -79,8 +102,10 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
   const deleteSession = useChatPanelStore((s) => s.deleteSession);
   const setSystemPromptFile = useChatPanelStore((s) => s.setSystemPromptFile);
   const setModelOverride = useChatPanelStore((s) => s.setModelOverride);
-  const setToolsEnabled = useChatPanelStore((s) => s.setToolsEnabled);
-  const toolsEnabled = useChatPanelStore((s) => s.toolsEnabled);
+  const agentMode = useChatPanelStore((s) => s.agentMode);
+  const agentTools = useChatPanelStore((s) => s.agentTools);
+  const setAgentMode = useChatPanelStore((s) => s.setAgentMode);
+  const setAgentTool = useChatPanelStore((s) => s.setAgentTool);
   const clearError = useChatPanelStore((s) => s.clearError);
   const vaultRoot = useAppStore((s) => s.vaultRoot);
 
@@ -94,8 +119,6 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
 
   const [input, setInput] = useState("");
   const [showHistory, setShowHistory] = useState(false);
-  const [showModelPicker, setShowModelPicker] = useState(false);
-  const [showPromptPicker, setShowPromptPicker] = useState(false);
   // 手动重新命名请求是否进行中（按钮旋转反馈 + 防重复点击）
   const [renaming, setRenaming] = useState(false);
   const handleRename = async () => {
@@ -190,13 +213,20 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
     setInput((prev) => appendMentionTags(prev, [`@${ref.label}`]));
   }, [noteFile, activeSessionId]);
 
+  // 笔记划词改写请求队列（NoteEditor 划词右键确认）→ 输入框追加改写指令文本块
+  const pendingRewrites = useChatPanelStore((s) => s.pendingRewrites);
+  useEffect(() => {
+    if (pendingRewrites.length === 0) return;
+    const prompts = pendingRewrites.map((r) => buildRewritePrompt(r));
+    setInput((prev) => prev + (prev.trim() ? "\n\n" : "") + prompts.join("\n\n"));
+    useChatPanelStore.getState().clearPendingRewrites();
+  }, [pendingRewrites]);
+
   // 仓库切换时强制重载会话（双保险）：selectVault 已 load 一次，但若其中间某步异常被
   // catch 跳过（如 global.json 写入失败），此处保证消息区/历史列表一定跟随新仓库刷新
   useEffect(() => {
     if (!vaultRoot) return;
     setShowHistory(false);
-    setShowModelPicker(false);
-    setShowPromptPicker(false);
     void useChatPanelStore.getState().load(useAppStore.getState().vaultId);
   }, [vaultRoot]);
 
@@ -212,14 +242,6 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
   // 跟随默认时显示真实生效模型名（resolveDefaultModel：仓库默认模型反查所属供应商，均为落盘配置；昵称优先展示）
   const defaultModelName = useSettingsStore((s) => s.resolveDefaultModel()?.model ?? null);
   const defaultModelDisplay = defaultModelName ? modelNameAcrossProviders(providers, defaultModelName) : null;
-  // 覆盖模型按所属供应商取昵称；供应商已删时回退原模型 ID（防错显示同名模型的别家昵称）
-  const overrideProvider = modelOverride?.providerId
-    ? providers.find((p) => p.id === modelOverride.providerId)
-    : undefined;
-  const overrideDisplay =
-    modelOverride?.model && overrideProvider
-      ? modelDisplayName(overrideProvider, modelOverride.model)
-      : (modelOverride?.model ?? null);
   const noteList = useVaultStore((s) => s.noteList);
   // 系统提示词候选：实际存在的笔记 ∩ 已标记列表（文件面板右键 .md 注册/注销，独立落盘 .atelyx/prompt-notes.json）
   const promptFiles = useSettingsStore((s) => s.promptNotes);
@@ -418,6 +440,7 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
                   onRefChipClick={handleRefChipClick}
                   content={m.content}
                   reasoningContent={m.reasoningContent}
+                  toolRuns={m.toolRuns}
                   isStreaming={isStreamingMsg}
                   markdownComponents={chatMarkdownComponents}
                   streamingPlaceholder={
@@ -450,127 +473,62 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
         <div className="relative">
           {/* 输入框内底部工具条：左 提示词/模型；右 发送/停止 */}
           <div className="absolute inset-x-0 bottom-3 z-10 px-1.5 flex items-center gap-0.5">
-          {/* 系统提示词选择：图标 + 当前提示词名（超宽消隐） */}
-          <div className="relative">
-            <button
-              onClick={() => setShowPromptPicker((v) => !v)}
-              title={sysPromptFile ? `系统提示词：${noteTitleFromFile(sysPromptFile)}` : "选择系统提示词（右键笔记注册）"}
-              className="px-1.5 py-1 rounded text-xs flex items-center gap-1 hover:opacity-80 w-28 min-w-0"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              <BookMarked size={13} className="flex-shrink-0" />
-              <span className="flex-1 min-w-0 truncate">{sysPromptFile ? noteTitleFromFile(sysPromptFile) : "提示词"}</span>
-            </button>
-            {showPromptPicker && <div className="fixed inset-0 z-40" onClick={() => setShowPromptPicker(false)} />}
-            {showPromptPicker && (
-              <div
-                className="absolute bottom-full mb-1 left-0 z-50 w-56 border rounded shadow-lg py-1 max-h-60 overflow-auto"
-                style={{ background: "var(--bg-secondary)", borderColor: "var(--border)" }}
-              >
-                <button
-                  onClick={() => { setSystemPromptFile(undefined); setShowPromptPicker(false); }}
-                  className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--bg-tertiary)]"
-                  style={{ color: sysPromptFile ? "var(--text-primary)" : "var(--accent)" }}
-                >
-                  不使用
-                </button>
-                {promptNotes.map((n) => {
-                  const file = n.file;
-                  const selected = file === sysPromptFile;
-                  return (
-                    <button
-                      key={n.name}
-                      onClick={() => { setSystemPromptFile(selected ? undefined : file); setShowPromptPicker(false); }}
-                      className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--bg-tertiary)] truncate"
-                      style={{ color: selected ? "var(--accent)" : "var(--text-primary)" }}
-                    >
-                      {n.name.replace(/\.md$/i, "")}
-                    </button>
-                  );
-                })}
-                {promptNotes.length === 0 && (
-                  <div className="px-3 py-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
-                    暂无提示词笔记（在文件面板右键笔记 → 注册为提示词）
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+          {/* 系统提示词选择：DropdownSelect（弹层机制与节点侧同源：锚定按钮 + portal + 钳制） */}
+          <DropdownSelect
+            value={sysPromptFile ?? ""}
+            onChange={(v) => setSystemPromptFile(v || undefined)}
+            options={[
+              { value: "", label: "不使用" },
+              ...promptNotes.map((n) => ({
+                value: n.file,
+                label: n.name.replace(/\.md$/i, ""),
+              })),
+            ]}
+            emptyText="暂无提示词笔记（在文件面板右键笔记 → 注册为提示词）"
+            prefixIcon={<BookMarked size={13} className="flex-shrink-0" />}
+            placeholder="提示词"
+            title={sysPromptFile ? `系统提示词：${noteTitleFromFile(sysPromptFile)}` : "选择系统提示词（右键笔记注册）"}
+            className="px-1.5 py-1 rounded text-xs hover:opacity-80 w-28 min-w-0"
+            style={{ color: "var(--text-secondary)" }}
+          />
 
-          {/* 模型选择：图标 + 当前模型名（超宽消隐；未覆盖 = 跟随仓库默认） */}
-          <div className="relative">
-            <button
-              onClick={() => setShowModelPicker((v) => !v)}
-              title={modelOverride ? `模型：${modelOverride.model}` : "模型：跟随仓库默认（点击选择）"}
-              className="px-1.5 py-1 rounded text-xs flex items-center gap-1 hover:opacity-80 w-28 min-w-0"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              <Cpu size={13} className="flex-shrink-0" />
-              <span className="flex-1 min-w-0 truncate">
-                {overrideDisplay ?? (defaultModelDisplay ?? "默认")}
-              </span>
-            </button>
-            {showModelPicker && <div className="fixed inset-0 z-40" onClick={() => setShowModelPicker(false)} />}
-            {showModelPicker && (
-              <div
-                className="absolute bottom-full mb-1 left-0 z-50 w-56 border rounded shadow-lg py-1 max-h-60 overflow-auto"
-                style={{ background: "var(--bg-secondary)", borderColor: "var(--border)" }}
-              >
-                <button
-                  onClick={() => { setModelOverride(null); setShowModelPicker(false); }}
-                  className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--bg-tertiary)]"
-                  style={{ color: modelOverride ? "var(--text-primary)" : "var(--accent)" }}
-                >
-                  跟随仓库默认
-                </button>
-                {providers.map((p) =>
-                  p.models.length ? (
-                    <div key={p.id}>
-                      {/* 组头 = 供应商名（---供应商--- 样式） */}
-                      <div
-                        className="px-3 pt-1.5 pb-0.5 text-[10px] truncate"
-                        style={{ color: "var(--text-muted)" }}
-                      >
-                        {p.name}
-                      </div>
-                      {p.models.map((m) => (
-                        <button
-                          key={`${p.id}::${m.id}`}
-                          onClick={() => { setModelOverride({ providerId: p.id, model: m.id }); setShowModelPicker(false); }}
-                          className="w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--bg-tertiary)] truncate"
-                          style={{ color: modelOverride?.providerId === p.id && modelOverride?.model === m.id ? "var(--accent)" : "var(--text-primary)" }}
-                        >
-                          {modelDisplayName(p, m.id)}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null
-                )}
-                {providers.every((p) => p.models.length === 0) && (
-                  <div className="px-3 py-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
-                    暂无已配置模型（请在设置中添加供应商）
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* 联网搜索工具开关：开启后 AI 自主决定联网搜索（需搜索源已配置，未配置发送时提示） */}
-          <div className="relative">
-            <button
-              onClick={() => setToolsEnabled(!toolsEnabled)}
-              title={
-                toolsEnabled
-                  ? "联网搜索：已开启（AI 可自主联网搜索）"
-                  : "联网搜索：关闭（点击开启）"
+          {/* 模型选择：DropdownSelect（供应商分组；未覆盖 = 跟随仓库默认） */}
+          <DropdownSelect
+            value={modelOverride ? `${modelOverride.providerId}::${modelOverride.model}` : ""}
+            onChange={(v) => {
+              if (!v) {
+                setModelOverride(null);
+                return;
               }
-              aria-label="联网搜索工具"
-              className="px-1.5 py-1 rounded text-xs flex items-center gap-1 hover:opacity-80"
-              style={{ color: toolsEnabled ? "var(--accent)" : "var(--text-secondary)" }}
-            >
-              <Globe size={13} className="flex-shrink-0" />
-            </button>
-          </div>
+              const [providerId, model] = v.split("::");
+              if (providerId && model) setModelOverride({ providerId, model });
+            }}
+            options={[
+              { value: "", label: "跟随仓库默认" },
+              ...providers.flatMap((p) =>
+                p.models.map((m) => ({
+                  value: `${p.id}::${m.id}`,
+                  label: modelDisplayName(p, m.id),
+                  group: p.name,
+                })),
+              ),
+            ]}
+            emptyText="暂无已配置模型（请在设置中添加供应商）"
+            prefixIcon={<Cpu size={13} className="flex-shrink-0" />}
+            placeholder={defaultModelDisplay ?? "默认"}
+            title={modelOverride ? `模型：${modelOverride.model}` : "模型：跟随仓库默认（点击选择）"}
+            className="px-1.5 py-1 rounded text-xs hover:opacity-80 w-28 min-w-0"
+            style={{ color: "var(--text-secondary)" }}
+          />
+
+          {/* Agent 模式开关：点击 = 切换模式（普通对话 ↔ 工具调用）；开启时旁侧小箭头弹出工具勾选浮层 */}
+          <AgentModeToggle
+            agentMode={agentMode}
+            onToggleMode={() => setAgentMode(!agentMode)}
+            enabledTools={agentTools}
+            onToggleTool={setAgentTool}
+            className="px-1.5 py-1 text-xs"
+          />
           <div className="flex-1" />
           {/* 右：发送 / 停止（图标 only，金色圆钮，流式中切换为停止）——mr-1 右缘留白不顶格 */}
           <button

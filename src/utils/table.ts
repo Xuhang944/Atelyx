@@ -73,23 +73,11 @@ export function tableToSnapshotText(table: TableFile): string {
 }
 
 /**
- * 解析 LLM 填行输出为行数据（AI 生成行 → 追加进表格）。
- * 输入 = 模型回复原文：剥 code fence → 截取首个 `[` 到末个 `]` → JSON.parse；
+ * 把「字段名 → 值」对象数组强转为表格行（AI 填行/工具参数共用）。
  * 字段按**名称**匹配（大小写敏感），类型强转兜底（number/duration 转数字、singleSelect 保留原串、
- * image 不产出）；未知字段丢弃。解析失败返回空数组（调用方报错重试）。
+ * image 不产出）；未知字段丢弃；无效项（非对象）跳过。
  */
-export function parseFillRows(raw: string, fields: TableField[]): TableRow[] {
-  let text = raw.trim();
-  text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  const start = text.indexOf("[");
-  const end = text.lastIndexOf("]");
-  if (start < 0 || end <= start) return [];
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text.slice(start, end + 1));
-  } catch {
-    return [];
-  }
+export function coerceRowsJson(parsed: unknown, fields: TableField[]): TableRow[] {
   if (!Array.isArray(parsed)) return [];
   const rows: TableRow[] = [];
   for (const item of parsed) {
