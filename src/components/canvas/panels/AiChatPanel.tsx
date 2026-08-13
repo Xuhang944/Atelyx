@@ -48,6 +48,8 @@ import { MentionTextarea } from "@/components/common/MentionTextarea";
 import { JumpToBottomButton } from "@/components/common/JumpToBottomButton";
 import { AgentModeToggle } from "@/components/common/AgentModeToggle";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
+import { PopupLayer } from "@/components/common/PopupLayer";
+import { usePopupAnchor } from "@/hooks/usePopupAnchor";
 import { noteTitleFromFile } from "@/utils/filename";
 import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
 import type { EditorChatMessage, EditorChatMessageRef } from "@/types";
@@ -118,7 +120,13 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
   const sysPromptFile = active?.systemPromptFile ?? draftSystemPromptFile;
 
   const [input, setInput] = useState("");
-  const [showHistory, setShowHistory] = useState(false);
+  // 历史会话浮层：锚定 History 按钮（PopupLayer 统一壳，外点/Esc 关闭）
+  const historyBtnRef = useRef<HTMLButtonElement>(null);
+  const {
+    anchor: historyAnchor,
+    toggle: toggleHistory,
+    close: closeHistory,
+  } = usePopupAnchor(historyBtnRef);
   // 手动重新命名请求是否进行中（按钮旋转反馈 + 防重复点击）
   const [renaming, setRenaming] = useState(false);
   const handleRename = async () => {
@@ -226,9 +234,9 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
   // catch 跳过（如 global.json 写入失败），此处保证消息区/历史列表一定跟随新仓库刷新
   useEffect(() => {
     if (!vaultRoot) return;
-    setShowHistory(false);
+    closeHistory();
     void useChatPanelStore.getState().load(useAppStore.getState().vaultId);
-  }, [vaultRoot]);
+  }, [vaultRoot, closeHistory]);
 
   // 智能滚动跟随：贴底自动跟随新消息；上翻停止跟随 + 「新消息」回底按钮（与画布对话节点共用 hook）
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -343,26 +351,26 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
             <FilePlus size={15} />
           </button>
           <button
-            onClick={() => setShowHistory((v) => !v)}
+            ref={historyBtnRef}
+            onClick={toggleHistory}
             title="历史会话"
             aria-label="历史会话"
             className="p-1.5 rounded hover:opacity-80"
-            style={{ color: showHistory ? "var(--accent)" : "var(--text-secondary)" }}
+            style={{ color: historyAnchor ? "var(--accent)" : "var(--text-secondary)" }}
           >
             <History size={15} />
           </button>
         </div>
       </div>
 
-      {/* 历史会话浮层（当前面板全部会话，按最近使用倒序；点击切换、可删除） */}
-      {showHistory && (
-        <div className="fixed inset-0 z-40" onClick={() => setShowHistory(false)} />
-      )}
-      {showHistory && (
-        <div
-          className="absolute right-2 top-9 z-50 w-64 border rounded shadow-lg py-1 max-h-72 overflow-auto"
-          style={{ background: "var(--bg-secondary)", borderColor: "var(--border)" }}
-        >
+      {/* 历史会话浮层（当前面板全部会话，按最近使用倒序；点击切换、可删除）——PopupLayer 锚定 History 按钮 */}
+      <PopupLayer
+        anchor={historyAnchor}
+        onClose={closeHistory}
+        triggerRef={historyBtnRef}
+        widthClass="w-64"
+      >
+        <div className="max-h-72 overflow-auto">
           <div className="px-3 py-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
             历史会话
           </div>
@@ -378,7 +386,7 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
               <button
                 onClick={() => {
                   openSession(s.id);
-                  setShowHistory(false);
+                  closeHistory();
                 }}
                 className="flex-1 text-left truncate min-w-0 hover:opacity-80"
                 title={s.title ?? "未命名对话"}
@@ -402,7 +410,7 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
             </div>
           )}
         </div>
-      )}
+      </PopupLayer>
 
       {/* 消息流（relative 容器承载回底按钮，结构与画布对话节点一致） */}
       <div className="relative flex-1 min-h-0 flex flex-col">
@@ -473,7 +481,7 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
         <div className="relative">
           {/* 输入框内底部工具条：左 提示词/模型；右 发送/停止 */}
           <div className="absolute inset-x-0 bottom-3 z-10 px-1.5 flex items-center gap-0.5">
-          {/* 系统提示词选择：DropdownSelect（弹层机制与节点侧同源：锚定按钮 + portal + 钳制） */}
+          {/* 系统提示词选择：DropdownSelect（PopupLayer 统一弹层壳，锚定按钮弹出） */}
           <DropdownSelect
             value={sysPromptFile ?? ""}
             onChange={(v) => setSystemPromptFile(v || undefined)}

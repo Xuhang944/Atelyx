@@ -3,26 +3,16 @@
  *
  * 受控组件：value 与选项匹配时显示该选项 label，否则显示 placeholder；
  * 「清除/空值」由调用方传 `{ value: "" }` 选项实现（与原 `<option value="">` 一一对应）。
- * 触发按钮只负责结构（flex + 箭头 + focus ring），尺寸/颜色/边框由调用方 className/style 决定。
+ * 触发按钮只负责结构（flex：prefixIcon + label + 箭头——图标为 flex 兄弟项，
+ * 与 label/ChevronDown 同排垂直居中），尺寸/颜色/边框由调用方 className/style 决定。
  *
- * 弹层行为与全项目菜单一致：fixed 定位 + `useClampedMenuPosition` 视口钳制 +
- * Esc/点击面板外关闭（自监听而非 `useDismissOnOutside`：需排除自身 trigger 区域——
- * trigger 不带 stopPropagation，否则点击相邻下拉（如对话节点提示词/模型两个下拉）时
- * 事件到不了 document，前一个面板不会关闭），选项行 `hover:bg-[var(--hover)]`、
- * 选中项 accent 色 + Check（对齐 FieldMenu/RowMenu）；`group` 选项渲染分组头（对应原生 optgroup）。
- * 面板经 `createPortal` 挂 body：画布节点带 transform，fixed 会被 transform 祖先捕获错位，
- * 脱离节点 DOM 树后按视口坐标渲染；z-[1100] 高过 React Flow 选中节点的 +1000 抬升。
+ * 弹层 = `PopupLayer` 统一壳（锚定按钮 + portal + 钳制/向上翻转 + 外点关闭排除自身 trigger，
+ * 与全项目所有浮层同一套机制）；`group` 选项渲染分组头（对应原生 optgroup）。
  */
 import { Check, ChevronDown } from "lucide-react";
-import {
-  useEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-  type ReactNode,
-} from "react";
-import { createPortal } from "react-dom";
-import { useClampedMenuPosition } from "@/hooks/useClampedMenuPosition";
+import { useRef, type CSSProperties, type ReactNode } from "react";
+import { PopupLayer } from "@/components/common/PopupLayer";
+import { usePopupAnchor } from "@/hooks/usePopupAnchor";
 
 export interface DropdownOption {
   value: string;
@@ -66,126 +56,79 @@ export function DropdownSelect({
   "aria-label": ariaLabel,
   "data-tauri-drag-region": dataTauriDragRegion,
 }: Props) {
-  const [open, setOpen] = useState(false);
-  const [anchor, setAnchor] = useState<{
-    x: number;
-    y: number;
-    minWidth: number;
-  } | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const { ref: panelRef, pos } = useClampedMenuPosition(
-    anchor?.x ?? 0,
-    anchor?.y ?? 0,
-  );
-  // Esc 或点击面板/自身 trigger 之外关闭；面板内与自身 trigger 不关（toggle 交给 click）
-  useEffect(() => {
-    const onDown = (e: PointerEvent) => {
-      const target = e.target as Node;
-      if (panelRef.current?.contains(target)) return;
-      if (triggerRef.current?.contains(target)) return;
-      setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    document.addEventListener("pointerdown", onDown);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      document.removeEventListener("pointerdown", onDown);
-    };
-  }, [panelRef]);
+  const { anchor, toggle, close } = usePopupAnchor(triggerRef);
 
   const selected = options.find((o) => o.value === value);
-
-  const onTriggerClick = () => {
-    if (open) {
-      setOpen(false);
-      return;
-    }
-    const r = triggerRef.current?.getBoundingClientRect();
-    if (r) setAnchor({ x: r.left, y: r.bottom + 2, minWidth: r.width });
-    setOpen(true);
-  };
 
   return (
     <>
       <button
         ref={triggerRef}
         type="button"
-        onClick={onTriggerClick}
+        onClick={toggle}
         disabled={disabled}
         title={title}
         aria-label={ariaLabel}
         aria-haspopup="listbox"
-        aria-expanded={open}
+        aria-expanded={!!anchor}
         data-tauri-drag-region={dataTauriDragRegion}
         className={`flex items-center gap-1 min-w-0 cursor-pointer outline-none focus:ring-1 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50 ${className ?? ""}`}
         style={style}
       >
+        {prefixIcon}
         <span className="flex-1 min-w-0 truncate text-left">
-          {prefixIcon}
           {selected ? selected.label : placeholder}
         </span>
         <ChevronDown size={12} className="flex-shrink-0" />
       </button>
-      {open &&
-        createPortal(
-          <div
-            ref={panelRef}
-            role="listbox"
-            className="fixed border rounded shadow-lg py-1 z-[1100] max-h-64 overflow-y-auto"
-            style={{
-              left: pos.x,
-              top: pos.y,
-              minWidth: anchor?.minWidth,
-              background: "var(--bg-secondary)",
-              borderColor: "var(--border)",
-            }}
-            onClick={(e) => e.stopPropagation()}
-            onPointerDown={(e) => e.stopPropagation()}
-          >
-            {options.length === 0 && emptyText != null && (
-              <div className="px-3 py-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
-                {emptyText}
-              </div>
-            )}
-            {options.map((o, i) => (
-              <div key={`${o.value}-${i}`}>
-                {o.group && (i === 0 || options[i - 1].group !== o.group) && (
-                  <div
-                    className="px-3 pt-1.5 pb-0.5 text-[10px] select-none"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    {o.group}
-                  </div>
-                )}
-                <button
-                  type="button"
-                  role="option"
-                  aria-selected={o.value === value}
-                  onClick={() => {
-                    onChange(o.value);
-                    setOpen(false);
-                  }}
-                  className="w-full text-left px-3 py-1.5 text-[13px] hover:bg-[var(--hover)] inline-flex items-center justify-between gap-2"
-                  style={{
-                    color:
-                      o.value === value
-                        ? "var(--accent)"
-                        : "var(--text-primary)",
-                  }}
+      <PopupLayer
+        anchor={anchor}
+        onClose={close}
+        triggerRef={triggerRef}
+        zClass="z-[1100]"
+      >
+        <div role="listbox" className="max-h-64 overflow-y-auto">
+          {options.length === 0 && emptyText != null && (
+            <div className="px-3 py-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
+              {emptyText}
+            </div>
+          )}
+          {options.map((o, i) => (
+            <div key={`${o.value}-${i}`}>
+              {o.group && (i === 0 || options[i - 1].group !== o.group) && (
+                <div
+                  className="px-3 pt-1.5 pb-0.5 text-[10px] select-none"
+                  style={{ color: "var(--text-muted)" }}
                 >
-                  <span className="truncate">{o.label}</span>
-                  {o.value === value && (
-                    <Check size={12} className="flex-shrink-0" />
-                  )}
-                </button>
-              </div>
-            ))}
-          </div>,
-          document.body,
-        )}
+                  {o.group}
+                </div>
+              )}
+              <button
+                type="button"
+                role="option"
+                aria-selected={o.value === value}
+                onClick={() => {
+                  onChange(o.value);
+                  close();
+                }}
+                className="w-full text-left px-3 py-1.5 text-[13px] hover:bg-[var(--hover)] inline-flex items-center justify-between gap-2"
+                style={{
+                  color:
+                    o.value === value
+                      ? "var(--accent)"
+                      : "var(--text-primary)",
+                }}
+              >
+                <span className="truncate">{o.label}</span>
+                {o.value === value && (
+                  <Check size={12} className="flex-shrink-0" />
+                )}
+              </button>
+            </div>
+          ))}
+        </div>
+      </PopupLayer>
     </>
   );
 }

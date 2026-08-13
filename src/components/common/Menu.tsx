@@ -1,16 +1,13 @@
 /**
- * 弹层菜单公共壳（右键菜单/浮层菜单共用）。
- *
- * 收敛全项目菜单的重复样板：fixed 定位 + 视口钳制（useClampedMenuPosition）+
- * Esc/点击外部关闭（useDismissOnOutside）+ 容器样式 + 菜单项/分隔线统一样式。
+ * 弹层菜单公共壳（右键菜单/浮层菜单共用）——`PopupLayer` 统一弹层壳的薄包装
+ * （坐标锚定 + 向下弹出 + z-50 + 菜单项/分隔线统一样式）。
  *
  * 容器内元素无需再 stopPropagation 防提前关闭（外部关闭检测用 contains 判定）；
  * 但 React Flow / 文件树行等宿主有 pointerdown 拦截的场景需传 stopPointerDown
  * （阻止事件到达宿主处理器，防按钮 click 被宿主 preventDefault 抑制）。
  */
 import type { ReactNode } from "react";
-import { useClampedMenuPosition } from "@/hooks/useClampedMenuPosition";
-import { useDismissOnOutside } from "@/hooks/useDismissOnOutside";
+import { PopupLayer } from "@/components/common/PopupLayer";
 
 interface MenuProps {
   x: number;
@@ -22,30 +19,25 @@ interface MenuProps {
   contentClassName?: string;
   /** 内容高度可能变化的场景（如删除确认态切换）重新钳制，防贴视口底部溢出。 */
   repositionDeps?: unknown[];
-  /** 阻止 pointerdown 冒泡（React Flow / 树行等宿主有 pointerdown 拦截时传）。 */
+  /** 阻止 pointerdown 冒泡（React Flow / 文件树行等宿主有 pointerdown 拦截时传）。 */
   stopPointerDown?: boolean;
   children: ReactNode;
 }
 
 /** 弹层菜单容器：fixed 定位 + 视口钳制 + Esc/点击外部关闭。 */
 export function Menu({ x, y, onClose, widthClass = "w-48", contentClassName, repositionDeps, stopPointerDown, children }: MenuProps) {
-  const { ref: menuRef, pos } = useClampedMenuPosition(x, y, repositionDeps ?? []);
-  useDismissOnOutside(onClose, menuRef);
   return (
-    <div
-      ref={menuRef}
-      className={`fixed border rounded shadow-lg z-50 ${widthClass} ${contentClassName ?? "py-1"}`}
-      style={{
-        left: pos.x,
-        top: pos.y,
-        background: "var(--bg-secondary)",
-        borderColor: "var(--border)",
-      }}
-      onClick={(e) => e.stopPropagation()}
-      onPointerDown={stopPointerDown ? (e) => e.stopPropagation() : undefined}
+    <PopupLayer
+      anchor={{ x, y }}
+      onClose={onClose}
+      widthClass={widthClass}
+      contentClassName={contentClassName}
+      zClass="z-50"
+      repositionDeps={repositionDeps}
+      stopPointerDown={stopPointerDown}
     >
       {children}
-    </div>
+    </PopupLayer>
   );
 }
 

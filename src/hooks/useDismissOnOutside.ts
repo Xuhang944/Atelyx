@@ -5,15 +5,17 @@
  *
  * `menuRef` 可选：多数调用方同时用 `useClampedMenuPosition` 钳制位置（自带 ref），
  * 传入共享同一 ref，防两个 hook 各自持有一个 ref 导致点击外部检测失效。
+ * `excludeRef` 可选：外点判定额外排除的区域（触发器 trigger）——点自身 trigger 不关，
+ * 开/关 toggle 语义归 trigger 的 click 处理（PopupLayer 的 triggerRef 即此用途）。
  *
  * 挂载期间监听、卸载清理；onClose 用 ref 存最新回调，监听不随每次渲染重绑。
- * 字段菜单 / 行菜单 / 添加字段浮层等弹层共用（原三处手写重复代码收敛至此）。
  */
 import { useEffect, useRef, type RefObject } from "react";
 
 export function useDismissOnOutside(
   onClose: () => void,
   menuRef?: RefObject<HTMLDivElement>,
+  excludeRef?: RefObject<HTMLElement | null>,
 ): RefObject<HTMLDivElement> {
   const ownRef = useRef<HTMLDivElement>(null);
   const ref = menuRef ?? ownRef;
@@ -25,7 +27,12 @@ export function useDismissOnOutside(
       if (e.key === "Escape") closeRef.current();
     };
     const onDown = (e: PointerEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) closeRef.current();
+      const target = e.target as Node;
+      if (ref.current?.contains(target)) return;
+      if (excludeRef?.current?.contains(target)) return;
+      // 弹层未渲染（ref 为空）时无物可关，不触发 onClose（PopupLayer 常驻挂载但 anchor 为空时点任意处）
+      if (!ref.current) return;
+      closeRef.current();
     };
     window.addEventListener("keydown", onKey);
     document.addEventListener("pointerdown", onDown);
@@ -33,9 +40,8 @@ export function useDismissOnOutside(
       window.removeEventListener("keydown", onKey);
       document.removeEventListener("pointerdown", onDown);
     };
-    // ref 为稳定引用（调用方的 useClampedMenuPosition ref 或 hook 内 useRef），
-    // 加入依赖仅为消除 exhaustive-deps，不会重挂监听
-  }, [ref]);
+    // ref/excludeRef 为稳定引用（useRef），加入依赖仅为消除 exhaustive-deps，不会重挂监听
+  }, [ref, excludeRef]);
 
   return ref;
 }

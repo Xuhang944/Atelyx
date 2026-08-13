@@ -2,8 +2,8 @@
  * 表格编辑器弹层菜单（字段菜单 / 表头右键列菜单 / 行菜单 / 添加字段浮层 /
  * 整表右键菜单 / 状态栏计算类型菜单）。
  *
- * 弹层壳统一走 `common/Menu`（视口钳制 + Esc/点击外部关闭 + 容器样式）；
- * 状态栏计算菜单（StatMenu）为固定向上弹出 + 自定义钳制，保留自有壳。
+ * 弹层壳统一走 `common/PopupLayer`（视口钳制 + Esc/点击外部关闭 + 容器样式，
+ * 经 `common/Menu` 包装）；状态栏计算菜单（StatMenu）固定向上弹出走 PopupLayer 的 align="bottom"。
  */
 import {
   AlignVerticalSpaceAround,
@@ -15,7 +15,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { useDismissOnOutside } from "@/hooks/useDismissOnOutside";
+import { PopupLayer } from "@/components/common/PopupLayer";
 import { Menu, MenuDivider, MenuItem } from "@/components/common/Menu";
 import { CALC_TYPE_LABELS, CALC_TYPES_BY_FIELD, FIELD_TYPE_LABELS } from "@/constants/table";
 import { useTableStore } from "@/stores/tableStore";
@@ -394,7 +394,8 @@ export function SelectAllMenu({ x, y, onClose }: { x: number; y: number; onClose
 }
 
 /** 状态栏计算类型菜单：无 + 字段类型可用计算（当前项 accent + Check）。
- *  固定向上弹出（bottom 定位，底边贴点击位置上方不遮住点击处），左边缘对齐点击单元格，右缘视口钳制。 */
+ *  固定向上弹出（PopupLayer align="bottom"，底边贴点击位置上方不遮住点击处），
+ *  左边缘对齐点击单元格，实测尺寸视口钳制。 */
 export function StatMenu({
   field,
   x,
@@ -407,28 +408,11 @@ export function StatMenu({
   onClose: () => void;
 }) {
   const setCalcType = useTableStore((s) => s.setCalcType);
-  const menuRef = useDismissOnOutside(onClose);
 
   if (!field) return null;
 
-  // 左边缘对齐点击单元格，右缘不溢出视口（w-24 = 96px + 4px 边距）
-  const left = Math.max(4, Math.min(x, window.innerWidth - 96 - 4));
-  // 菜单估算高 ~200px（最多 6 项）：上方空间不足（状态栏贴近窗口顶）时贴视口顶展开，保证选项可达
-  const bottom = Math.min(window.innerHeight - y + 4, window.innerHeight - 4 - 200);
-
   return (
-    <div
-      ref={menuRef}
-      className="fixed border rounded shadow-lg py-1 z-50 w-24"
-      style={{
-        left,
-        bottom,
-        background: "var(--bg-secondary)",
-        borderColor: "var(--border)",
-      }}
-      onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
+    <PopupLayer anchor={{ x, y: y - 4 }} align="bottom" onClose={onClose} widthClass="w-24">
       <MenuItem
         className="justify-between"
         style={{ color: field.calcType ? "var(--text-primary)" : "var(--accent)" }}
@@ -454,6 +438,6 @@ export function StatMenu({
           {field.calcType === t && <Check size={12} />}
         </MenuItem>
       ))}
-    </div>
+    </PopupLayer>
   );
 }
