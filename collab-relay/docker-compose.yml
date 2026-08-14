@@ -1,0 +1,9 @@
+services:
+  relay:
+    build: .
+    container_name: atelyx-collab-relay
+    restart: unless-stopped
+    environment:
+      - PORT=17701
+    ports:
+      - "17701:17701"

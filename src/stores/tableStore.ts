@@ -193,6 +193,88 @@ function abortEditSession(): void {
 }
 
 /**
+ * 乐观锁冲突（磁盘版本新于基准）自动合并重试：重读磁盘 → 以磁盘为基底应用本地增量
+ * （同实体 = 本地后写者胜 LWW；本地删除生效；磁盘删除而本地未改 = 跟随磁盘不复活），
+ * 合并结果写回内存并以磁盘为保存基线重发补丁——他人改动保留、本地改动落上，不再弹冲突条。
+ * 未变实体直接引用磁盘对象，重发补丁引用 diff 天然只含真实增量。
+ * 重读失败/身份不匹配/再次并发冲突 → 抛错回落冲突提示（用户手动决策）。
+ */
+async function retryMergePersist(
+  file: string,
+  finish: (updatedAt: number | null, newFile?: string) => void,
+): Promise<void> {
+  const disk = await readTableVault(file);
+  // 读盘期间可能已继续编辑/切换表格：以**最新**本地状态为合并基准（用旧引用会覆盖新编辑），
+  // 且已不在原表则放弃合并（内存不得污染新表状态）
+  const s = useTableStore.getState();
+  if (s.tableFile !== file) return;
+  if (disk.id !== s.id) throw new Error("磁盘表格身份不匹配，已中止合并保存");
+  const localFields = new Map(s.fields.map((f) => [f.id, f]));
+  const localRows = new Map(s.rows.map((r) => [r.id, r]));
+  const changedFieldIds = new Set(
+    s.fields
+      .filter((f) => {
+        const ls = lastSavedFields.find((x) => x.id === f.id);
+        return !ls || ls !== f;
+      })
+      .map((f) => f.id),
+  );
+  const changedRowIds = new Set(
+    s.rows
+      .filter((r) => {
+        const ls = lastSavedRows.find((x) => x.id === r.id);
+        return !ls || ls !== r;
+      })
+      .map((r) => r.id),
+  );
+  const removedFieldIds = new Set(
+    lastSavedFields.filter((f) => !localFields.has(f.id)).map((f) => f.id),
+  );
+  const removedRowIds = new Set(
+    lastSavedRows.filter((r) => !localRows.has(r.id)).map((r) => r.id),
+  );
+  const mergedFields = disk.fields.filter((f) => !removedFieldIds.has(f.id));
+  for (let i = 0; i < mergedFields.length; i++) {
+    const f = mergedFields[i];
+    const local = localFields.get(f.id);
+    if (local && changedFieldIds.has(f.id)) mergedFields[i] = local;
+  }
+  const mergedRows = disk.rows.filter((r) => !removedRowIds.has(r.id));
+  for (let i = 0; i < mergedRows.length; i++) {
+    const r = mergedRows[i];
+    const local = localRows.get(r.id);
+    if (local && changedRowIds.has(r.id)) mergedRows[i] = local;
+  }
+  // 纯本地新增（磁盘无 + 基线无）补进末尾；磁盘删除的实体本地未删（含已修改）也跟随磁盘——
+  // 删除冲突优先（防幽灵行复活），本地对已删实体的编辑视为随删除放弃
+  for (const f of s.fields) {
+    if (!disk.fields.some((x) => x.id === f.id) && !lastSavedFields.some((x) => x.id === f.id)) {
+      mergedFields.push(f);
+    }
+  }
+  for (const r of s.rows) {
+    if (!disk.rows.some((x) => x.id === r.id) && !lastSavedRows.some((x) => x.id === r.id)) {
+      mergedRows.push(r);
+    }
+  }
+  // 写回内存前最后守卫：计算期间切表则放弃（补丁不重发，冲突留给下次保存）
+  if (useTableStore.getState().tableFile !== file) return;
+  useTableStore.setState({ fields: mergedFields, rows: mergedRows });
+  lastSavedFields = disk.fields;
+  lastSavedRows = disk.rows;
+  const result = await patchTableVault({
+    file,
+    tableId: disk.id,
+    fields: mergedFields,
+    rows: mergedRows,
+    lastSaved: { fields: disk.fields, rows: disk.rows },
+    baseUpdatedAt: disk.updatedAt,
+    force: false,
+  });
+  finish(result ? result.updatedAt : null, result?.file);
+}
+
+/**
  * 防抖持久化控制器：写盘期间又有新变更（persistCtl.version 已变）则保留 dirty，
  * 由下一轮 timer 再写，防写盘成功回调吞掉新编辑。force = 保留本地（绕过乐观锁强制覆盖）。
  * 增量保存：与 lastSaved 快照按引用 diff，只写变化实体（见 patchTableVault）；
@@ -230,7 +312,7 @@ const persistCtl = createPersistController<boolean>({
     const reportError = (e: unknown) => {
       const msg = typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
       if (msg.includes("已被外部修改")) {
-        // 乐观锁冲突：不覆盖磁盘，提示用户重载（本地改动保留在内存供查看）
+        // 自动合并兜底失败（重发补丁仍冲突的并发窗口）：提示用户重载/强制保存
         useTableStore.setState({ conflictPending: true, saving: false });
       } else {
         console.error("表格自动保存失败", e);
@@ -260,6 +342,14 @@ const persistCtl = createPersistController<boolean>({
           finish(updatedAt);
         } catch (e2) {
           reportError(e2);
+        }
+      } else if (typeof e === "string" && e.includes("已被外部修改")) {
+        // 乐观锁冲突：自动三方合并（磁盘基底 + 本地增量 LWW）重发补丁；
+        // 合并本身失败/再冲突（并发窗口）→ 回落冲突提示由用户决策
+        try {
+          await retryMergePersist(tableFile, finish);
+        } catch (mergeErr) {
+          reportError(mergeErr);
         }
       } else {
         reportError(e);

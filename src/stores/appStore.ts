@@ -22,6 +22,7 @@ import { useVaultStore } from "@/stores/vaultStore";
 import { useChatPanelStore } from "@/stores/chatPanelStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
+import { useCollabStore } from "@/stores/collabStore";
 import { markSelfSave, useCanvasStore } from "@/stores/canvasStore";
 import { baseName, dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename, siblingPath, stripExt } from "@/utils/filename";
 import { getAppVersion as getVersionSvc } from "@/services/app";
@@ -361,6 +362,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     await useChatPanelStore.getState().flush(get().vaultId);
     await useUiStateStore.getState().flush();
     await useSettingsStore.getState().flush();
+    // 协作连接收尾：发 bye 离开房间并停止重连（关窗/更新重启共用此入口）
+    useCollabStore.getState().dispose();
   },
 
   installCloseGuard: () => {

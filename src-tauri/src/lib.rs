@@ -79,6 +79,8 @@ pub fn run() {
             // 全局配置（global.json，最近仓库列表等）
             commands::global::read_global_config,
             commands::global::write_global_config,
+            // 本机设备名（协作身份默认值）
+            commands::global::get_hostname,
             // 应用级 UI 使用状态（app_data_dir/ui-state.json：工作区布局 + 上次打开文件 + 展开）
             commands::global::read_app_ui_state,
             commands::global::write_app_ui_state,

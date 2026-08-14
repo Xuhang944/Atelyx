@@ -287,6 +287,14 @@ export interface GlobalConfig {
   fontFamily?: string;
   /** 进入仓库时自动恢复上次打开的文件（画布/笔记/表格）。缺省 = true（开启）。 */
   autoRestoreFiles?: boolean;
+  /** 协作中转（collab-relay）开关。缺省 = false（关闭）。 */
+  collabEnabled?: boolean;
+  /** 协作中转地址（如 ws://192.168.1.10:17701/ws）。 */
+  collabRelayUrl?: string;
+  /** 协作显示昵称（空 = 设备名兜底）。 */
+  collabNickname?: string;
+  /** 协作身份色（hex；空 = 随机分配）。 */
+  collabColor?: string;
 }
 
 // ===== 外部白板格式（.canvas JSON，只读查看/转换为画布用）=====

@@ -22,6 +22,11 @@ export async function readGlobalConfig(): Promise<GlobalConfig> {
   return invoke<GlobalConfig>("read_global_config");
 }
 
+/** 获取本机设备名（协作身份默认值）。 */
+export async function getHostname(): Promise<string> {
+  return invoke<string>("get_hostname");
+}
+
 /**
  * 写全局配置（原子写，整体覆盖）。
  * **内部用**：调用方应改用 `updateGlobalConfig` 做 read-modify-write，避免覆盖其他字段。

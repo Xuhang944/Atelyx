@@ -20,6 +20,7 @@ import {
   TIMELINE_PX_PER_SEC,
 } from "@/constants/table";
 import { useTableStore } from "@/stores/tableStore";
+import { useCollabStore } from "@/stores/collabStore";
 import type { TableRow } from "@/types";
 
 /** 单行播放时长：duration 字段值（>0 才有效），缺省 3s。 */
@@ -41,6 +42,24 @@ export function TableTimeline() {
   const fields = useTableStore((s) => s.fields);
   const selectedRowId = useTableStore((s) => s.selectedRowId);
   const selectRow = useTableStore((s) => s.selectRow);
+  // 协作：同看本表格的在线用户（远端选中行 → 卡片边框用户色）
+  const tableFile = useTableStore((s) => s.tableFile);
+  const collabPeers = useCollabStore((s) => s.peers);
+  const peerColorAtRow = (rowId: string): string | undefined => {
+    if (!tableFile) return undefined;
+    for (const p of collabPeers) {
+      const sel = p.presence?.selection;
+      if (
+        p.presence?.file === tableFile &&
+        sel &&
+        (sel.kind === "cell" || sel.kind === "row") &&
+        sel.rowId === rowId
+      ) {
+        return p.color;
+      }
+    }
+    return undefined;
+  };
 
   const durationField = fields.find((f) => f.type === "duration");
   const imageField = fields.find((f) => f.type === "image");
@@ -248,12 +267,13 @@ export function TableTimeline() {
               return (
                 <div
                   key={row.id}
+                  data-row-id={row.id}
                   data-shot-id={i}
                   onClick={() => jumpTo(i)}
                   className="flex flex-col rounded cursor-pointer overflow-hidden flex-shrink-0 transition-colors"
                   style={{
                     width: cardWidthAt(durations[i], hasDurationField),
-                    border: `1px solid ${isCurrent ? "var(--accent)" : "var(--border)"}`,
+                    border: `1px solid ${isCurrent ? "var(--accent)" : peerColorAtRow(row.id) ?? "var(--border)"}`,
                     background: isSelected ? "color-mix(in srgb, var(--accent) 12%, transparent)" : "var(--bg-secondary)",
                     outline: isCurrent ? "1px solid var(--accent)" : undefined,
                   }}

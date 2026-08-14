@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
 import { useVaultStore } from "@/stores/vaultStore";
+import { useCollabStore, randomPeerColor } from "@/stores/collabStore";
 import { ProviderSettingsSection } from "@/components/settings/ProviderSettingsSection";
 import { AboutSection } from "@/components/settings/AboutSection";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
@@ -73,6 +74,14 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const fontSize = useSettingsStore((s) => s.fontSize);
   const fontFamily = useSettingsStore((s) => s.fontFamily);
   const autoRestoreFiles = useSettingsStore((s) => s.autoRestoreFiles);
+  // 协作中转（应用级）：开关 + 地址 + 昵称/颜色 + 连接状态
+  const collabEnabled = useSettingsStore((s) => s.collabEnabled);
+  const collabRelayUrl = useSettingsStore((s) => s.collabRelayUrl);
+  const collabNickname = useSettingsStore((s) => s.collabNickname);
+  const collabColor = useSettingsStore((s) => s.collabColor);
+  const deviceName = useSettingsStore((s) => s.deviceName);
+  const setCollabConfig = useSettingsStore((s) => s.setCollabConfig);
+  const collabConnected = useCollabStore((s) => s.connected);
   // 仓库内设置（仓库级，七 tab）：通用 / 模型供应商 / 模型服务 / 联网搜索 / 文件与路径 / 编辑器 / 关于
   const [tab, setTab] = useState<Tab>("general");
   /** 强调色取色器草稿：取色器拖动连续触发 onChange，防抖 200ms 后落盘（避免每帧一次配置原子写）。 */
@@ -176,13 +185,46 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
       void setFontSize(undefined);
       return;
     }
-    const n = parseFloat(v);
-    if (!isNaN(n) && n >= 12 && n <= 20) {
+    const n = Number(v);
+    if (n >= 12 && n <= 20) {
       void setFontSize(n);
     } else {
-      setFontSizeDraft(fontSize !== undefined ? String(fontSize) : "");
+      setFontSizeDraft(fontSize !== undefined ? String(fontSize) : ""); // 非法值回滚
     }
   };
+
+  // 协作地址/昵称草稿（blur/Enter 提交，避免每键一次 IPC）
+  const [relayUrlDraft, setRelayUrlDraft] = useState(collabRelayUrl);
+  useEffect(() => {
+    setRelayUrlDraft(collabRelayUrl);
+  }, [collabRelayUrl]);
+  const commitRelayUrl = () => {
+    void setCollabConfig({ collabRelayUrl: relayUrlDraft.trim() });
+  };
+  const [collabNicknameDraft, setCollabNicknameDraft] = useState(collabNickname);
+  useEffect(() => {
+    setCollabNicknameDraft(collabNickname);
+  }, [collabNickname]);
+  const commitCollabNickname = () => {
+    void setCollabConfig({ collabNickname: collabNicknameDraft.trim() });
+  };
+  // 协作身份色草稿：取色器拖动连续触发 onChange，防抖 200ms 后落盘（同强调色模式，
+  // 避免每帧一次配置原子写 + relay 全量重连）
+  const [collabColorDraft, setCollabColorDraft] = useState(collabColor || "#e06c75");
+  const collabColorTimerRef = useRef<number | null>(null);
+  const commitCollabColorDraft = (v: string) => {
+    setCollabColorDraft(v);
+    if (collabColorTimerRef.current !== null) window.clearTimeout(collabColorTimerRef.current);
+    collabColorTimerRef.current = window.setTimeout(() => {
+      collabColorTimerRef.current = null;
+      void setCollabConfig({ collabColor: v });
+    }, 200);
+  };
+  useEffect(() => {
+    return () => {
+      if (collabColorTimerRef.current !== null) window.clearTimeout(collabColorTimerRef.current);
+    };
+  }, []);
 
   const config = useSettingsStore((s) => s.config);
   // 仓库默认模型选项：仓库内已配置供应商的全部模型去重；存量值（供应商被删/改模型）兼容展示
@@ -424,6 +466,100 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                     title="自动更新"
                   />
                 </SettingCard>
+
+                {/* 多人协作（应用级）：局域网中转——同仓库在线成员实时互见选中单元格（presence）。
+                    需在局域网服务器部署 collab-relay（docker compose），填对地址即连 */}
+                <SettingCard
+                  title="多人协作"
+                  description="局域网内同仓库成员实时互见（选中高亮）；需自备 collab-relay 中转服务"
+                >
+                  <div className="flex items-center gap-3">
+                    <ToggleSwitch
+                      checked={collabEnabled}
+                      onChange={(v) => void setCollabConfig({ collabEnabled: v })}
+                      title="多人协作"
+                    />
+                    {collabEnabled && (
+                      <span
+                        className="flex items-center gap-1.5 text-xs"
+                        style={{ color: collabConnected ? "#22c55e" : "var(--text-muted)" }}
+                      >
+                        <span
+                          className="w-1.5 h-1.5 rounded-full"
+                          style={{ background: collabConnected ? "#22c55e" : "var(--text-muted)" }}
+                        />
+                        {collabConnected ? "已连接" : "未连接"}
+                      </span>
+                    )}
+                  </div>
+                </SettingCard>
+                {collabEnabled && (
+                  <>
+                    <SettingCard
+                      title="中转地址"
+                      description="collab-relay 地址（如 ws://192.168.1.10:17701/ws）；多人须指向同一中转"
+                    >
+                      <input
+                        value={relayUrlDraft}
+                        onChange={(e) => setRelayUrlDraft(e.target.value)}
+                        onBlur={commitRelayUrl}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") e.currentTarget.blur();
+                        }}
+                        placeholder="ws://"
+                        className="text-sm rounded px-2 py-1 outline-none flex-1 min-w-0"
+                        style={{
+                          color: "var(--text-primary)",
+                          background: "var(--input-bg)",
+                          border: "1px solid var(--input-border)",
+                        }}
+                      />
+                    </SettingCard>
+                    <SettingCard
+                      title="昵称与颜色"
+                      description={`空昵称 = 设备名（${deviceName || "…"}）；空颜色 = 随机分配`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <input
+                          value={collabNicknameDraft}
+                          onChange={(e) => setCollabNicknameDraft(e.target.value)}
+                          onBlur={commitCollabNickname}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") e.currentTarget.blur();
+                          }}
+                          placeholder={deviceName || "昵称"}
+                          className="text-sm rounded px-2 py-1 outline-none max-w-[140px]"
+                          style={{
+                            color: "var(--text-primary)",
+                            background: "var(--input-bg)",
+                            border: "1px solid var(--input-border)",
+                          }}
+                        />
+                        <input
+                          type="color"
+                          value={collabColorDraft}
+                          onChange={(e) => commitCollabColorDraft(e.target.value)}
+                          title="身份颜色"
+                          className="w-6 h-6 rounded cursor-pointer bg-transparent p-0 border-0"
+                        />
+                        <button
+                          onClick={() => {
+                            // 随机 = 提交一个新随机色存显式值（重启不变）；空色仅作未配置时的启动随机兜底
+                            const c = randomPeerColor();
+                            setCollabColorDraft(c);
+                            void setCollabConfig({ collabColor: c });
+                          }}
+                          title="随机换色"
+                          className="flex items-center gap-1 text-xs rounded px-1.5 py-1 hover:bg-[var(--hover)] flex-shrink-0"
+                          style={{ color: "var(--text-secondary)" }}
+                        >
+                          <RotateCcw size={12} />
+                          随机
+                        </button>
+                      </div>
+                    </SettingCard>
+                  </>
+                )}
 
                 {/* API key 随仓库保存（仓库级）：开 = key 明文随 config.json 同步多设备；关 = 仅存本机钥匙串 */}
                 <SettingCard

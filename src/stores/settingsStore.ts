@@ -2,8 +2,9 @@ import { create } from "zustand";
 import { getApiKey, setApiKey, deleteApiKey } from "@/services/keychain";
 import { readPromptNotes, readVaultConfig, writePromptNotes, writeVaultConfig } from "@/services/vault";
 import { fetchProviderModels } from "@/services/ai/client";
-import { readGlobalConfig, updateGlobalConfig } from "@/services/global";
+import { getHostname, readGlobalConfig, updateGlobalConfig } from "@/services/global";
 import { useAppStore } from "@/stores/appStore";
+import { useCollabStore } from "@/stores/collabStore";
 import type {
   AiConfig,
   ChatTargetResult,
@@ -51,6 +52,16 @@ interface SettingsState {
   fontFamily?: string;
   /** 进入仓库时自动恢复上次打开的文件（应用级，存 global.json；缺省 true = 开启）。 */
   autoRestoreFiles: boolean;
+  /** 协作中转（collab-relay）开关（应用级，存 global.json；缺省 false = 关闭）。 */
+  collabEnabled: boolean;
+  /** 协作中转地址（应用级，如 ws://192.168.1.10:17701/ws）。 */
+  collabRelayUrl: string;
+  /** 协作显示昵称（空 = 设备名兜底）。 */
+  collabNickname: string;
+  /** 协作身份色（hex；空 = 随机分配）。 */
+  collabColor: string;
+  /** 本机设备名（get_hostname：昵称兜底 + 在线列表展示）。 */
+  deviceName: string;
   /** 当前仓库级覆盖；null = 未打开仓库。 */
   vaultConfig: VaultConfig | null;
   /** 搜索源配置（仓库级，无 key；Tavily key 运行时从 keychain 读）。 */
@@ -121,6 +132,12 @@ interface SettingsState {
   setSoftLineBreak: (enabled: boolean) => Promise<void>;
   /** 设置进入仓库时是否自动恢复上次打开的文件（应用级；缺省 true = 开启，写 global.json）。 */
   setAutoRestoreFiles: (enabled: boolean) => Promise<void>;
+  /** 更新协作配置（应用级）：内存 + global.json 落盘 + 重建 relay 连接。 */
+  setCollabConfig: (
+    patch: Partial<
+      Pick<SettingsState, "collabEnabled" | "collabRelayUrl" | "collabNickname" | "collabColor">
+    >,
+  ) => Promise<void>;
   /** 注册/注销系统提示词笔记（数组含该路径则移除，否则添加；写 .atelyx/prompt-notes.json）。 */
   togglePromptNote: (file: string) => Promise<void>;
   /** 笔记重命名/移动后同步标记路径（oldFile → newFile，写 .atelyx/prompt-notes.json）。 */
@@ -222,6 +239,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   fontSize: undefined,
   fontFamily: undefined,
   autoRestoreFiles: true,
+  collabEnabled: false,
+  collabRelayUrl: "",
+  collabNickname: "",
+  collabColor: "",
+  deviceName: "",
   vaultConfig: null,
   searchConfig: { provider: "tavily", searxngUrl: "" },
   tavilyKey: "",
@@ -236,6 +258,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     let fontSize: number | undefined;
     let fontFamily: string | undefined;
     let autoRestoreFiles = true;
+    let collabEnabled = false;
+    let collabRelayUrl = "";
+    let collabNickname = "";
+    let collabColor = "";
+    let deviceName = "";
     try {
       const cfg = await readGlobalConfig();
       if (cfg.theme === "light" || cfg.theme === "dark" || cfg.theme === "system") theme = cfg.theme;
@@ -243,8 +270,18 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       fontSize = cfg.fontSize;
       fontFamily = cfg.fontFamily;
       autoRestoreFiles = cfg.autoRestoreFiles ?? true;
+      collabEnabled = cfg.collabEnabled ?? false;
+      collabRelayUrl = cfg.collabRelayUrl ?? "";
+      collabNickname = cfg.collabNickname ?? "";
+      collabColor = cfg.collabColor ?? "";
     } catch (e) {
       console.error("读取外观配置失败", e);
+    }
+    try {
+      // 设备名独立读（配置读取失败不连带丢失协作身份兜底）
+      deviceName = await getHostname();
+    } catch (e) {
+      console.error("读取设备名失败", e);
     }
     set({
       config: DEFAULT_AI_CONFIG,
@@ -253,6 +290,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       fontSize,
       fontFamily,
       autoRestoreFiles,
+      collabEnabled,
+      collabRelayUrl,
+      collabNickname,
+      collabColor,
+      deviceName,
       searchConfig: { provider: "tavily", searxngUrl: "" },
       tavilyKey: "",
       promptNotes: [],
@@ -550,6 +592,27 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       await updateGlobalConfig({ autoRestoreFiles: enabled });
     } catch (e) {
       console.error("保存自动恢复配置失败", e);
+    }
+  },
+
+  setCollabConfig: async (patch) => {
+    set(patch);
+    try {
+      await updateGlobalConfig({
+        collabEnabled: get().collabEnabled || undefined,
+        collabRelayUrl: get().collabRelayUrl || undefined,
+        collabNickname: get().collabNickname || undefined,
+        collabColor: get().collabColor || undefined,
+      });
+      // 配置变更即时生效：重建 relay 连接（开关/地址/身份变化）
+      useCollabStore.getState().applyConfig({
+        enabled: get().collabEnabled,
+        url: get().collabRelayUrl,
+        nickname: get().collabNickname,
+        color: get().collabColor,
+      });
+    } catch (e) {
+      console.error("保存协作配置失败", e);
     }
   },
 

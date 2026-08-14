@@ -103,4 +103,11 @@ export type {
 
 export type { VaultFileChange } from "./watcher";
 
+export type {
+  CollabSelection,
+  CollabPresence,
+  CollabPeer,
+  CollabHello,
+} from "./collab";
+
 export type { ToolDef } from "./tool";

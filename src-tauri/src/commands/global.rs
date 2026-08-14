@@ -52,6 +52,32 @@ pub struct GlobalConfig {
     /// 进入仓库时自动恢复上次打开的文件。缺省 None = true（前端默认）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_restore_files: Option<bool>,
+    /// 协作中转（collab-relay）开关（应用级）。缺省 None = 关闭。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collab_enabled: Option<bool>,
+    /// 协作中转地址（如 `ws://192.168.1.10:17701/ws`）。缺省 None = 未配置。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collab_relay_url: Option<String>,
+    /// 协作显示昵称（空 = 设备名兜底）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collab_nickname: Option<String>,
+    /// 协作身份色（hex；空 = 随机分配）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collab_color: Option<String>,
+}
+
+/// 获取本机设备名（协作身份默认值：昵称留空时前端用它兜底展示）。
+#[tauri::command]
+pub fn get_hostname() -> String {
+    ["COMPUTERNAME", "HOSTNAME"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok())
+        .or_else(|| {
+            std::fs::read_to_string("/proc/sys/kernel/hostname")
+                .ok()
+                .map(|s| s.trim().to_string())
+        })
+        .unwrap_or_else(|| "Atelyx 用户".to_string())
 }
 
 fn global_config_path(app: &AppHandle) -> Result<PathBuf, String> {

@@ -24,6 +24,8 @@ import { useTableStore } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import { TableCell, clearCell, navigateCell, navDirection } from "@/components/table/TableCell";
 import { TableTimeline } from "@/components/table/TableTimeline";
+import { useCollabStore } from "@/stores/collabStore";
+import type { CollabPeer } from "@/types";
 import {
   AddFieldMenu,
   ColumnMenu,
@@ -322,6 +324,25 @@ export function TableEditor({ areaId }: { areaId: string }) {
    *  其他列不挤压（border-collapse + table-fixed 无显式宽度时引擎会撑满容器并重分配）。 */
   const totalWidth = ROW_NUM_COL_WIDTH + fields.reduce((acc, f) => acc + widthOf(f), 0) + ADD_FIELD_COL_WIDTH;
 
+  // ===== 协作 presence：同仓库看同一表格的在线用户（远端选中高亮 + 工具条胶囊）=====
+  const tableFile = useTableStore((s) => s.tableFile);
+  const collabPeers = useCollabStore((s) => s.peers);
+  /** 本表格相关的远端用户（presence.file 匹配当前表格；未打开表格时无）。 */
+  const tablePeers = tableFile ? collabPeers.filter((p) => p.presence?.file === tableFile) : [];
+  /** 定位到远端用户选中位置（行滚动到视口中央；timeline 卡片同样带 data-row-id，
+   *  document 查询命中当前渲染的视图——任一布局内表格视图唯一，无歧义）。 */
+  const focusPeer = (p: CollabPeer) => {
+    const sel = p.presence?.selection;
+    if (!sel || sel.kind === "all") return;
+    const rowId = sel.kind === "cell" || sel.kind === "row" ? sel.rowId : null;
+    if (!rowId) return;
+    const el =
+      view === "table"
+        ? rowsElRef.current?.querySelector<HTMLElement>(`[data-row-id="${rowId}"]`)
+        : document.querySelector<HTMLElement>(`[data-row-id="${rowId}"]`);
+    el?.scrollIntoView({ block: "center", inline: "nearest" });
+  };
+
   // ===== 选中高亮（互斥：单元格 = td 内描边；行/列/整表 = 淡金背景）=====
   const rowHighlighted = (rowId: string): boolean =>
     selection?.kind === "row" ? selection.rowId === rowId : selection?.kind === "all";
@@ -331,6 +352,23 @@ export function TableEditor({ areaId }: { areaId: string }) {
     selection?.kind === "cell" && selection.rowId === rowId && selection.fieldId === fieldId;
   /** 行/列/整表的淡金背景（列选中作用于表头与数据单元格）。 */
   const highlightBg = (highlighted: boolean) => (highlighted ? "color-mix(in srgb, var(--accent) 8%, transparent)" : undefined);
+  /** 远端用户选中覆盖本单元格的（cell 精确 / row 整行 / column 整列 / all 全表）。 */
+  const peersAtCell = (rowId: string, fieldId: string): CollabPeer[] =>
+    tablePeers.filter((p) => {
+      const sel = p.presence?.selection;
+      if (!sel) return false;
+      if (sel.kind === "cell") return sel.rowId === rowId && sel.fieldId === fieldId;
+      if (sel.kind === "row") return sel.rowId === rowId;
+      if (sel.kind === "column") return sel.fieldId === fieldId;
+      return true;
+    });
+  /** 单元格描边：本端选中 = 金色 2px；远端覆盖 = 用户色 1px 同心叠加（多用户自动分层）。 */
+  const cellShadow = (rowId: string, fieldId: string): string | undefined => {
+    if (cellSelected(rowId, fieldId)) return "inset 0 0 0 2px var(--accent)";
+    const ps = peersAtCell(rowId, fieldId);
+    if (ps.length === 0) return undefined;
+    return ps.map((p, i) => `inset 0 0 0 ${i + 1}px ${p.color}`).join(", ");
+  };
 
   // ===== 底部横向滑动条 + 状态栏：与表格横向滚动双向同步（常显；宽度 = 表格总宽 + 边框余量）=====
   const bottomScrollRef = useRef<HTMLDivElement>(null);
@@ -401,6 +439,24 @@ export function TableEditor({ areaId }: { areaId: string }) {
         <span className="flex-shrink-0" style={{ color: "var(--text-muted)" }}>
           {rows.length} 行 · {fields.length} 列
         </span>
+        {/* 协作：同看本表格的在线用户胶囊（点击定位其选中位置；断开连接自动消失） */}
+        {tablePeers.length > 0 && (
+          <div className="flex items-center gap-1 flex-shrink-0">
+            {tablePeers.map((p) => (
+              <button
+                key={p.peerId}
+                onClick={() => focusPeer(p)}
+                className="flex items-center gap-1.5 px-1.5 py-0.5 rounded transition-colors hover:bg-[var(--hover)]"
+                title={`${p.nickname}${p.deviceName ? `（${p.deviceName}）` : ""} · 点击定位到其选中`}
+              >
+                <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: p.color }} />
+                <span className="max-w-24 truncate" style={{ color: "var(--text-secondary)" }}>
+                  {p.nickname}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
         <button
           onClick={() => {
             void exportXlsx().then((ok) => {
@@ -578,7 +634,7 @@ export function TableEditor({ areaId }: { areaId: string }) {
                       style={{
                         borderColor: "var(--border)",
                         background: highlightBg(colHighlighted(f.id)),
-                        boxShadow: cellSelected(row.id, f.id) ? "inset 0 0 0 2px var(--accent)" : undefined,
+                        boxShadow: cellShadow(row.id, f.id),
                       }}
                       onPointerDown={(e) => startCellPress(e, row.id, f.id)}
                       onPointerUp={() => releaseCellPress(row.id, f.id)}

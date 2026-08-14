@@ -3,6 +3,7 @@ import { ReactFlowProvider } from "@xyflow/react";
 import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useVaultStore } from "@/stores/vaultStore";
+import { useCollabStore } from "@/stores/collabStore";
 import { darkenHex, foregroundFor } from "@/utils/color";
 import { LoadingScreen } from "@/components/common/LoadingScreen";
 
@@ -121,6 +122,15 @@ export default function App() {
     void (async () => {
       const autoEnterRoot = await init();
       await loadSettings();
+      // 协作中转：按应用级配置初始化连接（开关关/无地址 = 不连；切仓库由 appStore 订阅自动换房间）
+      const st = useSettingsStore.getState();
+      useCollabStore.getState().init({
+        enabled: st.collabEnabled,
+        url: st.collabRelayUrl,
+        nickname: st.collabNickname,
+        color: st.collabColor,
+        deviceName: st.deviceName,
+      });
       if (autoEnterRoot) {
         await useAppStore.getState().selectVault(autoEnterRoot);
       }
