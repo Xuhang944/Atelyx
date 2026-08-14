@@ -46,6 +46,20 @@ const TAB_ITEMS: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: "about", label: "关于", icon: Info },
 ];
 
+/** 中转地址规范化：补协议（ws://）与 /ws 路径（relay 唯一路由），
+ *  如 `192.168.1.10:17701` → `ws://192.168.1.10:17701/ws`；空/无法解析的输入原样返回。 */
+function normalizeRelayUrl(raw: string): string {
+  const input = raw.trim();
+  if (!input) return "";
+  const withProto = /^wss?:\/\//i.test(input) ? input : `ws://${input}`;
+  try {
+    const u = new URL(withProto);
+    return `${u.protocol}//${u.host}/ws`;
+  } catch {
+    return withProto;
+  }
+}
+
 /** 界面字体选项（value = CSS font-family；空串 = 跟随系统默认）。 */
 const FONT_OPTIONS: { label: string; value: string }[] = [
   { label: "跟随系统", value: "" },
@@ -79,7 +93,6 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const collabRelayUrl = useSettingsStore((s) => s.collabRelayUrl);
   const collabNickname = useSettingsStore((s) => s.collabNickname);
   const collabColor = useSettingsStore((s) => s.collabColor);
-  const deviceName = useSettingsStore((s) => s.deviceName);
   const setCollabConfig = useSettingsStore((s) => s.setCollabConfig);
   const collabConnected = useCollabStore((s) => s.connected);
   // 仓库内设置（仓库级，七 tab）：通用 / 模型供应商 / 模型服务 / 联网搜索 / 文件与路径 / 编辑器 / 关于
@@ -199,7 +212,8 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
     setRelayUrlDraft(collabRelayUrl);
   }, [collabRelayUrl]);
   const commitRelayUrl = () => {
-    void setCollabConfig({ collabRelayUrl: relayUrlDraft.trim() });
+    // 只输 host:port 也能用：自动补全 ws:// 与 /ws 后存盘
+    void setCollabConfig({ collabRelayUrl: normalizeRelayUrl(relayUrlDraft) });
   };
   const [collabNicknameDraft, setCollabNicknameDraft] = useState(collabNickname);
   useEffect(() => {
@@ -471,7 +485,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                     需在局域网服务器部署 collab-relay（docker compose），填对地址即连 */}
                 <SettingCard
                   title="多人协作"
-                  description="局域网内同仓库成员实时互见（选中高亮）；需自备 collab-relay 中转服务"
+                  description="局域网内同仓库成员实时互见（选中高亮）"
                 >
                   <div className="flex items-center gap-3">
                     <ToggleSwitch
@@ -497,7 +511,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                   <>
                     <SettingCard
                       title="中转地址"
-                      description="collab-relay 地址（如 ws://192.168.1.10:17701/ws）；多人须指向同一中转"
+                      description="中转服务地址，多人须指向同一中转"
                     >
                       <input
                         value={relayUrlDraft}
@@ -506,7 +520,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                         onKeyDown={(e) => {
                           if (e.key === "Enter") e.currentTarget.blur();
                         }}
-                        placeholder="ws://"
+                        placeholder="192.168.1.10:17701"
                         className="text-sm rounded px-2 py-1 outline-none flex-1 min-w-0"
                         style={{
                           color: "var(--text-primary)",
@@ -517,7 +531,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                     </SettingCard>
                     <SettingCard
                       title="昵称与颜色"
-                      description={`空昵称 = 设备名（${deviceName || "…"}）；空颜色 = 随机分配`}
+                      description="空昵称 = 设备名；空颜色 = 随机分配"
                     >
                       <div className="flex items-center gap-2">
                         <input
@@ -527,7 +541,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                           onKeyDown={(e) => {
                             if (e.key === "Enter") e.currentTarget.blur();
                           }}
-                          placeholder={deviceName || "昵称"}
+                          placeholder="设备名"
                           className="text-sm rounded px-2 py-1 outline-none max-w-[140px]"
                           style={{
                             color: "var(--text-primary)",
