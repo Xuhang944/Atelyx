@@ -17,6 +17,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             // 自动检查更新（tauri-plugin-updater，endpoints/pubkey 见 tauri.conf.json）
             app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
@@ -76,6 +77,7 @@ pub fn run() {
             commands::table::delete_table_vault,
             commands::table::read_external_image_data_url,
             commands::table::export_table_xlsx,
+            commands::table::save_image_to_downloads,
             // 全局配置（global.json，最近仓库列表等）
             commands::global::read_global_config,
             commands::global::write_global_config,

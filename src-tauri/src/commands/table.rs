@@ -10,7 +10,7 @@ use base64::Engine;
 use chrono::Utc;
 use nanoid::nanoid;
 use serde::Serialize;
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::commands::vault::{collect_table_ref_updates, flush_canvas_updates, mime_from_ext};
 use crate::vault::{
@@ -383,6 +383,53 @@ pub fn export_table_xlsx(table: TableFile, target_path: String) -> Result<(), St
     workbook
         .save(&target_path)
         .map_err(|e| format!("导出失败：{e}"))
+}
+
+/// 保存 dataURL 图片到系统 Downloads 文件夹（放大预览右键「下载」用）。
+/// 文件名 = `sanitize_filename` 净化后的基础名 + 按 mime 推的扩展名（png/jpg/webp/gif），
+/// 重名自动追加 ` (1)` ` (2)` 序号（不覆盖已有文件）。
+/// 目录用 OS 标准 Downloads（Windows FOLDERID_Downloads / Linux XDG），失败兜底用户主目录。
+/// async：同步命令在主线程执行，大图（数 MB）写盘会卡 UI。
+#[tauri::command]
+pub async fn save_image_to_downloads(
+    file_name: String,
+    data_url: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    // dataURL 前缀 `data:<mime>;base64,` → mime；非 dataURL 直接报错
+    let prefix = data_url.split_once(',').map(|(p, _)| p).ok_or("非图片数据")?;
+    let mime = prefix
+        .strip_prefix("data:")
+        .and_then(|p| p.split(';').next())
+        .ok_or("非图片数据")?;
+    let ext = ext_from_mime(mime).ok_or("不支持的图片格式")?;
+    let bytes = data_url_to_bytes(&data_url).ok_or("图片数据解码失败")?;
+    let dir = app
+        .path()
+        .download_dir()
+        .or_else(|_| app.path().home_dir())
+        .map_err(|e| format!("无法定位下载目录：{e}"))?;
+    let base = sanitize_filename(&file_name);
+    // 重名自动加序号（`name (1).ext`、`name (2).ext`…），不覆盖已有文件
+    let mut path = dir.join(format!("{base}.{ext}"));
+    let mut n = 1;
+    while path.exists() {
+        path = dir.join(format!("{base} ({n}).{ext}"));
+        n += 1;
+    }
+    std::fs::write(&path, &bytes).map_err(|e| format!("写入失败：{e}"))?;
+    Ok(())
+}
+
+/// dataURL mime → 文件扩展名（与 `mime_from_ext` 的图片集合对称）。
+fn ext_from_mime(mime: &str) -> Option<&'static str> {
+    match mime {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        "image/gif" => Some("gif"),
+        _ => None,
+    }
 }
 
 /// 工作表名净化：禁止 `[]:*?/\` 字符 + 长度 ≤ 31（Excel 限制，超长/非法名会拒绝）。

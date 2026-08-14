@@ -5,6 +5,7 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:image:default",
     "core:event:default",
     "core:app:allow-version",
     "core:window:allow-minimize",
@@ -25,6 +26,7 @@
     "shell:default",
     "store:default",
     "updater:default",
-    "process:default"
+    "process:default",
+    "clipboard-manager:allow-write-image"
   ]
 }

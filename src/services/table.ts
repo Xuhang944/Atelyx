@@ -114,6 +114,11 @@ export async function readExternalImageDataUrl(src: string): Promise<string> {
   return invoke<string>("read_external_image_data_url", { src });
 }
 
+/** 保存 dataURL 图片到系统 Downloads 文件夹（放大预览右键「下载」用；重名自动加序号）。 */
+export async function saveImageToDownloads(fileName: string, dataUrl: string): Promise<void> {
+  await invoke("save_image_to_downloads", { fileName, dataUrl });
+}
+
 /** 导出表格为 .xlsx（目标路径来自系统保存对话框）。 */
 export async function exportTableXlsx(table: TableFile, targetPath: string): Promise<void> {
   await invoke("export_table_xlsx", { table, targetPath });

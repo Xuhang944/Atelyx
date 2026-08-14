@@ -494,6 +494,7 @@ function NumberCell({
 function ImageCell({ field, row }: { field: TableField; row: TableRow }) {
   const value = row.values[field.id];
   const images = Array.isArray(value) ? value : [];
+  const title = useTableStore((s) => s.title);
   const addImageToCell = useTableStore((s) => s.addImageToCell);
   const removeImageAt = useTableStore((s) => s.removeImageAt);
   const [idx, setIdx] = useState(0);
@@ -593,6 +594,12 @@ function ImageCell({ field, row }: { field: TableField; row: TableRow }) {
           index={cur}
           onIndexChange={(i) => setIdx(i)}
           onClose={() => setLightbox(false)}
+          onCopyImage={(url) => useTableStore.getState().copyImageToClipboard(url)}
+          onDownloadImage={(url) =>
+            useTableStore
+              .getState()
+              .downloadImageToDownloads(`${title || "图片"}-${field.name}-${cur + 1}`, url)
+          }
         />
       )}
     </div>

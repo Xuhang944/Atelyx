@@ -21,18 +21,20 @@ interface MenuProps {
   repositionDeps?: unknown[];
   /** 阻止 pointerdown 冒泡（React Flow / 文件树行等宿主有 pointerdown 拦截时传）。 */
   stopPointerDown?: boolean;
+  /** 层级 class（全屏遮罩内弹菜单需高过遮罩 z-index 时传，缺省 z-50）。 */
+  zClass?: string;
   children: ReactNode;
 }
 
 /** 弹层菜单容器：fixed 定位 + 视口钳制 + Esc/点击外部关闭。 */
-export function Menu({ x, y, onClose, widthClass = "w-48", contentClassName, repositionDeps, stopPointerDown, children }: MenuProps) {
+export function Menu({ x, y, onClose, widthClass = "w-48", contentClassName, repositionDeps, stopPointerDown, zClass, children }: MenuProps) {
   return (
     <PopupLayer
       anchor={{ x, y }}
       onClose={onClose}
       widthClass={widthClass}
       contentClassName={contentClassName}
-      zClass="z-50"
+      zClass={zClass}
       repositionDeps={repositionDeps}
       stopPointerDown={stopPointerDown}
     >

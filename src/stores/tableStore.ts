@@ -13,8 +13,10 @@ import {
   patchTableVault,
   readExternalImageDataUrl,
   readTableVault,
+  saveImageToDownloads,
   writeTableVault,
 } from "@/services/table";
+import { copyImageToClipboard as copyImageSvc } from "@/services/clipboard";
 import { pickFile, saveFile } from "@/services/dialog";
 import { markSelfSave } from "@/stores/canvasStore";
 import { useVaultStore } from "@/stores/vaultStore";
@@ -74,6 +76,10 @@ interface TableStoreState {
   addImageToCell: (rowId: string, fieldId: string) => Promise<void>;
   /** 图片单元格移除指定下标图片。 */
   removeImageAt: (rowId: string, fieldId: string, index: number) => void;
+  /** 放大预览右键「复制图片」：dataURL → 系统剪贴板（GIF 取首帧）。失败 error 提示，返回是否成功。 */
+  copyImageToClipboard: (dataUrl: string) => Promise<boolean>;
+  /** 放大预览右键「下载图片」：保存到系统 Downloads 文件夹（重名自动加序号）。失败 error 提示，返回是否成功。 */
+  downloadImageToDownloads: (fileName: string, dataUrl: string) => Promise<boolean>;
   /** 导出 xlsx：系统保存对话框选目标路径 → 导出当前内容。成功返回 true。 */
   exportXlsx: () => Promise<boolean>;
   /**
@@ -532,6 +538,28 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
     const list = [...current];
     list.splice(index, 1);
     get().updateCell(rowId, fieldId, list);
+  },
+
+  copyImageToClipboard: async (dataUrl) => {
+    try {
+      await copyImageSvc(dataUrl);
+      return true;
+    } catch (e) {
+      console.error("复制图片失败", e);
+      set({ error: "复制图片失败，请重试" });
+      return false;
+    }
+  },
+
+  downloadImageToDownloads: async (fileName, dataUrl) => {
+    try {
+      await saveImageToDownloads(fileName, dataUrl);
+      return true;
+    } catch (e) {
+      console.error("下载图片失败", e);
+      set({ error: "下载图片失败，请重试" });
+      return false;
+    }
   },
 
   exportXlsx: async () => {

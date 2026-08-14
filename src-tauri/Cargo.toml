@@ -23,6 +23,8 @@ tauri-plugin-shell = "2.0"
 tauri-plugin-store = "2.0"
 # 自动更新完成后的应用重启（relaunch；v2 起 core API 不再含 process）
 tauri-plugin-process = "2"
+# 剪贴板写入（表格图片复制：前端 canvas 解码 RGBA → 核心 image 资源 → 本插件 arboard 写系统剪贴板）
+tauri-plugin-clipboard-manager = "2"
 # 自动检查更新：check/downloadAndInstall/签名校验（GitHub Release 静态 latest.json，见 4.18）
 tauri-plugin-updater = "2"
 
