@@ -9,11 +9,12 @@
  */
 import { AlertTriangle, ExternalLink, Search } from "lucide-react";
 import { useState } from "react";
-import { NodeResizeControl, type NodeProps } from "@xyflow/react";
+import type { NodeProps } from "@xyflow/react";
 import type { SearchResultData, SearchResultItem } from "@/types";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useAppStore } from "@/stores/appStore";
 import { ConnectionFrame } from "./ConnectionFrame";
+import { ResizeHandle } from "./ResizeHandle";
 
 /** 单条结果行：点击标题展开/折叠摘要；checkbox 勾选（注入子集）。 */
 function ResultRow({
@@ -178,15 +179,8 @@ export function SearchResultNode({ id, data, height, selected }: NodeProps) {
         )}
       </div>
 
-      <NodeResizeControl
-        position="bottom-right"
-        style={{
-          width: 10,
-          height: 10,
-          background: "transparent",
-          border: "none",
-        }}
-      />
+      {/* 统一缩放柄（ResizeHandle：与其余可缩放节点同样式，改外观只动共享件） */}
+      <ResizeHandle />
     </div>
   );
 }

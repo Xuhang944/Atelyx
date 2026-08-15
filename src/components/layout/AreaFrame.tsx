@@ -7,13 +7,14 @@
  * - 聚焦：点击面积任意处聚焦（画布快捷键门控依据）
  */
 import { ChevronDown, FileText, Files, Info, LayoutTemplate, Palette, Search, Sparkles, Table as TableIcon, X } from "lucide-react";
-import { memo, useState, type ReactNode } from "react";
+import { memo, useRef, type ReactNode } from "react";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useVaultStore } from "@/stores/vaultStore";
 import { useAppStore } from "@/stores/appStore";
-import { useDismissOnOutside } from "@/hooks/useDismissOnOutside";
+import { usePopupAnchor } from "@/hooks/usePopupAnchor";
+import { PopupLayer } from "@/components/common/PopupLayer";
 import { AreaPlaceholder } from "@/components/layout/AreaPlaceholder";
 import { CanvasView } from "@/components/layout/views/CanvasView";
 import { NoteView } from "@/components/layout/views/NoteView";
@@ -253,8 +254,8 @@ export const AreaFrame = memo(function AreaFrame({
   const setAreaView = useUiStateStore((s) => s.setAreaView);
   const closeArea = useUiStateStore((s) => s.closeArea);
 
-  const [showPicker, setShowPicker] = useState(false);
-  const pickerRef = useDismissOnOutside(() => setShowPicker(false));
+  const pickerTriggerRef = useRef<HTMLButtonElement>(null);
+  const picker = usePopupAnchor(pickerTriggerRef);
 
   const used = new Set(usedKey ? usedKey.split(",") : []);
 
@@ -294,11 +295,12 @@ export const AreaFrame = memo(function AreaFrame({
         className="h-7 flex items-center gap-1 px-1.5 border-b flex-shrink-0 select-none"
         style={{ background: "var(--bg-secondary)", borderColor: "var(--border)" }}
       >
-        <div className="relative flex-shrink-0" ref={pickerRef}>
+        <div className="flex-shrink-0">
           <button
+            ref={pickerTriggerRef}
             onClick={(e) => {
               e.stopPropagation();
-              setShowPicker((v) => !v);
+              picker.toggle();
             }}
             className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:opacity-80 text-[11px]"
             style={{ color: "var(--text-secondary)" }}
@@ -310,34 +312,35 @@ export const AreaFrame = memo(function AreaFrame({
             </span>
             <ChevronDown size={11} />
           </button>
-          {showPicker && (
-            <div
-              className="absolute left-0 top-full mt-0.5 z-50 rounded-lg border shadow-xl py-1 w-36"
-              style={{ background: "var(--bg-secondary)", borderColor: "var(--border)" }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              {VIEW_KINDS.map((v) => {
-                const disabled = v !== node.view && used.has(v);
-                return (
-                  <button
-                    key={v}
-                    disabled={disabled}
-                    onClick={() => {
-                      setAreaView(node.id, v);
-                      setShowPicker(false);
-                    }}
-                    className="w-full flex items-center gap-2 px-2.5 py-1.5 text-xs text-left hover:bg-[var(--hover)] disabled:cursor-not-allowed disabled:opacity-40"
-                    style={{ color: v === node.view ? "var(--accent)" : "var(--text-primary)" }}
-                    title={disabled ? "该视图已占用（每种视图最多一个面积）" : VIEW_META[v].label}
-                  >
-                    {VIEW_META[v].icon}
-                    {VIEW_META[v].label}
-                    {v === node.view && <span className="ml-auto text-[10px]">当前</span>}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+          {/* 统一弹层（PopupLayer）：锚定按钮实测位置 + 视口钳制/翻转 + Esc/外点关闭 */}
+          <PopupLayer
+            anchor={picker.anchor}
+            onClose={picker.close}
+            triggerRef={pickerTriggerRef}
+            widthClass="w-36"
+            repositionDeps={[node.view]}
+          >
+            {VIEW_KINDS.map((v) => {
+              const disabled = v !== node.view && used.has(v);
+              return (
+                <button
+                  key={v}
+                  disabled={disabled}
+                  onClick={() => {
+                    setAreaView(node.id, v);
+                    picker.close();
+                  }}
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 text-xs text-left hover:bg-[var(--hover)] disabled:cursor-not-allowed disabled:opacity-40"
+                  style={{ color: v === node.view ? "var(--accent)" : "var(--text-primary)" }}
+                  title={disabled ? "该视图已占用（每种视图最多一个面积）" : VIEW_META[v].label}
+                >
+                  {VIEW_META[v].icon}
+                  {VIEW_META[v].label}
+                  {v === node.view && <span className="ml-auto text-[10px]">当前</span>}
+                </button>
+              );
+            })}
+          </PopupLayer>
         </div>
 
         <div className="flex-1" />

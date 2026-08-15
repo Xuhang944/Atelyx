@@ -19,7 +19,7 @@
  * - 弹层菜单（字段/列/行/整表/状态栏）见 `TableMenus.tsx`。
  */
 import { FileOutput, GripVertical, MoreHorizontal, MoveDiagonal, Plus, Sigma } from "lucide-react";
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import { TableCell, clearCell, navigateCell, navDirection } from "@/components/table/TableCell";
@@ -327,8 +327,12 @@ export function TableEditor({ areaId }: { areaId: string }) {
   // ===== 协作 presence：同仓库看同一表格的在线用户（远端选中高亮 + 工具条胶囊）=====
   const tableFile = useTableStore((s) => s.tableFile);
   const collabPeers = useCollabStore((s) => s.peers);
-  /** 本表格相关的远端用户（presence.file 匹配当前表格；未打开表格时无）。 */
-  const tablePeers = tableFile ? collabPeers.filter((p) => p.presence?.file === tableFile) : [];
+  /** 本表格相关的远端用户（presence.file 匹配当前表格；未打开表格时无）。
+   * useMemo 稳定引用：下游 peerShadowByCell 依赖它，新数组每渲染会致 memo 失效重建。 */
+  const tablePeers = useMemo(
+    () => (tableFile ? collabPeers.filter((p) => p.presence?.file === tableFile) : []),
+    [tableFile, collabPeers],
+  );
   /** 定位到远端用户选中位置（行滚动到视口中央；timeline 卡片同样带 data-row-id，
    *  document 查询命中当前渲染的视图——任一布局内表格视图唯一，无歧义）。 */
   const focusPeer = (p: CollabPeer) => {
@@ -352,21 +356,32 @@ export function TableEditor({ areaId }: { areaId: string }) {
     selection?.kind === "cell" && selection.rowId === rowId && selection.fieldId === fieldId;
   /** 行/列/整表的淡金背景（列选中作用于表头与数据单元格）。 */
   const highlightBg = (highlighted: boolean) => (highlighted ? "color-mix(in srgb, var(--accent) 8%, transparent)" : undefined);
-  /** 远端用户选中覆盖本单元格的（cell 精确 / row 整行 / column 整列 / all 全表）。 */
-  const peersAtCell = (rowId: string, fieldId: string): CollabPeer[] =>
-    tablePeers.filter((p) => {
+  /** 远端选中覆盖映射：按单元格展开一次构建（cell 精确 / row 整行 / column 整列 / all 全表），
+   * 逐格查表 O(1)——替代每格 peersAtCell 的 filter 分配（大表 + 多用户时每渲染 O(N·P) → O(N)）。 */
+  const peerShadowByCell = useMemo(() => {
+    const map = new Map<string, CollabPeer[]>();
+    if (tablePeers.length === 0) return map;
+    for (const p of tablePeers) {
       const sel = p.presence?.selection;
-      if (!sel) return false;
-      if (sel.kind === "cell") return sel.rowId === rowId && sel.fieldId === fieldId;
-      if (sel.kind === "row") return sel.rowId === rowId;
-      if (sel.kind === "column") return sel.fieldId === fieldId;
-      return true;
-    });
+      if (!sel) continue;
+      for (const row of rows) {
+        if (sel.kind === "cell" && sel.rowId !== row.id) continue;
+        for (const field of fields) {
+          if ((sel.kind === "cell" || sel.kind === "column") && sel.fieldId !== field.id) continue;
+          const k = `${row.id}:${field.id}`;
+          const arr = map.get(k) ?? [];
+          arr.push(p);
+          map.set(k, arr);
+        }
+      }
+    }
+    return map;
+  }, [tablePeers, rows, fields]);
   /** 单元格描边：本端选中 = 金色 2px；远端覆盖 = 用户色 1px 同心叠加（多用户自动分层）。 */
   const cellShadow = (rowId: string, fieldId: string): string | undefined => {
     if (cellSelected(rowId, fieldId)) return "inset 0 0 0 2px var(--accent)";
-    const ps = peersAtCell(rowId, fieldId);
-    if (ps.length === 0) return undefined;
+    const ps = peerShadowByCell.get(`${rowId}:${fieldId}`);
+    if (!ps || ps.length === 0) return undefined;
     return ps.map((p, i) => `inset 0 0 0 ${i + 1}px ${p.color}`).join(", ");
   };
 

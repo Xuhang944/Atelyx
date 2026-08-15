@@ -23,7 +23,8 @@ import { useChatPanelStore } from "@/stores/chatPanelStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import { useCollabStore } from "@/stores/collabStore";
-import { markSelfSave, useCanvasStore } from "@/stores/canvasStore";
+import { markSelfSave } from "@/utils/selfSave";
+import { useCanvasStore } from "@/stores/canvasStore";
 import { baseName, dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename, siblingPath, stripExt } from "@/utils/filename";
 import { getAppVersion as getVersionSvc } from "@/services/app";
 import { openInExplorer as openInExplorerSvc, openUrl as openUrlSvc } from "@/services/shell";
@@ -379,9 +380,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   runAutoUpdate: async () => {
-    if (import.meta.env.DEV) return;
     try {
-      // 更新重启前先落盘：relaunch 会销毁 webview，pending 的 debounce 保存随之中断
+      // 更新重启前先落盘：relaunch 会销毁 webview，pending 的 debounce 保存随之中断；
+      // dev 跳过守卫在 service（checkAndAutoUpdateSvc）内
       await useAppStore.getState().flushAllPending();
       await checkAndAutoUpdateSvc();
     } catch (e) {

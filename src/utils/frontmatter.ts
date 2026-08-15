@@ -1,5 +1,5 @@
 /**
- * Frontmatter 解析/序列化工具（笔记属性面板数据层，见 ）。
+ * Frontmatter 解析/序列化工具（笔记属性面板数据层）。
  *
  * 解析用 `gray-matter`（内部 js-yaml v3）：
  * - 兼容 `tags: [a, b]` 与 `tags:\n  - a` 两种数组写法（解析结果均为 string[]）；

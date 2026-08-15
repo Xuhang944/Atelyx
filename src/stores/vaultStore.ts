@@ -39,7 +39,8 @@ import {
   writeTableVault,
 } from "@/services/table";
 import { subscribeVaultFileChanges } from "@/services/watcher";
-import { isSelfSaveEcho, markSelfSave, useCanvasStore } from "@/stores/canvasStore";
+import { isSelfSaveEcho, markSelfSave } from "@/utils/selfSave";
+import { useCanvasStore } from "@/stores/canvasStore";
 import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTableStore } from "@/stores/tableStore";
@@ -276,30 +277,30 @@ async function applyFolderFileChange(oldDir: string, newDir: string): Promise<vo
   }
 }
 
-/** 递归提取树中全部 `.md` 笔记（系统提示词下拉 / 笔记存在性检查共用）。 */
-function collectMdNotes(nodes: FileTreeNode[]): { name: string; file: string }[] {
+/** 递归提取树中指定扩展名的文件（.md 笔记 / .atb 表格两个收集器共用，仅扩展名不同）。 */
+function collectByExt(
+  nodes: FileTreeNode[],
+  ext: string,
+): { name: string; file: string }[] {
   const out: { name: string; file: string }[] = [];
   for (const n of nodes) {
     if (n.isDir) {
-      out.push(...collectMdNotes(n.children));
-    } else if (n.name.toLowerCase().endsWith(".md")) {
+      out.push(...collectByExt(n.children, ext));
+    } else if (n.name.toLowerCase().endsWith(ext)) {
       out.push({ name: n.name, file: n.path });
     }
   }
   return out;
 }
 
+/** 递归提取树中全部 `.md` 笔记（系统提示词下拉 / 笔记存在性检查共用）。 */
+function collectMdNotes(nodes: FileTreeNode[]): { name: string; file: string }[] {
+  return collectByExt(nodes, ".md");
+}
+
 /** 递归提取树中全部 `.atb` 表格（表格窗口联动 / AI 填行目标选择共用）。 */
 function collectAtbTables(nodes: FileTreeNode[]): { name: string; file: string }[] {
-  const out: { name: string; file: string }[] = [];
-  for (const n of nodes) {
-    if (n.isDir) {
-      out.push(...collectAtbTables(n.children));
-    } else if (n.name.toLowerCase().endsWith(".atb")) {
-      out.push({ name: n.name, file: n.path });
-    }
-  }
-  return out;
+  return collectByExt(nodes, ".atb");
 }
 
 /** 按相对路径查树节点（dir = "" 返回根容器）。 */
@@ -314,18 +315,23 @@ function findNode(nodes: FileTreeNode[], path: string): FileTreeNode | null {
   return null;
 }
 
-/** 取某文件夹下的文件名集合（不含子目录），用于同目录防重名。 */
-function siblingFileNames(dir: string): string[] {
+/** 取某文件夹下的条目名集合（dirsOnly = 只取文件夹；否则只取文件），用于同目录防重名。 */
+function siblingNames(dir: string, dirsOnly: boolean): string[] {
   const tree = useVaultStore.getState().tree;
   const node = dir === "" ? { children: tree } : findNode(tree, dir);
-  return (node?.children ?? []).filter((c) => !c.isDir).map((c) => c.name);
+  return (node?.children ?? [])
+    .filter((c) => (dirsOnly ? c.isDir : !c.isDir))
+    .map((c) => c.name);
+}
+
+/** 取某文件夹下的文件名集合（不含子目录），用于同目录防重名。 */
+function siblingFileNames(dir: string): string[] {
+  return siblingNames(dir, false);
 }
 
 /** 取某文件夹下的文件夹名集合，用于同目录文件夹防重名。 */
 function siblingDirNames(dir: string): string[] {
-  const tree = useVaultStore.getState().tree;
-  const node = dir === "" ? { children: tree } : findNode(tree, dir);
-  return (node?.children ?? []).filter((c) => c.isDir).map((c) => c.name);
+  return siblingNames(dir, true);
 }
 
 /** 复制文件为同目录副本（dedupe 防重名 + 刷新树），返回新相对路径。duplicateNote/duplicateAttachment 共用。 */
@@ -902,6 +908,10 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
               // 无未保存改动：安全自动重载磁盘最新内容
               void useCanvasStore.getState().reloadFromDisk();
             }
+            // 当前画布内容被外部改写：仅列表行 updatedAt 排序可能变化，刷新列表即可；
+            // 文件树不含内容变化（外部改名/增删走下方未命中分支），免全仓库重扫
+            void useAppStore.getState().loadList();
+            return;
           }
           // 外部新建/删除/重命名画布：刷新画布列表 + 文件树（.atlx 行随文件变化增删改名）。
           // 自写回放（isSelfSaveEcho）跳过：画布 CRUD 已在 appStore 内主动刷新两数据源，

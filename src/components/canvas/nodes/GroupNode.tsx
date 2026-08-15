@@ -5,7 +5,7 @@
  * - label 双击 inline 编辑（nodrag）；header 右侧色块按钮弹出色板切换颜色
  * - 可拖拽移动 / NodeResizeControl 调整大小；仅无向关联可连线（有向模式被拦截）
  */
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 import { useCanvasStore } from "@/stores/canvasStore";
 import {
@@ -17,6 +17,7 @@ import type { GroupFileData } from "@/types";
 import { ConnectionFrame } from "./ConnectionFrame";
 import { ResizeHandle } from "./ResizeHandle";
 import { useInlineEdit } from "@/hooks/useInlineEdit";
+import { useDismissOnOutside } from "@/hooks/useDismissOnOutside";
 
 /** 色板顺序（色块按钮循环展示用）：1-5 + 默认（无色）。 */
 const COLOR_OPTIONS: (string | undefined)[] = [
@@ -32,6 +33,7 @@ export function GroupNode({ id, data, width, height, selected }: NodeProps) {
   const { label, color } = data as unknown as GroupFileData;
   const [colorMenu, setColorMenu] = useState(false);
   const colorMenuRef = useRef<HTMLDivElement>(null);
+  const colorTriggerRef = useRef<HTMLButtonElement>(null);
   const readOnly = useCanvasStore((s) => s.readOnly);
   // label 双击 inline 编辑：空提交不修改（清空无意义，保留原文）
   const labelEdit = useInlineEdit({
@@ -46,32 +48,18 @@ export function GroupNode({ id, data, width, height, selected }: NodeProps) {
 
   const base = GROUP_COLORS[color ?? ""] ?? "#8a8a8a";
 
-  // 色板弹层：点击外部 / Esc 关闭（菜单外关闭模式，同其他弹层）
-  useEffect(() => {
-    if (!colorMenu) return;
-    const onDown = (e: MouseEvent) => {
-      if (
-        colorMenuRef.current &&
-        !colorMenuRef.current.contains(e.target as Node)
-      ) {
-        setColorMenu(false);
-      }
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setColorMenu(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [colorMenu]);
+  // 色板弹层：点击外部 / Esc 关闭（统一 useDismissOnOutside：pointerdown 语义 + trigger 排除，
+  // 点触发器本体不关——开/关由按钮 onClick toggle，防 pointerdown 先关后 click 重开的竞态）
 
   const startEdit = () => {
     if (readOnly) return;
     labelEdit.start();
   };
+
+  useDismissOnOutside(() => {
+    if (!colorMenu) return;
+    setColorMenu(false);
+  }, colorMenuRef, colorTriggerRef);
 
   return (
     <div
@@ -124,6 +112,7 @@ export function GroupNode({ id, data, width, height, selected }: NodeProps) {
         )}
         {!readOnly && (
           <button
+            ref={colorTriggerRef}
             onClick={(e) => {
               e.stopPropagation();
               setColorMenu((v) => !v);

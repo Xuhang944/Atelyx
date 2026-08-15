@@ -13,11 +13,12 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
 import { useVaultStore } from "@/stores/vaultStore";
 import { useCollabStore, randomPeerColor } from "@/stores/collabStore";
+import { useDraftSync, useDebouncedDraft } from "@/hooks/useDraftSync";
 import { ProviderSettingsSection } from "@/components/settings/ProviderSettingsSection";
 import { AboutSection } from "@/components/settings/AboutSection";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
@@ -35,38 +36,9 @@ type Tab =
   | "editor"
   | "about";
 
-/** 输入草稿：本地 state + 外部值变化时同步（受控输入中间态防拒 + blur 提交模式）。
- * 注意：外部值变化会覆盖草稿（如非法输入回滚/其他面板修改配置），与既有行为一致。 */
-function useDraftSync<T>(value: T): [T, (v: T) => void] {
-  const [draft, setDraft] = useState(value);
-  useEffect(() => {
-    setDraft(value);
-  }, [value]);
-  return [draft, setDraft];
-}
-
-/** 防抖提交草稿：拖动/连续 onChange 场景（取色器），防抖 delay 后落盘（避免每帧一次配置原子写/relay 重连）。 */
-function useDebouncedDraft<T>(init: T, onCommit: (v: T) => void, delay = 200): [T, (v: T) => void] {
-  const [draft, setDraft] = useState(init);
-  const timerRef = useRef<number | null>(null);
-  useEffect(() => {
-    return () => {
-      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-    };
-  }, []);
-  const commit = (v: T) => {
-    setDraft(v);
-    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-    timerRef.current = window.setTimeout(() => {
-      timerRef.current = null;
-      onCommit(v);
-    }, delay);
-  };
-  return [draft, commit];
-}
-
 /** 左侧 tab 栏配置（图标 + 标签；折叠后仅显示图标）。 */
-const TAB_ITEMS: { key: Tab; label: string; icon: LucideIcon }[] = [  { key: "general", label: "通用", icon: Settings },
+const TAB_ITEMS: { key: Tab; label: string; icon: LucideIcon }[] = [
+  { key: "general", label: "通用", icon: Settings },
   { key: "providers", label: "模型供应商", icon: Server },
   { key: "modelServices", label: "模型服务", icon: Bot },
   { key: "search", label: "联网搜索", icon: Search },

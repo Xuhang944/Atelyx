@@ -49,6 +49,7 @@ import { JumpToBottomButton } from "@/components/common/JumpToBottomButton";
 import { AgentModeToggle } from "@/components/common/AgentModeToggle";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
 import { PopupLayer } from "@/components/common/PopupLayer";
+import { ERROR_PREFIX } from "@/constants/chat";
 import { usePopupAnchor } from "@/hooks/usePopupAnchor";
 import { noteTitleFromFile } from "@/utils/filename";
 import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
@@ -430,7 +431,7 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
                 m.role === "assistant" &&
                 i === messages.length - 1 &&
                 m.content.trim() !== "" &&
-                !m.content.startsWith("[错误]");
+                !m.content.startsWith(ERROR_PREFIX);
               return (
                 <ChatMessageBubble
                   key={m.id}

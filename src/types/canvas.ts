@@ -7,7 +7,7 @@
  */
 import type { Message } from "./message";
 import type { GlobalProvider } from "./provider";
-import type { LinkMode } from "./node";
+import type { LinkMode, SearchResultData } from "./node";
 import type { CANVAS_SCHEMA } from "@/constants/canvas";
 
 export interface CanvasViewport {
@@ -31,7 +31,7 @@ export interface CanvasFile {
 /** 磁盘节点：扁平 x/y，data 按类型存不同结构。 */
 export interface CanvasFileNode {
   id: string;
-  type: "conversation" | "text" | "media" | "group" | "link" | "table";
+  type: "conversation" | "text" | "media" | "search" | "group" | "link" | "table";
   x: number;
   y: number;
   width?: number;
@@ -41,6 +41,7 @@ export interface CanvasFileNode {
     | ConversationFileData
     | TextFileData
     | MediaFileData
+    | SearchResultData
     | GroupFileData
     | LinkFileData
     | TableFileData;

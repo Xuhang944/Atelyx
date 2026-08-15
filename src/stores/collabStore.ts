@@ -58,6 +58,9 @@ export function randomPeerColor(): string {
 }
 
 function establishConnection(): void {
+  // 先发 bye 再断开（切仓库换房）：relay 收到 bye 立即踢出，否则旧 peer 要等 30s 心跳
+  // 超时才消失，期间对端列表可见幽灵用户（dispose 路径同样先 bye，见 dispose）
+  handle?.sendBye();
   handle?.disconnect();
   handle = null;
   // 断线/重连期间清空在线列表与身份（残留旧 peers 会误导远端高亮）

@@ -85,14 +85,17 @@ export function ConversationAtPicker({ conversationId, x, y, openUp, yBottom, qu
   // 点击菜单外关闭（公共 hook；Esc 由下方捕获阶段键盘监听处理，hook 的 window Esc 为兜底，onClose 幂等）
   useDismissOnOutside(onClose, ref);
 
-  // 键盘导航：捕获阶段拦截，防止输入框的 Enter 发送 / 方向键默认行为
+  // 键盘导航：捕获阶段拦截，防止输入框的 Enter 发送 / 方向键默认行为。
+  // 方向键同样加 isComposing 守卫：IME 候选翻页的方向键不得被当作列表导航（Enter 分支已有）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "ArrowDown") {
+        if (e.isComposing) return;
         e.preventDefault();
         e.stopPropagation();
         setActive((i) => (candidates.length ? (i + 1) % candidates.length : 0));
       } else if (e.key === "ArrowUp") {
+        if (e.isComposing) return;
         e.preventDefault();
         e.stopPropagation();
         setActive((i) => (candidates.length ? (i - 1 + candidates.length) % candidates.length : 0));

@@ -19,7 +19,7 @@ export interface SearchResultData {
 }
 
 /**
- * 节点类型枚举，对应。
+ * 节点类型枚举（运行时；与磁盘格式 CanvasFileNode.type 对应，见 types/canvas.ts）。
  */
 export type NodeKind = "conversation" | "text" | "media" | "search";
 
@@ -70,7 +70,7 @@ export interface MediaData {
   name?: string;
   /** 二进制类解析失败时标注，仅作画布参考、不注入模型 */
   parseFailed?: boolean;
-  /** 文本类文件解析出的内容（@ 引用/连边时注入用，） */
+  /** 文本类文件解析出的内容（@ 引用/连边时注入用） */
   body?: string;
   /**
    * 按图片真实比例计算的展示宽度（px），首次加载时推导并持久化。

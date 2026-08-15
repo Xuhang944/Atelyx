@@ -21,13 +21,20 @@ const AUTO_NAMING_TIMEOUT_MS = 60_000;
 /** 命名请求延迟发出时长：避开与主对话请求背靠背发送，防触发端点速率限制。 */
 export const AUTO_NAMING_DELAY_MS = 3_000;
 
-/** 最近一次自动命名的中止句柄（发送新消息前 abort，防命名请求占槽/与新消息排队）。 */
-let lastTitleController: AbortController | null = null;
+/** 各目标（会话 id/对话节点 id）的自动命名中止句柄：发新消息/手动接管时按目标 abort，
+ * 防全局单句柄误中止其他目标的命名请求（并发命名场景：A 命名在途时 B 触发命名会覆盖旧句柄）。 */
+const titleControllers = new Map<string, AbortController>();
 
-/** 中止进行中的自动命名请求（新消息发送前调用）。 */
-export function abortAutoTitle() {
-  lastTitleController?.abort();
-  lastTitleController = null;
+/** 中止进行中的自动命名请求。key = 目标标识（会话 id/对话节点 id）：
+ * 指定 = 只中止该目标（发送新消息/手动接管）；省略 = 全部中止（切仓库/切画布）。 */
+export function abortAutoTitle(key?: string) {
+  if (key !== undefined) {
+    titleControllers.get(key)?.abort();
+    titleControllers.delete(key);
+    return;
+  }
+  for (const c of titleControllers.values()) c.abort();
+  titleControllers.clear();
 }
 
 /** 清洗模型输出：去引号/换行/「标题：」前缀/编号，超长截断；空结果 null。 */
@@ -61,7 +68,7 @@ export interface AutoTitleResult {
 export async function autoTitle(
   params: AutoTitleParams,
   dialogue: string,
-  opts?: { maxChars?: number },
+  opts?: { maxChars?: number; key?: string },
 ): Promise<AutoTitleResult> {
   // maxChars：自动命名按首轮摘要语义截断防浪费 token；重新命名传 Infinity = 全量会话记录
   const excerpt = dialogue.slice(0, opts?.maxChars ?? DIALOGUE_MAX_CHARS);
@@ -73,7 +80,8 @@ export async function autoTitle(
     { role: "user", content: `为下面的对话起一个简洁的标题：\n\n${excerpt}` },
   ];
   const controller = new AbortController();
-  lastTitleController = controller;
+  const key = opts?.key;
+  if (key) titleControllers.set(key, controller);
   // 超时与主动取消都以 AbortError 呈现，必须区分：超时是真实失败（调用方按 failed 提示可重试），
   // 主动取消（abortAutoTitle：发新消息/切仓库/手动接管）静默按 skipped 处理
   let timedOut = false;
@@ -95,6 +103,6 @@ export async function autoTitle(
     return { aborted: false, title: null };
   } finally {
     clearTimeout(timer);
-    if (lastTitleController === controller) lastTitleController = null;
+    if (key && titleControllers.get(key) === controller) titleControllers.delete(key);
   }
 }

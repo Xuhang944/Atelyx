@@ -32,7 +32,8 @@ use crate::vault::{
     sanitize_filename, walk_md_in, write_canvas_file, write_note as write_note_file, write_vault_config as write_vault_config_file,
     read_editor_chats_file, read_prompt_notes_file, write_prompt_notes_file,
     write_editor_chats_file, read_chat_messages_file, write_chat_messages_file,
-    delete_chat_messages_file, BacklinkRow, CanvasFile, CanvasFileRow, CanvasPatch,
+    delete_chat_messages_file, read_dir_filtered, regenerate_file_id, cache_evict_canvas,
+    BacklinkRow, CanvasFile, CanvasFileRow, CanvasPatch,
     ChatSegment, DeleteFolderResult, EditorChatsFile, FileTreeNode, VaultConfig, VaultState,
     WikiIndex, CANVAS_SCHEMA, query_wiki_backlinks,
 };
@@ -84,7 +85,8 @@ pub fn open_vault(
     }
     state.set(root.clone(), exclude_folders, attachment_folder)?;
     // 反链索引后台预热：把唯一一次全量扫描（读全部 .md 提取引用）塞进「进入仓库」阶段，不阻塞打开；
-    // 失败静默——首次反链查询会懒构建兜底（预热与查询竞争时以先建为准，索引幂等可重建）
+    // 失败静默——首次反链查询会懒构建兜底（预热与查询竞争时以先建为准，索引幂等可重建）。
+    // 锁 poison 在此同样容忍：后台预热非关键路径，查询侧会重建。
     let warm_root = root.clone();
     std::thread::spawn(move || {
         if let Some(st) = warm_app.try_state::<VaultState>() {
@@ -164,7 +166,9 @@ pub fn write_canvas_vault(
         // 旧文件已不在需要，删除；失败须报错，否则同 id 双文件会歧义（列表读到旧内容）
         std::fs::remove_file(&old_path).map_err(|e| format!("删除旧画布文件失败：{e}"))?;
     }
-    cache_put_canvas(&state, &new_path, &rel_with_new_title(&file, &canvas.title, "atlx"), &canvas);
+    let new_rel = rel_with_new_title(&file, &canvas.title, "atlx");
+    cache_evict_canvas(&state, &file);
+    cache_put_canvas(&state, &new_path, &new_rel, &canvas);
     // 返回写入的 updated_at，前端保存成功后同步乐观锁基准（防下次保存误判冲突）
     Ok(now)
 }
@@ -173,6 +177,9 @@ pub fn write_canvas_vault(
 /// 按稳定 id 合并到磁盘全量文件——乐观锁 / createdAt 保留 / title 重命名 / 原子写语义
 /// 与 write_canvas_vault 完全一致，IPC 载荷从整画布缩到变化实体。
 /// 返回 (updatedAt, 写盘后的相对路径)——title 变更重命名文件时前端按新路径更新 canvasFile。
+/// 冲突策略（与表格的 force「保留本地」不对称，属有意设计）：画布冲突一律报错，由前端提示
+/// 「重载（丢本地）或合并（mergeFromDisk 三方合并）」——画布是拓扑+消息的复合体，
+/// 无表格行级 LWW 的明确语义，不做静默覆盖。
 #[tauri::command]
 pub fn patch_canvas_vault(
     patch: CanvasPatch,
@@ -238,6 +245,7 @@ pub fn patch_canvas_vault(
     if old_path != new_path && old_path.exists() && !same_physical_file(&old_path, &new_path) {
         std::fs::remove_file(&old_path).map_err(|e| format!("删除旧画布文件失败：{e}"))?;
     }
+    cache_evict_canvas(&state, &file);
     cache_put_canvas(&state, &new_path, &new_rel, &canvas);
     Ok((now, new_rel))
 }
@@ -265,6 +273,12 @@ pub fn rename_canvas_vault(
         // 删除失败须报错（同 id 双文件歧义），但新文件已落盘，下次保存会重试清理
         std::fs::remove_file(&old_path).map_err(|e| format!("删除旧画布文件失败：{e}"))?;
     }
+    // 重命名路径变化：清旧缓存键 + 新路径按新指纹入缓存
+    if new_path != old_path {
+        cache_evict_canvas(&state, &file);
+        let new_rel = rel_with_new_title(&file, &canvas.title, "atlx");
+        cache_put_canvas(&state, &new_path, &new_rel, &canvas);
+    }
     Ok(())
 }
 
@@ -277,7 +291,10 @@ pub fn move_canvas_vault(
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
     let root = state.root()?;
-    rename_note_file(&root, &old_file, &new_file)
+    rename_note_file(&root, &old_file, &new_file)?;
+    // 移动路径变化：清旧路径缓存键（新路径下次读盘自然入缓存）
+    cache_evict_canvas(&state, &old_file);
+    Ok(())
 }
 
 /// 删除画布 .atlx 文件（不删 笔记/附件，文件可跨画布共享）。
@@ -288,7 +305,9 @@ pub fn delete_canvas_vault(file: String, state: State<'_, VaultState>) -> Result
     if !path.exists() {
         return Err(format!("文件不存在：{}", file));
     }
-    std::fs::remove_file(&path).map_err(|e| e.to_string())
+    std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    cache_evict_canvas(&state, &file);
+    Ok(())
 }
 
 /// 读 .md 笔记（按相对仓库根路径，如 `笔记/xxx.md`）。
@@ -478,7 +497,8 @@ pub fn delete_attachment(file: String, state: State<'_, VaultState>) -> Result<(
 }
 
 /// 复制仓库内文件为同目录副本（纯字节复制；新路径由前端 dedupe 防重名）。
-/// 不更新 .atlx 引用——副本是独立文件，`.atlx`/`.atb` 内部 title/id 由前端读写命令组合更新。
+/// `.atlx`/`.atb` 副本重新生成 id（与 copy_folder 的 regenerate_ids_in 同语义，
+/// 防同 id 双文件歧义：画布标签按 id 去重、协作合并按 id 身份）；title 保持原样。
 #[tauri::command]
 pub fn copy_vault_file(
     old_file: String,
@@ -496,6 +516,7 @@ pub fn copy_vault_file(
         return Err(format!("目标文件已存在：{}", new_file));
     }
     std::fs::copy(&src, &dst).map_err(|e| format!("复制文件失败：{e}"))?;
+    regenerate_file_id(&dst)?;
     Ok(())
 }
 
@@ -863,21 +884,12 @@ fn scan_atlx_in(
     if !dir.exists() {
         return Ok(());
     }
-    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let name = match entry.file_name().to_str() {
-            Some(n) => n.to_string(),
-            None => continue,
-        };
-        let child_rel = if rel.is_empty() {
-            name.clone()
-        } else {
-            format!("{rel}/{name}")
-        };
-        let path = entry.path();
-        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+    // 链接维护不过滤（排除/隐藏目录内的画布也可能引用文件），exclude 传空
+    for (child_rel, is_dir) in read_dir_filtered(&dir, rel, &[])? {
+        if is_dir {
             scan_atlx_in(root, &child_rel, update, updates)?;
-        } else if path.extension().and_then(|s| s.to_str()) == Some("atlx") {
+        } else if child_rel.ends_with(".atlx") {
+            let path = root.join(&child_rel);
             let mut canvas = match read_canvas_file(&path) {
                 Ok(c) => c,
                 Err(_) => continue, // 跳过无法解析的文件，不阻塞其他画布的链接维护

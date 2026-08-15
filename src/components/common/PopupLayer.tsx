@@ -73,6 +73,8 @@ export function PopupLayer({
   return createPortal(
     <div
       ref={ref}
+      // data-popup-layer：宿主全局外点监听（如 NoteEditor 的「点外退出编辑」）按此标记排除弹层内操作
+      data-popup-layer
       className={`fixed border rounded shadow-lg ${zClass} ${widthClass ?? ""} ${contentClassName}`}
       style={{
         left: pos.x,

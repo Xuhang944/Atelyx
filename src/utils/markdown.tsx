@@ -14,7 +14,7 @@
  * - `> [!note]` → Callout 引用块（transform 附加 className，GitHub 同款语法）
  * - `![alt|100x200]` → 图片尺寸语法（transform 转 img width/height 属性）
  * - 文件开头 YAML Frontmatter（`---` 块）→ 不渲染为正文（remark-frontmatter 识别为 yaml 节点后删除，
- *   属性由笔记属性面板展示，）
+ *   属性由笔记属性面板展示）
  *
  * 安全红线：rehype-sanitize 仍居 rehype 插件首位，自定义 schema 仅扩展渲染所需
  * 白名单；className 通配 `{}` 与 code 高亮一致——class 只驱动受控 CSS，无脚本执行面。

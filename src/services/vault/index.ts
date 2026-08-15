@@ -142,7 +142,8 @@ export async function deleteAttachment(file: string): Promise<void> {
 
 /**
  * 复制仓库内文件为同目录副本（纯字节复制；新路径须由调用方 dedupe 防重名）。
- * `.atlx`/`.atb` 的 title/id 更新由调用方经读写命令组合，本命令不做内容特判。
+ * `.atlx`/`.atb` 的 id 由 Rust 侧重新生成（与复制文件夹同语义，防同 id 双文件歧义），
+ * title 保持原样（副本文件名由调用方命名）。
  */
 export async function copyVaultFile(
   oldFile: string,
@@ -220,10 +221,11 @@ export async function writeChatMessages(
 }
 
 /** 追加式写会话消息正文 .md（消息增长场景：只传新增段；文件缺失报错由调用方回落全量重写）。
- * 截断场景（回到此处/重新生成）仍走 writeChatMessages 全量重写。 */
+ * 截断场景（回到此处/重新生成）仍走 writeChatMessages 全量重写。
+ * `token`（可选）= 新格式段头 token（`## role: <token>` 防正文误分段）；旧格式文件不传。 */
 export async function appendChatMessages(
   file: string,
-  segments: { role: string; text: string }[],
+  segments: { role: string; text: string; token?: string }[],
 ): Promise<void> {
   await invoke("append_chat_messages", { file, segments });
 }
@@ -277,13 +279,25 @@ export async function renameFolder(
 /** 最近写入的 .md 内容缓存（脏检测：仅内容变化才写盘，避免每次保存全量重写全部笔记）。 */
 const lastWrittenMd = new Map<string, string>();
 
+/** 基线条目上限：超出按写入先后淘汰最旧（Map 保持插入序，keys().next() 即最旧）。
+ * 条目只是脏检测基线，被淘汰后下次保存按「基线缺失 = 有差异」重写一次并重新登记，语义无损。 */
+const LAST_WRITTEN_MD_MAX = 1000;
+
+function setLastWrittenMd(file: string, content: string): void {
+  lastWrittenMd.set(file, content);
+  if (lastWrittenMd.size > LAST_WRITTEN_MD_MAX) {
+    const oldest = lastWrittenMd.keys().next().value;
+    if (oldest !== undefined) lastWrittenMd.delete(oldest);
+  }
+}
+
 /**
  * 记录某 .md 的最近已知磁盘内容（load/外部刷新读到磁盘内容后调用）。
  * 脏检测基线 = 「最近已知磁盘内容」而非「应用最近一次写入」：外部改后刷新、用户改回旧值
  * 时必须能感知差异写盘（否则外部内容会永久覆盖用户的回退），见 canvasStore.refreshTextContent。
  */
 export function recordNoteDiskContent(file: string, content: string): void {
-  lastWrittenMd.set(file, content);
+  setLastWrittenMd(file, content);
 }
 
 /** 判断磁盘内容是否为应用自写（与最近已知磁盘内容基线逐字节相等）。自写回波返回 true，内存态不更旧。 */
@@ -406,7 +420,7 @@ async function toFileNode(
       ) {
         try {
           await writeNote(td.file, td.bodyMd);
-          lastWrittenMd.set(td.file, td.bodyMd);
+          setLastWrittenMd(td.file, td.bodyMd);
         } catch (e) {
           console.error("写笔记失败", e);
         }

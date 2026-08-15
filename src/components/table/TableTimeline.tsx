@@ -120,18 +120,28 @@ export function TableTimeline() {
     el?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
   }, [playing, shotIndex]);
 
+  /** 各卡片起点时间（前缀和一次计算，播放头定位 / 跳选 / 进度条共用，防多次 slice+reduce）。 */
+  const shotStarts = useMemo(() => {
+    const starts: number[] = [];
+    let acc = 0;
+    for (const d of durations) {
+      starts.push(acc);
+      acc += d;
+    }
+    return starts;
+  }, [durations]);
+
   // 播放头像素位置：累计前序卡片宽度 + 当前卡内比例
   const playheadPx = useMemo(() => {
     if (rows.length === 0 || shotIndex < 0) return 0;
     let acc = 0;
     for (let i = 0; i < shotIndex; i++) acc += cardWidthAt(durations[i], hasDurationField) + TIMELINE_CARD_GAP;
-    const shotStart = durations.slice(0, shotIndex).reduce((a, b) => a + b, 0);
+    const shotStart = shotStarts[shotIndex] ?? 0;
     const frac = durations[shotIndex] > 0 ? (playhead - shotStart) / durations[shotIndex] : 0;
     return acc + Math.min(1, Math.max(0, frac)) * cardWidthAt(durations[shotIndex], hasDurationField);
-  }, [rows.length, shotIndex, durations, playhead, hasDurationField]);
+  }, [rows.length, shotIndex, durations, shotStarts, playhead, hasDurationField]);
 
-  const shotStartOf = (index: number): number =>
-    durations.slice(0, index).reduce((a, b) => a + b, 0);
+  const shotStartOf = (index: number): number => shotStarts[index] ?? 0;
 
   /** 跳选行：停止播放并定位到该行起点（与表格视图选中联动）。 */
   const jumpTo = (index: number) => {

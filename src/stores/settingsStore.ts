@@ -15,7 +15,7 @@ import type {
   ThemeMode,
   VaultConfig,
 } from "@/types";
-import { DEFAULT_AI_CONFIG } from "@/services/ai/types";
+import { DEFAULT_AI_CONFIG } from "@/constants/ai";
 import { PROVIDER_PRESETS } from "@/constants/providers";
 import { remapDirPrefix } from "@/utils/filename";
 import { createPersistController } from "@/utils/persist";
@@ -458,7 +458,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       providers: [...get().config.providers, provider],
     };
     set({ config: cfg });
-    persist(cfg).catch((e) => console.error("保存 AI 配置失败", e));
+    // 与其余写路径统一走防抖（400ms；关窗/切仓库前 flush 兜底 await），
+    // 避免即时写与防抖写两条路径并发交错写 config.json
+    persistDebounced();
     return id;
   },
 

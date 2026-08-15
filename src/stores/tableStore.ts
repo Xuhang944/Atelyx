@@ -18,7 +18,7 @@ import {
 } from "@/services/table";
 import { copyImageToClipboard as copyImageSvc } from "@/services/clipboard";
 import { pickFile, saveFile } from "@/services/dialog";
-import { markSelfSave } from "@/stores/canvasStore";
+import { markSelfSave } from "@/utils/selfSave";
 import { useVaultStore } from "@/stores/vaultStore";
 import { createPersistController } from "@/utils/persist";
 import { createUndoManager } from "@/utils/undoStack";
@@ -308,7 +308,7 @@ async function retryMergePersist(
 const persistCtl = createPersistController<boolean>({
   persist: async (force = false) => {
     const versionAtStart = persistCtl.version;
-    const { tableFile, id, title, fields, rows, baseUpdatedAt } = useTableStore.getState();
+    const { tableFile, id, fields, rows, baseUpdatedAt } = useTableStore.getState();
     if (!tableFile) return;
     // 写盘成功后的统一收尾（markSelfSave 先于守卫：写已发生，watcher 回放须抑制）
     const finish = (updatedAt: number | null, newFile?: string) => {
@@ -348,13 +348,25 @@ const persistCtl = createPersistController<boolean>({
       }
     };
     /** 磁盘文件被外部删除：补丁只含变化实体，重建会丢未变化部分——回退全量写（与旧行为一致）。
-     * 主补丁路径与乐观锁合并路径共用（合并路径读盘时同样可能遇到文件已删）。 */
+     * 主补丁路径与乐观锁合并路径共用（合并路径读盘时同样可能遇到文件已删）。
+     * 必须读最新 state：await 主补丁期间用户可能又有新编辑，写起始快照会把 stale 内容
+     * 短暂覆盖磁盘；同时防切表后把新表内容写进旧文件（tableFile 变了即放弃，与 finish 守卫同语义）。 */
     const rewriteFull = async (): Promise<void> => {
       try {
+        const latest = useTableStore.getState();
+        if (latest.tableFile !== tableFile) return;
         const updatedAt = await writeTableVault(
-          { schema: TABLE_SCHEMA, id, title, fields, rows, createdAt: 0, updatedAt: Date.now() },
+          {
+            schema: TABLE_SCHEMA,
+            id: latest.id,
+            title: latest.title,
+            fields: latest.fields,
+            rows: latest.rows,
+            createdAt: 0,
+            updatedAt: Date.now(),
+          },
           tableFile,
-          force ? undefined : baseUpdatedAt,
+          force ? undefined : latest.baseUpdatedAt,
         );
         finish(updatedAt);
       } catch (e2) {

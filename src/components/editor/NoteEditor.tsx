@@ -27,6 +27,8 @@ import { NotePropertiesView } from "@/components/editor/NotePropertiesView";
 import { MarkdownEditor } from "@/components/editor/MarkdownEditor";
 import { useMarkdownComponents } from "@/hooks/useMarkdownComponents";
 import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
+import { usePopupAnchor } from "@/hooks/usePopupAnchor";
+import { PopupLayer } from "@/components/common/PopupLayer";
 
 type SaveState = NoteSaveStatus["state"];
 
@@ -43,8 +45,9 @@ export function NoteEditor({ file }: { file: string }) {
   const [preview, setPreview] = useState(true);
   /** 源码模式：编辑区显示完整 Markdown 源码 textarea；不勾选 = 实时预览编辑（CodeMirror）。 */
   const [sourceMode, setSourceMode] = useState(false);
-  /** 右上角「···」浮层菜单开关。 */
-  const [showMenu, setShowMenu] = useState(false);
+  /** 右上角「···」更多选项弹层（统一 usePopupAnchor + PopupLayer）。 */
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
+  const menu = usePopupAnchor(menuTriggerRef);
   /** 划词 AI 改写菜单（右键时的视口坐标 + 选中文本）；null = 关闭。 */
   const [rewriteMenu, setRewriteMenu] = useState<{
     x: number;
@@ -116,8 +119,17 @@ export function NoteEditor({ file }: { file: string }) {
   useEffect(() => {
     const onDocMouseDown = (e: MouseEvent) => {
       const root = editorRootRef.current;
-      // 编辑器内部（内容区/属性区/浮层菜单均挂在根节点内）不退出；preview 已是 true 时幂等无副作用
-      if (root && !root.contains(e.target as Node)) setPreview(true);
+      // 编辑器内部（内容区/属性区）不退出；portal 弹层（AI 改写菜单/「···」更多选项经
+      // PopupLayer 挂 body，不在根节点内）也不退出——弹层内操作（点菜单项/评论输入框）
+      // 不应把编辑态切回预览。preview 已是 true 时幂等无副作用。
+      const target = e.target as Element | null;
+      if (
+        root &&
+        !root.contains(e.target as Node) &&
+        !target?.closest?.("[data-popup-layer]")
+      ) {
+        setPreview(true);
+      }
     };
     document.addEventListener("mousedown", onDocMouseDown);
     return () => document.removeEventListener("mousedown", onDocMouseDown);
@@ -397,53 +409,51 @@ export function NoteEditor({ file }: { file: string }) {
           >
             <Pencil size={14} />
           </button>
-          {/* 「···」更多选项：笔记属性面板入口 */}
-          <span className="relative flex-shrink-0">
+          {/* 「···」更多选项：笔记属性面板入口（统一弹层 PopupLayer：锚定 + 钳制 + Esc/外点关闭） */}
+          <span className="flex-shrink-0">
             <button
-              onClick={() => setShowMenu((v) => !v)}
+              ref={menuTriggerRef}
+              onClick={() => menu.toggle()}
               title="更多选项"
               className="p-0.5 rounded hover:opacity-80"
-              style={{ color: showMenu ? "var(--accent)" : "var(--text-muted)" }}
+              style={{ color: menu.anchor ? "var(--accent)" : "var(--text-muted)" }}
             >
               <MoreHorizontal size={15} />
             </button>
-            {showMenu && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
-                <div
-                  className="absolute right-0 top-full mt-0.5 z-50 border rounded shadow-lg py-1 w-36"
-                  style={{ background: "var(--bg-secondary)", borderColor: "var(--border)" }}
-                >
-                  <button
-                    className="w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:opacity-80"
-                    style={{ color: "var(--text-primary)" }}
-                    onClick={() => {
-                      addFrontmatterTemplate();
-                      setShowMenu(false);
-                    }}
-                    title="在内容顶部插入 frontmatter 格式模板（---\\n---\\n），自行填写属性"
-                  >
-                    {/* 图标列占位与「源码模式」对齐（Check 图标列同宽） */}
-                    <span className="w-3.5 flex-shrink-0" />
-                    添加笔记属性
-                  </button>
-                  <button
-                    className="w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:opacity-80"
-                    style={{ color: "var(--text-primary)" }}
-                    onClick={() => {
-                      setSourceMode((v) => !v);
-                      setShowMenu(false);
-                    }}
-                    title="源码模式：编辑区显示 Markdown 源码"
-                  >
-                    <span className="w-3.5 flex-shrink-0">
-                      {sourceMode && <Check size={12} style={{ color: "var(--accent)" }} />}
-                    </span>
-                    源码模式
-                  </button>
-                </div>
-              </>
-            )}
+            <PopupLayer
+              anchor={menu.anchor}
+              onClose={menu.close}
+              triggerRef={menuTriggerRef}
+              widthClass="w-36"
+            >
+              <button
+                className="w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:opacity-80"
+                style={{ color: "var(--text-primary)" }}
+                onClick={() => {
+                  addFrontmatterTemplate();
+                  menu.close();
+                }}
+                title="在内容顶部插入 frontmatter 格式模板（---\\n---\\n），自行填写属性"
+              >
+                {/* 图标列占位与「源码模式」对齐（Check 图标列同宽） */}
+                <span className="w-3.5 flex-shrink-0" />
+                添加笔记属性
+              </button>
+              <button
+                className="w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:opacity-80"
+                style={{ color: "var(--text-primary)" }}
+                onClick={() => {
+                  setSourceMode((v) => !v);
+                  menu.close();
+                }}
+                title="源码模式：编辑区显示 Markdown 源码"
+              >
+                <span className="w-3.5 flex-shrink-0">
+                  {sourceMode && <Check size={12} style={{ color: "var(--accent)" }} />}
+                </span>
+                源码模式
+              </button>
+            </PopupLayer>
           </span>
         </span>
       </div>

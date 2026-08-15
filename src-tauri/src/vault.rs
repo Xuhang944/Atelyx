@@ -109,16 +109,12 @@ impl VaultState {
             exclude_folders,
             attachment_folder,
         });
-        if let Ok(mut wiki) = self.wiki.lock() {
-            *wiki = None;
-        }
+        // 以下三个辅助锁（wiki/canvas_cache/table_cache）poison 时清空动作无副作用，吞掉即可；
+        // 读路径（query/read_cached）对 poison 走 map_err 传播（见 416/433 行），与本处策略一致。
+        let _ = self.wiki.lock().map(|mut w| *w = None);
         // 切仓库清空文件缓存：不同仓库的同名相对路径不得混用
-        if let Ok(mut cache) = self.canvas_cache.lock() {
-            cache.clear();
-        }
-        if let Ok(mut cache) = self.table_cache.lock() {
-            cache.clear();
-        }
+        let _ = self.canvas_cache.lock().map(|mut c| c.clear());
+        let _ = self.table_cache.lock().map(|mut c| c.clear());
         Ok(())
     }
 }
@@ -213,6 +209,39 @@ pub fn is_excluded_rel(rel: &str, exclude: &[String]) -> bool {
     })
 }
 
+/// 读取目录条目（相对路径 + 是否目录），应用全仓库统一过滤：
+/// 隐藏项（`.` 前缀）/ 排除文件夹 / `.tmp` 原子写副产物。递归由各 walker 自行组织
+/// （list_tree_in / scan_canvases_in / walk_md_in / scan_atlx_in 共用，过滤规则只维护一处）。
+pub(crate) fn read_dir_filtered(
+    dir: &Path,
+    rel: &str,
+    exclude: &[String],
+) -> Result<Vec<(String, bool)>, String> {
+    let mut out: Vec<(String, bool)> = vec![];
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = match entry.file_name().to_str() {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        if name.starts_with('.') || exclude.iter().any(|e| e.as_str() == name) {
+            continue;
+        }
+        let child_rel = if rel.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel}/{name}")
+        };
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if !is_dir && entry.path().extension().and_then(|s| s.to_str()) == Some("tmp") {
+            // 跳过 atomic_write 的 `.tmp` 中间文件（原子写 `path.tmp` → rename 副产物）
+            continue;
+        }
+        out.push((child_rel, is_dir));
+    }
+    Ok(out)
+}
+
 /// 递归枚举仓库文件树（跳过隐藏 `.` 开头 / 排除列表 / `.tmp` 原子写副产物），按 name 升序。
 pub fn list_vault_tree(root: &Path, exclude: &[String]) -> Result<Vec<FileTreeNode>, String> {
     list_tree_in(root, "", exclude)
@@ -229,31 +258,11 @@ fn list_tree_in(
         root.join(rel)
     };
     let mut nodes: Vec<FileTreeNode> = vec![];
-    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let name = match entry.file_name().to_str() {
-            Some(n) => n.to_string(),
-            None => continue,
-        };
-        if name.starts_with('.') || exclude.iter().any(|e| e.as_str() == name) {
-            continue;
-        }
-        let child_rel = if rel.is_empty() {
-            name.clone()
-        } else {
-            format!("{rel}/{name}")
-        };
-        let path = entry.path();
-        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        if !is_dir && path.extension().and_then(|s| s.to_str()) == Some("tmp") {
-            // 跳过 atomic_write 的 `.tmp` 中间文件（vault.rs 原子写 `path.tmp` → rename 副产物）
-            continue;
-        }
-        let mtime = entry
-            .metadata()
-            .map_err(|e| e.to_string())?
-            .modified()
+    for (child_rel, is_dir) in read_dir_filtered(&dir, rel, exclude)? {
+        let path = root.join(&child_rel);
+        let mtime = std::fs::metadata(&path)
             .ok()
+            .and_then(|md| md.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
@@ -263,7 +272,7 @@ fn list_tree_in(
             vec![]
         };
         nodes.push(FileTreeNode {
-            name,
+            name: rel_last_seg(&child_rel).to_string(),
             path: child_rel,
             is_dir,
             updated_at: mtime,
@@ -272,6 +281,11 @@ fn list_tree_in(
     }
     nodes.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(nodes)
+}
+
+/// 相对路径末段（list_tree_in 展示名用；rel 非空时必有末段）。
+fn rel_last_seg(rel: &str) -> &str {
+    rel.rsplit('/').next().unwrap_or(rel)
 }
 
 // ===== 路径校验 =====
@@ -302,6 +316,16 @@ pub(crate) fn safe_join(root: &Path, file: &str, create_parents: bool) -> Result
     }
     let joined = root.join(clean);
     let root_canon = dunce::canonicalize(root).map_err(|_| "仓库根不可达".to_string())?;
+    // 最终文件已存在时校验其真实路径仍在仓库根内：目录级穿越已由组件过滤 + 父目录
+    // canonicalize 双保险，文件级符号链接（指向仓库外）是最后缺口——canonicalize 解出目标
+    // 后 starts_with 拒绝；新建文件（不存在）跳过，父目录校验已覆盖中间目录符号链接。
+    if joined.exists() {
+        let joined_canon = dunce::canonicalize(&joined)
+            .map_err(|e| format!("路径不可达：{} ({})", file, e))?;
+        if !joined_canon.starts_with(&root_canon) {
+            return Err(format!("路径越界：{}", file));
+        }
+    }
     let parent = joined.parent().ok_or_else(|| format!("非法路径：{}", file))?;
     if create_parents {
         std::fs::create_dir_all(parent)
@@ -412,6 +436,7 @@ pub fn read_table_file_cached(
 }
 
 /// 写盘成功后更新缓存（file = 写盘后的相对路径；重命名路径变化时先清旧 key）。
+/// 锁 poison 静默跳过：缓存是纯优化，丢一次命中下次读盘即可（读路径对 poison 传播错误，见 read_*_cached）。
 pub fn cache_put_canvas(state: &VaultState, path: &Path, file: &str, data: &CanvasFile) {
     if let Ok(mut cache) = state.canvas_cache.lock() {
         cache.retain(|k, _| k != file);
@@ -428,7 +453,7 @@ pub fn cache_put_canvas(state: &VaultState, path: &Path, file: &str, data: &Canv
     }
 }
 
-/// 写盘成功后更新 .atb 缓存（语义同 cache_put_canvas）。
+/// 写盘成功后更新 .atb 缓存（语义同 cache_put_canvas，锁 poison 静默跳过）。
 pub fn cache_put_table(state: &VaultState, path: &Path, file: &str, data: &TableFile) {
     if let Ok(mut cache) = state.table_cache.lock() {
         cache.retain(|k, _| k != file);
@@ -442,6 +467,21 @@ pub fn cache_put_table(state: &VaultState, path: &Path, file: &str, data: &Table
                 },
             );
         }
+    }
+}
+
+/// 从画布解析缓存移除指定相对路径（重命名/移动/删除后旧路径键残留清理；不存在 = 无操作）。
+/// 残留键因指纹（mtime+len）失效本不会被命中，清理仅为防长会话内存累积。
+pub fn cache_evict_canvas(state: &VaultState, file: &str) {
+    if let Ok(mut cache) = state.canvas_cache.lock() {
+        cache.remove(file);
+    }
+}
+
+/// 从 .atb 解析缓存移除指定相对路径（语义同 cache_evict_canvas）。
+pub fn cache_evict_table(state: &VaultState, file: &str) {
+    if let Ok(mut cache) = state.table_cache.lock() {
+        cache.remove(file);
     }
 }
 
@@ -545,25 +585,12 @@ fn scan_canvases_in(
     } else {
         root.join(rel)
     };
-    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let name = match entry.file_name().to_str() {
-            Some(n) => n.to_string(),
-            None => continue,
-        };
-        if name.starts_with('.') || exclude.iter().any(|e| e.as_str() == name) {
-            continue;
-        }
-        let child_rel = if rel.is_empty() {
-            name.clone()
-        } else {
-            format!("{rel}/{name}")
-        };
-        let path = entry.path();
-        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+    for (child_rel, is_dir) in read_dir_filtered(&dir, rel, exclude)? {
+        if is_dir {
             scan_canvases_in(root, &child_rel, exclude, rows)?;
-        } else if path.extension().and_then(|s| s.to_str()) == Some("atlx") {
+        } else if child_rel.ends_with(".atlx") {
             // 完整解析取 id/title/updatedAt（.atlx 文件不大，无需流式）
+            let path = root.join(&child_rel);
             if let Ok(canvas) = read_canvas_file(&path) {
                 rows.push(CanvasFileRow {
                     id: canvas.id,
@@ -981,12 +1008,15 @@ pub fn write_chat_messages_file(root: &Path, file: &str, content: &str) -> Resul
     atomic_write(&path, content)
 }
 
-/// 追加段：消息 .md 转写的增量（role + 正文，格式与 stringifyChatMessages 对齐）。
+/// 追加段：消息 .md 转写的增量（role + 正文 + 可选段头 token，格式与 stringifyChatMessages 对齐）。
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatSegment {
     pub role: String,
     pub text: String,
+    /// 新格式段头 token（`## role: <token>`，随机 token 防消息正文误分段）；旧格式文件追加不传。
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
 /// 追加式写会话消息正文 .md（消息增长场景：前端只传新增段，省全量重拼与 IPC 载荷）。
@@ -1005,7 +1035,12 @@ pub fn append_chat_messages_file(
     }
     let mut content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     for seg in segments {
-        content.push_str(&format!("\n## {}:\n\n{}\n", seg.role, seg.text));
+        let suffix = seg
+            .token
+            .as_deref()
+            .map(|t| format!(" {t}"))
+            .unwrap_or_default();
+        content.push_str(&format!("\n## {}:{}\n\n{}\n", seg.role, suffix, seg.text));
     }
     atomic_write(&path, &content)
 }
@@ -1216,18 +1251,26 @@ fn regenerate_ids_in(dir: &Path) -> Result<(), String> {
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             regenerate_ids_in(&path)?;
         } else {
-            let ext = path.extension().and_then(|s| s.to_str());
-            if ext == Some("atlx") {
-                if let Ok(mut canvas) = read_canvas_file(&path) {
-                    canvas.id = nanoid!();
-                    write_canvas_file(&path, &canvas)?;
-                }
-            } else if ext == Some("atb") {
-                if let Ok(mut table) = read_table_file(&path) {
-                    table.id = nanoid!();
-                    write_table_file(&path, &table)?;
-                }
-            }
+            regenerate_file_id(&path)?;
+        }
+    }
+    Ok(())
+}
+
+/// 重写单个 `.atlx`/`.atb` 的 id 为新值（单文件复制副本防同 id 双文件歧义：
+/// 画布标签按 id 去重、协作合并按 id 身份；与 copy_folder 的 regenerate_ids_in 同语义）。
+/// 非这两种扩展名/读失败（损坏文件）原样保留，不阻断复制。
+pub fn regenerate_file_id(path: &Path) -> Result<(), String> {
+    let ext = path.extension().and_then(|s| s.to_str());
+    if ext == Some("atlx") {
+        if let Ok(mut canvas) = read_canvas_file(path) {
+            canvas.id = nanoid!();
+            write_canvas_file(path, &canvas)?;
+        }
+    } else if ext == Some("atb") {
+        if let Ok(mut table) = read_table_file(path) {
+            table.id = nanoid!();
+            write_table_file(path, &table)?;
         }
     }
     Ok(())
@@ -1375,25 +1418,11 @@ pub(crate) fn walk_md_in(
     if !dir.exists() {
         return Ok(());
     }
-    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let name = match entry.file_name().to_str() {
-            Some(n) => n.to_string(),
-            None => continue,
-        };
-        if name.starts_with('.') || exclude.iter().any(|e| e.as_str() == name) {
-            continue;
-        }
-        let child_rel = if rel.is_empty() {
-            name.clone()
-        } else {
-            format!("{rel}/{name}")
-        };
-        let path = entry.path();
-        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+    for (child_rel, is_dir) in read_dir_filtered(&dir, rel, exclude)? {
+        if is_dir {
             walk_md_in(root, &child_rel, exclude, f)?;
-        } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
-            f(&child_rel, &path)?;
+        } else if child_rel.ends_with(".md") {
+            f(&child_rel, &root.join(&child_rel))?;
         }
     }
     Ok(())

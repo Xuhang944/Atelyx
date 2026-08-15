@@ -64,8 +64,10 @@ export async function runStreamExchange(
   const maxRounds = options.maxToolRounds ?? 3;
   let apiMessages = options.apiMessages;
 
-  // 引擎内部 controller：空闲超时用内部 abort；外部 signal（停止按钮/切画布）变化时转发中止
+  // 引擎内部 controller：空闲超时用内部 abort；外部 signal（停止按钮/切画布）变化时转发中止。
+  // 注意：addEventListener 不会对「调用前已 aborted」的信号回放事件，须显式补一次检查
   const controller = new AbortController();
+  if (options.signal.aborted) controller.abort();
   options.signal.addEventListener("abort", () => controller.abort(), {
     once: true,
   });
@@ -293,7 +295,7 @@ export type AutoNamingResult = "ok" | "skipped" | "failed";
  */
 export async function runAutoNaming(
   target: AutoNameTarget,
-  opts?: { delayMs?: number; maxChars?: number; ignoreToggle?: boolean },
+  opts?: { delayMs?: number; maxChars?: number; ignoreToggle?: boolean; key?: string },
 ): Promise<AutoNamingResult> {
   const named = useSettingsStore.getState().resolveAutoNamingModel(opts?.ignoreToggle);
   if (!named) return "skipped";
@@ -312,11 +314,15 @@ export async function runAutoNaming(
   const dialogue = messages
     .map((m) => `${m.role === "user" ? "用户" : "AI"}：${m.displayContent ?? m.content}`)
     .join("\n");
-  // 命名不传 temperature：交给厂商 API 默认配置（与主对话一致）
+  // 命名不传 temperature：交给厂商 API 默认配置（与主对话一致）；
+  // key = 目标标识（会话 id/对话节点 id）：abortAutoTitle(key) 只中止对应目标的命名请求
   const { aborted, title } = await autoTitle(
     { baseUrl: provider.baseUrl, apiKey: provider.apiKey, model },
     dialogue,
-    { maxChars: opts?.maxChars },
+    {
+      maxChars: opts?.maxChars,
+      ...(opts?.key ? { key: opts.key } : {}),
+    },
   );
   if (aborted) return "skipped";
   if (!title) return "failed";

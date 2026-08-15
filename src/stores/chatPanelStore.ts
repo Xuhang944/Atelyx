@@ -11,6 +11,7 @@ import {
 import { toApiMessages } from "@/services/ai/client";
 import { abortAutoTitle } from "@/services/ai/autoTitle";
 import { AGENT_TOOLS, DEFAULT_AGENT_TOOLS } from "@/constants/tools";
+import { ERROR_PREFIX, TIMEOUT_ERROR_TEXT } from "@/constants/chat";
 import {
   runStreamExchange,
   decideCleanup,
@@ -49,13 +50,11 @@ import type {
  *
  * 与画布对话（canvasStore.runStream）的差异：
  * - 面板一次只流式一个会话（单输入框）；工具循环与画布共用 runStreamExchange（Agent 模式开关控制）
- * - 错误占位沿用 `[错误]` 前缀过滤约定
+ * - 错误占位沿用 `[错误]` 前缀过滤约定（ERROR_PREFIX，见 constants/chat.ts）
  * - provider/model 解析：`settingsStore.resolveChatTarget(modelOverride)`（面板覆盖 → 跟随仓库默认，与画布同源）
  * - 持久化 debounce 500ms：消息变化追加式写会话 .md（纯增长只追加新增段，工具调用过程为 `## tool` 段），
  *   元数据变化写索引（均不在 watcher 监听范围，无自写回环）
  */
-
-const ERROR_PREFIX = "[错误]";
 
 interface ChatPanelState {
   sessions: EditorChatSession[];
@@ -151,36 +150,76 @@ function chatMessageFilePath(sessionId: string): string {
 }
 
 /**
- * 转写 .md：frontmatter 存会话 id（外部识别归属）+ `## user:` / `## assistant:` 消息段 +
- * `## tool:` 工具调用段（单行 JSON，挂在前一条消息上；重开会话恢复展示）。
- * user 消息写 displayContent（原始输入），注入的笔记全文不落盘——.md 可读的对话转写。
+ * 各会话转写段头 token：新格式 `## user: <token>`——随机 token 使段头不可能与正文行混淆，
+ * 防「消息正文恰好含 `## user:` 独立行」被误分段（旧格式遗留文件无 token，继续按旧格式解析）。
+ * token 写进 frontmatter（会话首次全量落盘时生成），跨进程稳定；追加段沿用同一 token。
+ */
+const transcriptTokens = new Map<string, string>();
+
+function newTranscriptToken(): string {
+  return crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+}
+
+/** 会话当前 token（无 = 旧格式文件；追加沿用旧格式保持文件一致，全量重写时生成并升级）。 */
+function tokenOf(sessionId: string): string | null {
+  return transcriptTokens.get(sessionId) ?? null;
+}
+
+function ensureTranscriptToken(sessionId: string): string {
+  let t = transcriptTokens.get(sessionId);
+  if (!t) {
+    t = newTranscriptToken();
+    transcriptTokens.set(sessionId, t);
+  }
+  return t;
+}
+
+/**
+ * 转写 .md：frontmatter 存会话 id + 段头 token（外部识别归属）；`## user: <token>` /
+ * `## assistant: <token>` 消息段 + `## tool: <token>` 工具调用段（单行 JSON，挂在前一条
+ * 消息上；重开会话恢复展示）。user 消息写 displayContent（原始输入），注入的笔记全文不落盘
+ * ——.md 可读的对话转写。
  */
 function stringifyChatMessages(sessionId: string, messages: EditorChatMessage[]): string {
-  const lines = ["---", `sessionId: ${sessionId}`, "---", ""];
+  const token = ensureTranscriptToken(sessionId);
+  const lines = ["---", `sessionId: ${sessionId}`, `token: ${token}`, "---", ""];
   for (const m of messages) {
     const text = m.role === "user" ? (m.displayContent ?? m.content) : m.content;
-    lines.push(`## ${m.role}:`, "", text, "");
+    lines.push(`## ${m.role}: ${token}`, "", text, "");
     for (const run of m.toolRuns ?? []) {
-      lines.push("## tool:", "", JSON.stringify(run), "");
+      lines.push("## tool: " + token, "", JSON.stringify(run), "");
     }
   }
   return lines.join("\n");
 }
 
 /**
- * 解析转写 .md → 消息（frontmatter sessionId 不匹配/结构异常返回空数组——降级不阻塞）。
+ * 解析转写 .md → 消息（frontmatter sessionId 不匹配/结构异常返回空消息——降级不阻塞）。
+ * 段头 token 优先（新格式，随机 token 正文无法伪造匹配）；无 token = 旧格式文件，回退宽松
+ * 匹配（正文含 `## user:` 字面行的旧文件仍按旧语义解析，全量重写后自然升级新格式）。
  * `## tool:` 段解析为前一条消息的 toolRuns（进行中状态归一化为完成 + 「（中断）」备注）。
  * 消息 id 每次恢复重新生成（.md 是转写而非协作增量源；画布消息才有稳定 id 需求）。
  */
-function parseChatMessages(md: string, sessionId: string): EditorChatMessage[] {
+function parseChatMessages(md: string, sessionId: string): {
+  messages: EditorChatMessage[];
+  token: string | null;
+} {
   const fm = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(md);
-  if (!fm) return [];
-  const sidLine = fm[1].split("\n").find((l) => l.startsWith("sessionId:"));
-  if (!sidLine || sidLine.slice("sessionId:".length).trim() !== sessionId) return [];
+  if (!fm) return { messages: [], token: null };
+  const metaLines = fm[1].split("\n");
+  const sidLine = metaLines.find((l) => l.startsWith("sessionId:"));
+  if (!sidLine || sidLine.slice("sessionId:".length).trim() !== sessionId) {
+    return { messages: [], token: null };
+  }
+  const tokenLine = metaLines.find((l) => l.startsWith("token:"));
+  const token = tokenLine?.slice("token:".length).trim() || null;
   const body = md.slice(fm[0].length);
-  // 按 `## user:` / `## assistant:` / `## tool:` 分段（冒号可选：兼容早期无冒号写入的转写）；
+  // 按段头分段（token 精确匹配；冒号可选兼容早期无冒号写入的旧转写）；
   // [pre, role, content, role, content, ...]
-  const parts = body.split(/^## (user|assistant|tool):?$/m);
+  const headerRe = token
+    ? new RegExp(`^## (user|assistant|tool): ${token}$`, "m")
+    : /^## (user|assistant|tool):?$/m;
+  const parts = body.split(headerRe);
   const messages: EditorChatMessage[] = [];
   for (let i = 1; i + 1 < parts.length; i += 2) {
     const role = parts[i];
@@ -209,11 +248,47 @@ function parseChatMessages(md: string, sessionId: string): EditorChatMessage[] {
       createdAt: messages.length,
     });
   }
-  return messages;
+  return { messages, token };
 }
 
 /** 已完成 LLM 自动命名的会话 id（一次会话只命名一次；load 切仓库时清空）。 */
 const autoNamedSessions = new Set<string>();
+
+/**
+ * @引用 就地注入（send/regenerate 共用）：把文本内的 `@标签` 按命中实例替换为笔记全文
+ * （scanMentionHits 精确位置，从后往前替换防位置漂移）。笔记缺失/读取失败跳过该处注入
+ * （保留 @标签 原文）。返回替换后文本 + 成功注入的文件列表（按 @标签 出现顺序，可重复）。
+ */
+async function injectNoteRefs(
+  text: string,
+  refs: { file: string; label: string }[],
+): Promise<{ text: string; injectedFiles: string[] }> {
+  const injectedFiles: string[] = [];
+  if (!refs.length) return { text, injectedFiles };
+  const hits = scanMentionHits(
+    text,
+    refs.map((r) => ({ nodeId: r.file, text: `@${r.label}` })),
+  );
+  let out = text;
+  for (let i = hits.length - 1; i >= 0; i--) {
+    const { start, end, mention } = hits[i];
+    const ref = refs.find((r) => r.file === mention.nodeId);
+    if (!ref) continue;
+    try {
+      const noteText = await readNote(ref.file);
+      if (noteText.trim()) {
+        const name = baseName(ref.file);
+        const wrapper = `[笔记《${name}》内容]\n${noteText}`;
+        out = out.slice(0, start) + wrapper + out.slice(end);
+        injectedFiles.push(ref.file);
+      }
+    } catch {
+      // 笔记缺失/读取失败：跳过注入（保留 @标签 原文）
+    }
+  }
+  injectedFiles.reverse(); // 从后往前处理后恢复按 @标签 出现顺序
+  return { text: out, injectedFiles };
+}
 
 /** 命名成功写回：登记防重复命名 + 更新索引 title + 落盘（自动命名与重新命名共用）。 */
 function applySessionTitle(sessionId: string, title: string): void {
@@ -235,14 +310,18 @@ function applySessionTitle(sessionId: string, title: string): void {
  * - fire-and-forget：关闭/无可用模型/命名失败降级保留占位标题，不阻塞对话
  */
 async function autoNameSession(sessionId: string): Promise<void> {
-  await runAutoNaming({
-    getMessages: () => {
-      const s = useChatPanelStore.getState().sessions.find((x) => x.id === sessionId);
-      return s?.messages ?? [];
+  await runAutoNaming(
+    {
+      getMessages: () => {
+        const s = useChatPanelStore.getState().sessions.find((x) => x.id === sessionId);
+        return s?.messages ?? [];
+      },
+      isNamed: () => autoNamedSessions.has(sessionId),
+      applyTitle: (title) => applySessionTitle(sessionId, title),
     },
-    isNamed: () => autoNamedSessions.has(sessionId),
-    applyTitle: (title) => applySessionTitle(sessionId, title),
-  });
+    // key = 会话 id：发送新消息/手动接管时只中止本会话的命名请求（不误伤其他会话）
+    { key: sessionId },
+  );
 }
 
 /** debounce 500ms 写盘（读最新 state；`messageSessionId` = 本次改动涉及的会话，其消息 .md 需重写）。 */
@@ -293,16 +372,19 @@ async function persistNow(guardVaultId?: string | null): Promise<void> {
         ) {
           // 纯增长（旧消息引用逐一相同）：只追加新增段，省全量重拼与 IPC 载荷
           // （toolRuns 随消息追加为 `## tool` 段，Rust 侧 role 自由字符串直接格式化）
+          const token = tokenOf(id) ?? undefined;
           await appendChatMessages(
             s.file,
             s.messages.slice(baseline.length).flatMap((m) => [
               {
                 role: m.role,
                 text: m.role === "user" ? (m.displayContent ?? m.content) : m.content,
+                ...(token ? { token } : {}),
               },
               ...(m.toolRuns ?? []).map((run) => ({
                 role: "tool",
                 text: JSON.stringify(run),
+                ...(token ? { token } : {}),
               })),
             ]),
           );
@@ -440,7 +522,7 @@ async function runExchange(
     }
   }
 
-  // 历史含刚追加的 user 消息；过滤 [错误] 占位防污染上下文，system 提示词置首（与画布 runStream 同语义）
+  // 历史含刚追加的 user 消息；过滤错误占位防污染上下文，system 提示词置首（与画布 runStream 同语义）
   const apiHistory = [...active.messages, userMsg].filter(
     (m) => !(m.role === "assistant" && m.content.startsWith(ERROR_PREFIX)),
   );
@@ -522,7 +604,7 @@ async function runExchange(
         if (decision.kind === "timeout-error") {
           messages = messages.map((m) =>
             m.id === asstMsg.id
-              ? { ...m, content: `${ERROR_PREFIX} 响应超时（长时间无输出，已自动停止）` }
+              ? { ...m, content: `${ERROR_PREFIX} ${TIMEOUT_ERROR_TEXT}` }
               : m
           );
         } else if (decision.kind === "remove") {
@@ -608,9 +690,12 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
       } else {
         // v2：读索引 + 逐个读消息 .md（读失败降级空消息，不阻塞面板）
         for (const s of f.sessions) {
-          const messages = await readChatMessages(s.file)
+          const parsed = await readChatMessages(s.file)
             .then((md) => parseChatMessages(md, s.id))
-            .catch(() => []);
+            .catch(() => null);
+          const messages = parsed?.messages ?? [];
+          // 段头 token 缓存：后续追加沿用文件内 token（旧格式文件 token=null，追加保持旧格式）
+          if (parsed?.token) transcriptTokens.set(s.id, parsed.token);
           // 追加式基线 = 磁盘解析结果（未写盘过的新会话在首次保存时走全量重写）
           transcriptBaseline.set(s.id, messages);
           sessions.push({ ...s, messages });
@@ -708,8 +793,9 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     const trimmed = content.trim();
     if (!trimmed || get().streaming) return;
 
-    // 让路：中止进行中的自动命名请求（防其占用后端槽位与新消息排队）
-    abortAutoTitle();
+    // 让路：中止当前会话的自动命名请求（防其占用后端槽位与新消息排队；不误伤其他会话）
+    const sid = get().activeSessionId;
+    if (sid) abortAutoTitle(sid);
 
     const resolved = resolveProviderModel();
     if (!resolved) return;
@@ -740,31 +826,10 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
 
     // @引用（自动 @ 当前笔记 / 手动拖入）：就地替换输入内的 @标签 为笔记全文（与画布对话节点 5.4 语义一致）。
     // 标签被用户手动删掉/文件缺失时跳过注入（扫描不到标签 = 该引用下沉丢弃，不记 refs）。
-    let finalContent = trimmed;
-    const injectedRefs: EditorChatMessageRef[] = [];
-    if (refs.length) {
-      const hits = scanMentionHits(
-        trimmed,
-        refs.map((r) => ({ nodeId: r.file, text: `@${r.label}` }))
-      );
-      for (let i = hits.length - 1; i >= 0; i--) {
-        const { start, end, mention } = hits[i];
-        const ref = refs.find((r) => r.file === mention.nodeId);
-        if (!ref) continue;
-        try {
-          const noteText = await readNote(ref.file);
-          if (noteText.trim()) {
-            const name = baseName(ref.file);
-            const wrapper = `[笔记《${name}》内容]\n${noteText}`;
-            finalContent = finalContent.slice(0, start) + wrapper + finalContent.slice(end);
-            injectedRefs.push(ref);
-          }
-        } catch {
-          // 笔记缺失/读取失败：跳过注入（保留 @标签 原文）
-        }
-      }
-      injectedRefs.reverse(); // 从后往前处理后恢复按 @标签 出现顺序
-    }
+    const { text: finalContent, injectedFiles } = await injectNoteRefs(trimmed, refs);
+    const injectedRefs: EditorChatMessageRef[] = injectedFiles
+      .map((f) => refs.find((r) => r.file === f))
+      .filter((r): r is EditorChatMessageRef => !!r);
 
     const userMsg: EditorChatMessage = {
       id: crypto.randomUUID(),
@@ -798,28 +863,14 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     if (!resolved) return;
 
     const userMsg = list[lastUserIdx];
-    // 重建注入：refs 笔记重读全文（@标签 就地替换，同 send 语义）；displayContent 缺失/无 refs 跳过
+    // 重建注入：以原始输入（displayContent）为基底重读笔记全文并重新就地替换（同 send 语义）。
+    // 不能以 userMsg.content（已含上次注入）为基底——上次注入的 wrapper 会把 @标签 位置
+    // 整体推移，displayContent 的命中索引套在 content 上会错位（多个 @引用时尤甚）；
+    // displayContent 缺失/无 refs 跳过。
     let rebuiltContent = userMsg.content;
     if (userMsg.displayContent && userMsg.refs?.length) {
-      const hits = scanMentionHits(
-        userMsg.displayContent,
-        userMsg.refs.map((r) => ({ nodeId: r.file, text: `@${r.label}` }))
-      );
-      for (let i = hits.length - 1; i >= 0; i--) {
-        const { start, end, mention } = hits[i];
-        const ref = userMsg.refs.find((r) => r.file === mention.nodeId);
-        if (!ref) continue;
-        try {
-          const noteText = await readNote(ref.file);
-          if (noteText.trim()) {
-            const name = baseName(ref.file);
-            const wrapper = `[笔记《${name}》内容]\n${noteText}`;
-            rebuiltContent = rebuiltContent.slice(0, start) + wrapper + rebuiltContent.slice(end);
-          }
-        } catch {
-          // 笔记缺失/读取失败：跳过注入（保留 @标签 原文）
-        }
-      }
+      const { text } = await injectNoteRefs(userMsg.displayContent, userMsg.refs);
+      rebuiltContent = text;
     }
 
     // 移除最后 assistant（在 user 之后）与最后 user（runExchange 重发重建版），一次 set 完成
@@ -840,8 +891,8 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     const s = get();
     const id = s.activeSessionId;
     if (!id || s.streaming || !s.sessions.some((x) => x.id === id)) return;
-    // 手动接管：中止在途的自动命名请求（防同一会话重复请求；延迟中未发出的由 isNamed 二次校验兜底跳过）
-    abortAutoTitle();
+    // 手动接管：中止本会话在途的自动命名请求（防同一会话重复请求；延迟中未发出的由 isNamed 二次校验兜底跳过）
+    abortAutoTitle(id);
     // 重新命名：全量会话记录（不截断）、立即请求（无 3s 防限流延迟——用户主动点击期待即时反馈）、
     // 不受「话题自动命名」开关限制；成功后登记防自动命名重复覆盖
     const result = await runAutoNaming(

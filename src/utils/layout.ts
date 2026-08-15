@@ -12,6 +12,20 @@ interface SpotNode {
   measured?: { width?: number; height?: number };
 }
 
+/** 未测量节点的经验默认尺寸（无显式尺寸/未测量时兜底；落点/锚点/分组判定共用，防魔数散落）。 */
+const FALLBACK_NODE_WIDTH = 200;
+const FALLBACK_NODE_HEIGHT = 100;
+
+/** 节点矩形（坐标 + 尺寸）：取用户 resize 尺寸 → 回退测量值 → 回退经验默认。 */
+export function rectOf(n: SpotNode): NodeRect {
+  return {
+    x: n.position.x,
+    y: n.position.y,
+    w: n.width ?? n.measured?.width ?? FALLBACK_NODE_WIDTH,
+    h: n.height ?? n.measured?.height ?? FALLBACK_NODE_HEIGHT,
+  };
+}
+
 export function findFreeSpot(
   nodes: SpotNode[],
   base: { x: number; y: number },
@@ -19,12 +33,7 @@ export function findFreeSpot(
   gap = 24,
 ): { x: number; y: number } {
   // 已有节点的矩形（取用户 resize 尺寸，回退测量值，再回退经验默认）
-  const rects = nodes.map((n) => ({
-    x: n.position.x,
-    y: n.position.y,
-    w: n.width ?? n.measured?.width ?? 260,
-    h: n.height ?? n.measured?.height ?? 180,
-  }));
+  const rects = nodes.map(rectOf);
   const intersects = (x: number, y: number) =>
     rects.some(
       (r) =>
@@ -117,8 +126,7 @@ export function collectGroupMembers(
     n: MemberCandidate,
     r: { x: number; y: number; w: number; h: number },
   ) => {
-    const w = n.width ?? n.measured?.width ?? 200;
-    const h = n.height ?? n.measured?.height ?? 100;
+    const { w, h } = rectOf(n);
     const cx = n.position.x + w / 2;
     const cy = n.position.y + h / 2;
     return cx > r.x && cx < r.x + r.w && cy > r.y && cy < r.y + r.h;
@@ -131,8 +139,7 @@ export function collectGroupMembers(
     if (!centerInRect(n, groupRect)) return false;
     // 中心点同时落在其他 group 内（嵌套组）→ 跳过，防漂移
     return !otherGroups.some((g) => {
-      const gw = g.width ?? g.measured?.width ?? 200;
-      const gh = g.height ?? g.measured?.height ?? 100;
+      const { w: gw, h: gh } = rectOf(g);
       return centerInRect(n, {
         x: g.position.x,
         y: g.position.y,

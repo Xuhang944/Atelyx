@@ -30,9 +30,11 @@ import { runSearch, resultsToText } from "@/services/search";
 import {
   findFreeSpot,
   pickEdgeHandles,
+  rectOf,
   collectGroupMembers,
 } from "@/utils/layout";
 import { createPersistController } from "@/utils/persist";
+import { markSelfSave } from "@/utils/selfSave";
 import { createUndoManager } from "@/utils/undoStack";
 import { inferImageMime } from "@/utils/whiteboard";
 import {
@@ -46,6 +48,7 @@ import {
   DEFAULT_GROUP_HEIGHT,
 } from "@/constants/canvas";
 import { AGENT_TOOLS, DEFAULT_AGENT_TOOLS } from "@/constants/tools";
+import { ERROR_PREFIX, TIMEOUT_ERROR_TEXT } from "@/constants/chat";
 import {
   runStreamExchange,
   decideCleanup,
@@ -306,35 +309,7 @@ const undoMgr = createUndoManager<Snapshot>({
 // 写盘/CRUD 完成时按「文件路径」记录时刻；watcher 收到同路径事件且在抑制窗口内 → 视为自写回放，
 // 不弹「已被外部修改」误提示。重命名/移动类操作经 Rust 扫盘改写多个 .atlx（前端不知全集），
 // 用全局标记兜底。.md/附件事件不抑制（刷新幂等，silent 更新不 persist）。
-const SELF_SAVE_SUPPRESS_MS = 2000;
-/** 路径级自写时刻（保存/CRUD 记录具体文件，防跨文件误抑制——存表格不再吞掉画布外部修改）。 */
-const selfSavedAt = new Map<string, number>();
-let globalSelfSaveAt = 0;
-
-/** watcher 事件处理器判断路径为 path 的事件是否为 app 自写的回放（未命中路径时按全局兜底）。 */
-export function isSelfSaveEcho(path?: string): boolean {
-  const now = Date.now();
-  if (now - globalSelfSaveAt < SELF_SAVE_SUPPRESS_MS) return true;
-  if (path && now - (selfSavedAt.get(path) ?? 0) < SELF_SAVE_SUPPRESS_MS)
-    return true;
-  return false;
-}
-
-/** 供其他 store（appStore/vaultStore）在「软件内写文件」后标记自写，抑制 watcher 误报。
- * path = 本次写过的具体文件（保存/CRUD）；省略 = 全局（重命名扫盘改写的文件集合未知）。 */
-export function markSelfSave(path?: string | string[]): void {
-  const now = Date.now();
-  // 顺带清理过期条目：抑制窗口外的记录不再需要，防长会话累积（重命名每次新增旧+新两键）
-  for (const [p, at] of selfSavedAt) {
-    if (now - at >= SELF_SAVE_SUPPRESS_MS) selfSavedAt.delete(p);
-  }
-  if (path === undefined) {
-    globalSelfSaveAt = now;
-    return;
-  }
-  const paths = typeof path === "string" ? [path] : path;
-  for (const p of paths) selfSavedAt.set(p, now);
-}
+// 实现见 utils/selfSave.ts（画布/表格/面板/配置共用，防职责挂靠本 store 造成跨 store 反向依赖）。
 
 /** 非 pushUndo 的数据变更后调用：作废 redo 栈。
  * 标准撤销语义——undo 后产生任何新变更，Ctrl+Y 不得再恢复旧快照（否则新消息会被 redo 从内存与磁盘抹掉）。 */
@@ -492,18 +467,8 @@ function withHandles<
   const tgt = nodes.find((n) => n.id === edge.target);
   if (!src || !tgt) return edge;
   const { sourceHandle, targetHandle } = pickEdgeHandles(
-    {
-      x: src.position.x,
-      y: src.position.y,
-      w: src.measured?.width ?? 200,
-      h: src.measured?.height ?? 100,
-    },
-    {
-      x: tgt.position.x,
-      y: tgt.position.y,
-      w: tgt.measured?.width ?? 200,
-      h: tgt.measured?.height ?? 100,
-    },
+    rectOf(src),
+    rectOf(tgt),
   );
   return { ...edge, sourceHandle, targetHandle };
 }
@@ -540,32 +505,30 @@ function abortAllStreams() {
   abortControllers.clear();
 }
 
-/** 搜索结果产物节点：对话右侧 findFreeSpot 落点 + 对话→search 边。
+/**
+ * AI 产物节点公共脚手架（搜索节点/写笔记节点共用）：对话右侧 findFreeSpot 落点 +
+ * 对话→产物边 + 静默落盘。
  * 走 silent set（不 pushUndo）：工具产物属业务操作（同 send 的影子节点），
- * 入 undo 栈会与 tool 回填消息撕裂（撤销节点但消息仍在）。 */
-function createSearchNode(
+ * 入 undo 栈会与 tool 回填消息撕裂（撤销节点但消息仍在）；但作废 redo：undo 后产物不得被 Ctrl+Y 抹除。
+ * 返回新节点（调用方如需可继续填充，如写笔记后读正文回填）。
+ */
+function createProductNodeAfter(
   conversationId: string,
-  query: string,
-  data: SearchResultData,
-) {
+  makeNode: (id: string, spot: { x: number; y: number }) => Node,
+  size: { w: number; h: number },
+): Node | null {
   const store = useCanvasStore.getState();
   const convNode = store.nodes.find((n) => n.id === conversationId);
-  if (!convNode) return;
-  // 工具产物属业务操作（不入 undo 栈），但作废 redo：undo 后搜索产物不得被 Ctrl+Y 抹除
+  if (!convNode) return null;
   touchRedo();
   const id = crypto.randomUUID();
   const spot = findFreeSpot(
     store.nodes,
     { x: convNode.position.x + 480, y: convNode.position.y },
-    { w: 280, h: 220 },
+    size,
   );
-  const node: Node = {
-    id,
-    type: "search",
-    position: spot,
-    data: { ...data, query },
-  };
-  // withHandles 传入含新节点的列表：target（search 节点）能找到，边锚点自适应
+  const node = makeNode(id, spot);
+  // withHandles 传入含新节点的列表：target（产物节点）能找到，边锚点自适应
   const nextNodes = [...store.nodes, node];
   const edge = withHandles(
     {
@@ -582,57 +545,49 @@ function createSearchNode(
     edges: [...s.edges, edge],
   }));
   schedulePersist();
+  return node;
 }
 
-/** AI 写笔记产物节点：对话右侧 findFreeSpot 落点 + 对话→text 边（笔记节点，file 引用新落盘的 .md）。
- * 走 silent set（不 pushUndo）：工具产物属业务操作（同 createSearchNode 语义）。 */
+/** 搜索结果产物节点：对话右侧落点 + 对话→search 边（脚手架见 createProductNodeAfter）。 */
+function createSearchNode(conversationId: string, query: string, data: SearchResultData) {
+  createProductNodeAfter(
+    conversationId,
+    (id, spot) => ({
+      id,
+      type: "search",
+      position: spot,
+      data: { ...data, query },
+    }),
+    { w: 280, h: 220 },
+  );
+}
+
+/** AI 写笔记产物节点：对话右侧落点 + 对话→text 边（笔记节点，file 引用新落盘的 .md）。 */
 function createWriteNoteNode(
   conversationId: string,
   file: string,
   title: string,
 ) {
-  const store = useCanvasStore.getState();
-  const convNode = store.nodes.find((n) => n.id === conversationId);
-  if (!convNode) return;
-  touchRedo();
-  const id = crypto.randomUUID();
-  const spot = findFreeSpot(
-    store.nodes,
-    { x: convNode.position.x + 480, y: convNode.position.y },
+  const node = createProductNodeAfter(
+    conversationId,
+    (id, spot) => ({
+      id,
+      type: "text",
+      position: spot,
+      width: DEFAULT_TEXT_NODE_WIDTH,
+      height: DEFAULT_TEXT_NODE_HEIGHT,
+      data: { title, file, bodyMd: "" } as unknown as Node["data"],
+    }),
     { w: DEFAULT_TEXT_NODE_WIDTH, h: DEFAULT_TEXT_NODE_HEIGHT },
   );
-  const node: Node = {
-    id,
-    type: "text",
-    position: spot,
-    width: DEFAULT_TEXT_NODE_WIDTH,
-    height: DEFAULT_TEXT_NODE_HEIGHT,
-    data: { title, file, bodyMd: "" } as unknown as Node["data"],
-  };
-  // withHandles 传入含新节点的列表：target（text 节点）能找到，边锚点自适应
-  const nextNodes = [...store.nodes, node];
-  const edge = withHandles(
-    {
-      id: crypto.randomUUID(),
-      source: conversationId,
-      target: id,
-      sourceHandle: null,
-      targetHandle: null,
-    },
-    nextNodes,
-  );
-  useCanvasStore.setState((s) => ({
-    nodes: [...s.nodes, node],
-    edges: [...s.edges, edge],
-  }));
-  schedulePersist();
+  if (!node) return;
   // 正文从磁盘读一次填充（刚写完的文件；失败标 fileMissing 降级，与 addTextNoteFromVault 同模式）
   readNote(file)
     .then((body) =>
-      useCanvasStore.getState().updateNodeData(id, { bodyMd: body }),
+      useCanvasStore.getState().updateNodeData(node.id, { bodyMd: body }),
     )
     .catch(() =>
-      useCanvasStore.getState().updateNodeData(id, { fileMissing: true }),
+      useCanvasStore.getState().updateNodeData(node.id, { fileMissing: true }),
     );
 }
 
@@ -651,22 +606,26 @@ function findConversationNode(conversationId: string): Node | undefined {
  * - fire-and-forget：无可用模型/命名失败降级保留占位，不阻塞画布操作
  */
 async function autoNameConversation(conversationId: string): Promise<void> {
-  await runAutoNaming({
-    getMessages: () => {
-      const node = findConversationNode(conversationId);
-      if (!node) return [];
-      return useCanvasStore.getState().messagesByConv[conversationId] ?? [];
+  await runAutoNaming(
+    {
+      getMessages: () => {
+        const node = findConversationNode(conversationId);
+        if (!node) return [];
+        return useCanvasStore.getState().messagesByConv[conversationId] ?? [];
+      },
+      isNamed: () => {
+        const node = findConversationNode(conversationId);
+        return !node || !!(node.data as Partial<ConversationData>).title;
+      },
+      applyTitle: (title) => {
+        const node = findConversationNode(conversationId);
+        if (!node) return;
+        useCanvasStore.getState().updateNodeData(conversationId, { title });
+      },
     },
-    isNamed: () => {
-      const node = findConversationNode(conversationId);
-      return !node || !!(node.data as Partial<ConversationData>).title;
-    },
-    applyTitle: (title) => {
-      const node = findConversationNode(conversationId);
-      if (!node) return;
-      useCanvasStore.getState().updateNodeData(conversationId, { title });
-    },
-  });
+    // key = 对话节点 id：发送新消息时只中止本节点的命名请求（不误伤其他对话）
+    { key: conversationId },
+  );
 }
 
 /**
@@ -736,7 +695,7 @@ async function runStream(conversationId: string): Promise<void> {
         m.role !== "system" &&
         !(
           m.role === "assistant" &&
-          (m.content.startsWith("[错误]") || m.content === "")
+          (m.content.startsWith(ERROR_PREFIX) || m.content === "")
         ),
     );
 
@@ -780,6 +739,8 @@ async function runStream(conversationId: string): Promise<void> {
       signal: controller.signal,
       // 增量写入占位消息（引擎 rAF 合并后每帧调用）
       applyBatch: ({ content, reasoning }) => {
+        // 节点已删除（流式中删对话节点）：丢弃迟到增量，不重建 messagesByConv 键（防孤儿消息复活）
+        if (!findConversationNode(conversationId)) return;
         store.setState((state) => {
           const l = state.messagesByConv[conversationId] ?? [];
           return {
@@ -804,6 +765,11 @@ async function runStream(conversationId: string): Promise<void> {
         });
       },
       onError: (err) => {
+        // 节点已删除：abort 后回调迟到，不再写错误占位（messagesByConv 键已随删除清理）
+        if (!findConversationNode(conversationId)) {
+          abortControllers.delete(conversationId);
+          return;
+        }
         // 流式结果落盘属业务数据变更：作废 redo（undo 后流式回复不得被 Ctrl+Y 抹除）
         touchRedo();
         // 不静默降级：请求失败如实报错（[错误] 占位显示服务端具体信息，便于定位）
@@ -814,7 +780,7 @@ async function runStream(conversationId: string): Promise<void> {
               ...state.messagesByConv,
               [conversationId]: l.map((m) =>
                 m.id === asstId
-                  ? { ...m, content: m.content || `[错误] ${err.message}` }
+                  ? { ...m, content: m.content || `${ERROR_PREFIX} ${err.message}` }
                   : m,
               ),
             },
@@ -829,6 +795,11 @@ async function runStream(conversationId: string): Promise<void> {
         abortControllers.delete(conversationId);
       },
       onDone: ({ content, reasoning, timedOut }) => {
+        // 节点已删除：丢弃流收尾写入（防孤儿消息随补丁落盘），键已随删除清理
+        if (!findConversationNode(conversationId)) {
+          abortControllers.delete(conversationId);
+          return;
+        }
         // 流式结果落盘属业务数据变更：作废 redo（undo 后流式回复不得被 Ctrl+Y 抹除）
         touchRedo();
         // 空回复移除占位；超时且回答未产出写超时降级（保留思考）；否则正常复位
@@ -857,7 +828,7 @@ async function runStream(conversationId: string): Promise<void> {
                   m.id === asstId
                     ? {
                         ...m,
-                        content: "[错误] 响应超时（长时间无输出，已自动停止）",
+                        content: `${ERROR_PREFIX} ${TIMEOUT_ERROR_TEXT}`,
                       }
                     : m,
                 ),
@@ -882,6 +853,8 @@ async function runStream(conversationId: string): Promise<void> {
       },
       // 工具调用过程可视化：running/done 更新进占位消息 toolRuns（随消息落 .atlx）
       onToolRuns: (runs) => {
+        // 节点已删除：工具过程块不再更新（消息键已清理）
+        if (!findConversationNode(conversationId)) return;
         store.setState((state) => {
           const l = state.messagesByConv[conversationId] ?? [];
           return {
@@ -905,6 +878,11 @@ async function runStream(conversationId: string): Promise<void> {
     });
   } catch (e) {
     console.error("流式请求失败", e);
+    // 节点已删除：不重建 streamingByConv 键（删除已清理），仅收掉 controller
+    if (!findConversationNode(conversationId)) {
+      abortControllers.delete(conversationId);
+      return;
+    }
     store.setState((state) => ({
       streamingByConv: { ...state.streamingByConv, [conversationId]: false },
     }));
@@ -916,8 +894,17 @@ function nowId() {
   return { id: crypto.randomUUID(), ts: Date.now() };
 }
 
-/** 引用节点 → 最新注入内容（regenerate 重建用）：text 取 bodyMd；媒体图片取 name + thumb，文本类取 body；search 取结果摘要；table 取快照。 */
-function latestRefOf(node: Node): { text: string; attach?: Attachment } | null {
+/**
+ * 节点 → AI 可注入内容（唯一权威映射，三处消费方共用——regenerate 重建 / 连边引用 /
+ * send @提及 就地替换，防各写一份拷贝后行为分叉）：
+ * - text：正文 bodyMd（画布内文本节点或 .md 笔记节点）
+ * - search：结果摘要（勾选子集或全部，resultsToText）
+ * - table：快照文本（snapshot 缺省回退标题）
+ * - media 图片：文件名文本 + 图片附件（vision 发送用，文本位替换为文件名）
+ * - media 文本类：解析出的正文 body
+ * - 其余类型/无内容：null（不注入）
+ */
+function describeNodeAsInput(node: Node): { text: string; attach?: Attachment } | null {
   if (node.type === "text") {
     const d = node.data as unknown as TextData;
     return d.bodyMd ? { text: d.bodyMd } : null;
@@ -966,7 +953,7 @@ function rebuildUserContent(
   for (const ref of userMsg.refs ?? []) {
     const node = nodes.find((n) => n.id === ref.nodeId);
     if (!node) continue;
-    const latest = latestRefOf(node);
+    const latest = describeNodeAsInput(node);
     if (!latest) continue;
     const tag = `@${ref.label}`;
     if (content.includes(tag)) {
@@ -1653,39 +1640,65 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     const localNodes = get().nodes;
     const localEdges = get().edges;
     const localMessages = get().messagesByConv;
-    // 先加载磁盘最新作为合并基底（load 会把 baseUpdatedAt 同步为磁盘版本）
-    await get().load(canvasFile);
-    const diskNodes = get().nodes;
-    const diskEdges = get().edges;
-    const diskMessages = get().messagesByConv;
-    const diskNodeIds = new Set(diskNodes.map((n) => n.id));
-    const diskEdgeIds = new Set(diskEdges.map((e) => e.id));
-    // 合并：磁盘为基础，本地新增的节点/边保留；重叠（同 id）以磁盘为准（外部修改优先）
-    const mergedNodes = [
-      ...diskNodes,
-      ...localNodes.filter((n) => !diskNodeIds.has(n.id)),
-    ];
-    const mergedEdges = [
-      ...diskEdges,
-      ...localEdges.filter((e) => !diskEdgeIds.has(e.id)),
-    ];
-    // 消息：磁盘为基础，本地独有的消息按 id 补入（避免丢用户未保存的消息）
-    const mergedMessages: Record<string, Message[]> = { ...diskMessages };
-    for (const [convId, msgs] of Object.entries(localMessages)) {
-      const diskMsgs = diskMessages[convId] ?? [];
-      const diskIds = new Set(diskMsgs.map((m) => m.id));
-      const extras = msgs.filter((m) => !diskIds.has(m.id));
-      if (extras.length) mergedMessages[convId] = [...diskMsgs, ...extras];
+    // 中止进行中的流与命名：合并整体替换消息状态，流继续写只会静默丢失（与 load 同策略）。
+    // 不复用 load()——其内部 flush 会在合并前重触发冲突检测写盘、自动命名会发 LLM 请求，
+    // 均属越界副作用；这里只做「读盘 + 同步基线 + 合并」。
+    abortAllStreams();
+    abortAutoTitle();
+    groupDragState = null;
+    dragInProgress = false;
+    try {
+      // 读磁盘最新作为合并基底（仅 .atlx；只读白板无冲突合并路径）
+      const data = await loadCanvasVault(canvasFile);
+      // 基底先入内存并记为「已落盘基线」：后续合并补丁只含本地独有实体（引用 diff，见 syncLastSaved）
+      set({
+        canvasId: data.id,
+        canvasTitle: data.title,
+        nodes: data.nodes,
+        edges: data.edges,
+        messagesByConv: data.messagesByConv,
+        baseUpdatedAt: data.updatedAt,
+        dirty: false,
+        conflictPending: false,
+        loading: false,
+      });
+      undoMgr.clear();
+      syncLastSaved();
+      const diskNodes = get().nodes;
+      const diskEdges = get().edges;
+      const diskMessages = get().messagesByConv;
+      const diskNodeIds = new Set(diskNodes.map((n) => n.id));
+      const diskEdgeIds = new Set(diskEdges.map((e) => e.id));
+      // 合并：磁盘为基础，本地新增的节点/边保留；重叠（同 id）以磁盘为准（外部修改优先）
+      const mergedNodes = [
+        ...diskNodes,
+        ...localNodes.filter((n) => !diskNodeIds.has(n.id)),
+      ];
+      const mergedEdges = [
+        ...diskEdges,
+        ...localEdges.filter((e) => !diskEdgeIds.has(e.id)),
+      ];
+      // 消息：磁盘为基础，本地独有的消息按 id 补入（避免丢用户未保存的消息）
+      const mergedMessages: Record<string, Message[]> = { ...diskMessages };
+      for (const [convId, msgs] of Object.entries(localMessages)) {
+        const diskMsgs = diskMessages[convId] ?? [];
+        const diskIds = new Set(diskMsgs.map((m) => m.id));
+        const extras = msgs.filter((m) => !diskIds.has(m.id));
+        if (extras.length) mergedMessages[convId] = [...diskMsgs, ...extras];
+      }
+      set({
+        nodes: mergedNodes,
+        edges: mergedEdges,
+        messagesByConv: mergedMessages,
+        conflictPending: false,
+        dirty: true,
+      });
+      // 合并产物立即落盘（baseUpdatedAt 已同步为磁盘版本，不会误冲突）
+      schedulePersist();
+    } catch (e) {
+      console.error("合并磁盘失败", e);
+      useCanvasStore.setState({ error: "合并磁盘失败，请重试" });
     }
-    set({
-      nodes: mergedNodes,
-      edges: mergedEdges,
-      messagesByConv: mergedMessages,
-      conflictPending: false,
-      dirty: true,
-    });
-    // 合并产物立即落盘（baseUpdatedAt 已在 load 时同步为磁盘版本，不会误冲突）
-    schedulePersist();
   },
   addEdge: (edge) => {
     get().pushUndo();
@@ -1724,38 +1737,23 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     for (const edge of upstream) {
       const sourceNode = nodes.find((n) => n.id === edge.source);
       if (!sourceNode) continue;
-      const data = sourceNode.data as unknown;
-      if (sourceNode.type === "text") {
-        const bodyMd = (data as TextData).bodyMd;
-        if (bodyMd) {
-          inputs.push({
-            nodeId: sourceNode.id,
-            label: prefix(bodyMd) || "文本",
-            content: bodyMd,
-          });
-        }
-      } else if (sourceNode.type === "search") {
-        // 搜索结果节点：注入勾选子集或全部结果的文本摘要
-        const text = resultsToText(data as SearchResultData);
-        if (text) {
-          inputs.push({
-            nodeId: sourceNode.id,
-            label: prefix((data as SearchResultData).query) || "搜索",
-            content: text,
-          });
-        }
-      } else if (sourceNode.type === "table") {
-        // 表格节点：注入快照（字段名 + 每行值，行限 MAX_TABLE_INJECT_ROWS）
-        const td = data as unknown as TableData;
-        const content = td.snapshot || td.title;
-        if (content) {
-          inputs.push({
-            nodeId: sourceNode.id,
-            label: td.title || "表格",
-            content,
-          });
-        }
-      }
+      const input = describeNodeAsInput(sourceNode);
+      if (!input) continue;
+      // 媒体图片（attach 形态）不走连边注入：连边引用是文本语义，图片经 @提及 以附件发送（vision）；
+      // 文本类媒体（解析出 body）与文本/搜索/表格一致注入正文
+      if (input.attach) continue;
+      // label 语义各类型不同：文本取正文前缀、search 取搜索词、table 取标题（与 @提及 显示名一致）
+      const label =
+        sourceNode.type === "search"
+          ? prefix((sourceNode.data as unknown as SearchResultData).query) || "搜索"
+          : sourceNode.type === "table"
+            ? (sourceNode.data as unknown as TableData).title || "表格"
+            : prefix(input.text) || "文本";
+      inputs.push({
+        nodeId: sourceNode.id,
+        label,
+        content: input.text,
+      });
     }
     return inputs;
   },
@@ -1784,8 +1782,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     // AI 消息发送不进 Undo 栈（业务操作），但作废 redo：undo 后发送的新消息不得被 Ctrl+Y 抹除
     touchRedo();
 
-    // 让路：中止进行中的自动命名请求（防其占用后端槽位与新消息排队）
-    abortAutoTitle();
+    // 让路：中止本对话的自动命名请求（防其占用后端槽位与新消息排队；不误伤其他对话的命名）
+    abortAutoTitle(conversationId);
 
     // 发送时自动连线（防御）：输入框 @提及 但尚未建边的引用此刻建立边（正常路径拖线/@picker 已立即建边，
     // 此处仅兜底异常路径）；源节点已被删除的提及不再建边（否则产生悬空边），该引用随之下沉丢弃
@@ -1819,6 +1817,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
     // 5.4 就地替换：@提及 → 引用内容（文本节点正文 / 媒体附件），用户可见的 @显示名 位置即注入位置。
     // 用 scanMentionHits 按命中实例精确替换（重复 @提及 时不错位），从后往前替换避免位置漂移。
+    // 内容与附件形态统一走 describeNodeAsInput（与连边引用/regenerate 重建同源，防行为分叉）。
     let finalContent = content;
     const mentionRefs: ReferencedInput[] = [];
     const mentionAtts: PendingAttachment[] = [];
@@ -1827,71 +1826,29 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       const { start, end, mention: m } = hits[i];
       const node = nodes.find((n) => n.id === m.nodeId);
       if (!node) continue;
-      if (node.type === "text") {
-        const bodyMd = (node.data as unknown as TextData).bodyMd;
-        if (bodyMd) {
-          finalContent =
-            finalContent.slice(0, start) + bodyMd + finalContent.slice(end);
-          mentionRefs.push({
-            nodeId: node.id,
-            label: m.text.slice(1),
-            content: bodyMd,
+      const input = describeNodeAsInput(node);
+      if (!input) continue;
+      if (input.attach) {
+        // 图片：文本位替换为文件名，图片本体随附件（vision）发送。
+        // 引用此节点的附件已在托盘（拖线/@picker 均同时进托盘 + 输入框 @标记），
+        // 这里只做文本位替换，不重复 push——否则同一图片会发两张。
+        finalContent =
+          finalContent.slice(0, start) + input.text + finalContent.slice(end);
+        if (!attachments.some((a) => a.sourceNodeId === node.id)) {
+          mentionAtts.push({
+            id: crypto.randomUUID(),
+            ...input.attach,
+            sourceNodeId: node.id,
           });
         }
-      } else if (node.type === "media") {
-        const md = node.data as unknown as MediaData;
-        if (md.kind === "image" && md.thumb) {
-          // 图片：文本位替换为文件名，图片本体随附件（vision）发送。
-          // 引用此节点的附件已在托盘（拖线/@picker 均同时进托盘 + 输入框 @标记），
-          // 这里只做文本位替换，不重复 push——否则同一图片会发两张。
-          finalContent =
-            finalContent.slice(0, start) +
-            (md.name ?? "") +
-            finalContent.slice(end);
-          if (!attachments.some((a) => a.sourceNodeId === node.id)) {
-            mentionAtts.push({
-              id: crypto.randomUUID(),
-              kind: "image",
-              payload: md.thumb,
-              mime: md.mime,
-              filename: md.name,
-              sourceNodeId: node.id,
-            });
-          }
-        } else if (md.body) {
-          finalContent =
-            finalContent.slice(0, start) + md.body + finalContent.slice(end);
-          mentionRefs.push({
-            nodeId: node.id,
-            label: m.text.slice(1),
-            content: md.body,
-          });
-        }
-      } else if (node.type === "search") {
-        // 搜索结果节点：@提及 就地替换为结果摘要（勾选子集或全部，）
-        const text = resultsToText(node.data as unknown as SearchResultData);
-        if (text) {
-          finalContent =
-            finalContent.slice(0, start) + text + finalContent.slice(end);
-          mentionRefs.push({
-            nodeId: node.id,
-            label: m.text.slice(1),
-            content: text,
-          });
-        }
-      } else if (node.type === "table") {
-        // 表格节点：@提及 就地替换为快照（字段名 + 每行值，行限 MAX_TABLE_INJECT_ROWS）
-        const td = node.data as unknown as TableData;
-        const snapshot = td.snapshot || td.title;
-        if (snapshot) {
-          finalContent =
-            finalContent.slice(0, start) + snapshot + finalContent.slice(end);
-          mentionRefs.push({
-            nodeId: node.id,
-            label: m.text.slice(1),
-            content: snapshot,
-          });
-        }
+      } else {
+        finalContent =
+          finalContent.slice(0, start) + input.text + finalContent.slice(end);
+        mentionRefs.push({
+          nodeId: node.id,
+          label: m.text.slice(1),
+          content: input.text,
+        });
       }
     }
     mentionRefs.reverse(); // 从后往前处理后恢复按出现顺序

@@ -14,6 +14,7 @@ import {
   DEFAULT_TEXT_NODE_HEIGHT,
 } from "@/constants/canvas";
 import { DEFAULT_AGENT_TOOLS } from "@/constants/tools";
+import { ERROR_PREFIX } from "@/constants/chat";
 import { isAssetConsumed } from "@/utils/consumed";
 import { findFreeSpot } from "@/utils/layout";
 import {
@@ -28,6 +29,7 @@ import { useMarkdownComponents } from "@/hooks/useMarkdownComponents";
 import type {
   ConversationData,
   MediaData,
+  Message,
   PendingAttachment,
   Attachment,
 } from "@/types";
@@ -36,21 +38,23 @@ import { ConversationAtPicker } from "./ConversationAtPicker";
 import { ConversationAttachmentTray } from "./ConversationAttachmentTray";
 import { ConnectionFrame } from "./ConnectionFrame";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
+import { Menu, MenuItem } from "@/components/common/Menu";
 import { ChatMessageBubble } from "@/components/common/ChatMessageBubble";
 import { MentionTextarea } from "@/components/common/MentionTextarea";
 import { JumpToBottomButton } from "@/components/common/JumpToBottomButton";
 import { AgentModeToggle } from "@/components/common/AgentModeToggle";
 import { useInlineEdit } from "@/hooks/useInlineEdit";
+import { useDismissOnOutside } from "@/hooks/useDismissOnOutside";
 import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
 import { useWikiNodeLocate } from "@/hooks/useWikiNodeLocate";
 
-/** 模块级空数组，避免 selector 每次返回新引用导致 React 无限循环。 */
-const EMPTY_MESSAGES: never[] = [];
+/** 模块级空消息数组，避免 selector 每次返回新引用导致 React 无限循环。 */
+const EMPTY_MESSAGES: Message[] = [];
 const FALSE = false as const;
 /** 拖线引用队列的空数组占位（selector 稳定引用）。 */
 const EMPTY_PENDING: string[] = [];
 
-/** 待发送附件 → 媒体节点 data（影子节点 / 固定到画布共用，） */
+/** 待发送附件 → 媒体节点 data（影子节点 / 固定到画布共用） */
 function toMediaData(
   att: PendingAttachment,
 ): MediaData & Record<string, unknown> {
@@ -62,6 +66,33 @@ function toMediaData(
     body: att.kind === "file" ? att.payload : undefined,
     parseFailed: att.parseFailed,
   };
+}
+
+/**
+ * 画布媒体节点 → 待发送托盘附件（图片 = thumb 预览 + 名称；文本类 = 解析出的正文）。
+ * sourceNodeId 供 DataFlowEdge「已消费」反推与发送后归档影子节点；三处进托盘通道
+ * （媒体源连边 / 拖线 / @picker 选中）共用，防各自手写拷贝后行为分叉。
+ */
+function mediaAttachmentFrom(n: FlowNode): PendingAttachment {
+  const md = n.data as unknown as MediaData;
+  return {
+    id: crypto.randomUUID(),
+    kind: md.kind,
+    payload: md.kind === "image" ? (md.thumb ?? "") : (md.body ?? ""),
+    mime: md.mime ?? "",
+    filename: md.name,
+    sourceNodeId: n.id,
+    parseFailed: md.parseFailed,
+  };
+}
+
+/** 同源节点已在托盘则不重复进（拖线/picker/连边多通道可能重复触发同一节点）。 */
+function appendMediaAttachment(
+  prev: PendingAttachment[],
+  node: FlowNode,
+): PendingAttachment[] {
+  if (prev.some((a) => a.sourceNodeId === node.id)) return prev;
+  return [...prev, mediaAttachmentFrom(node)];
 }
 
 /** 画布消息 refs → chip 去重键（nodeId）：模块级稳定函数，供 ChatMessageBubble memo 生效 */
@@ -208,19 +239,9 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
       for (const n of mediaSources) {
         // 「连接」模式边（inject:false，仅连线不注入）已在上游 filter 排除
         if (prev.some((a) => a.sourceNodeId === n.id)) continue;
-        const md = n.data as unknown as MediaData;
-        const payload =
-          md.kind === "image" ? (md.thumb ?? "") : (md.body ?? "");
-        if (sentPayloads.has(payload)) continue;
-        added.push({
-          id: crypto.randomUUID(),
-          kind: md.kind ?? "file",
-          payload,
-          mime: md.mime ?? "",
-          filename: md.name,
-          sourceNodeId: n.id,
-          parseFailed: md.parseFailed,
-        });
+        const att = mediaAttachmentFrom(n);
+        if (sentPayloads.has(att.payload)) continue;
+        added.push(att);
       }
       return added.length ? [...prev, ...added] : prev;
     });
@@ -239,25 +260,8 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
       // 媒体（图片/文件）连线：只进待发送托盘，**不在输入框出现 @标签**（图片靠托盘附件注入，
       // 无文本占位；text/search 引用才用 @标签 就地替换）
       if (node.type === "media") {
-        const md = node.data as unknown as MediaData;
         // 同源节点已在托盘则不重复进（拖线/picker 可能重复触发同一节点）
-        setAttachments((prev) =>
-          prev.some((a) => a.sourceNodeId === node.id)
-            ? prev
-            : [
-                ...prev,
-                {
-                  id: crypto.randomUUID(),
-                  kind: md.kind,
-                  payload:
-                    md.kind === "image" ? (md.thumb ?? "") : (md.body ?? ""),
-                  mime: md.mime,
-                  filename: md.name,
-                  sourceNodeId: node.id,
-                  parseFailed: md.parseFailed,
-                },
-              ],
-        );
+        setAttachments((prev) => appendMediaAttachment(prev, node));
         continue;
       }
       const mentionText = `@${mentionTextOf(node)}`;
@@ -286,21 +290,12 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
     }
     setConfirmMenu({ nodeId: node.id, label: `@${mentionTextOf(node)}` });
   }, [pendingConfirm, id]);
-  // 点击菜单外 → 放弃本次拖线确认
-  useEffect(() => {
+  // 点击菜单外 / Esc → 放弃本次拖线确认（统一 useDismissOnOutside：pointerdown 语义 + Esc 关闭）
+  useDismissOnOutside(() => {
     if (!confirmMenu) return;
-    const close = (e: MouseEvent) => {
-      if (
-        confirmMenuRef.current &&
-        !confirmMenuRef.current.contains(e.target as Node)
-      ) {
-        setConfirmMenu(null);
-        useCanvasStore.getState().clearPendingConfirm(id);
-      }
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [confirmMenu, id]);
+    setConfirmMenu(null);
+    useCanvasStore.getState().clearPendingConfirm(id);
+  }, confirmMenuRef);
 
   const clearAttachments = () => setAttachments([]);
 
@@ -446,25 +441,8 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
 
   const handlePickerPick = (node: FlowNode) => {
     if (node.type === "media") {
-      const md = node.data as unknown as MediaData;
       // 同源节点已在托盘则不重复进（picker 选中后 useEffect 按边再进会重复）
-      setAttachments((prev) =>
-        prev.some((a) => a.sourceNodeId === node.id)
-          ? prev
-          : [
-              ...prev,
-              {
-                id: crypto.randomUUID(),
-                kind: md.kind,
-                payload:
-                  md.kind === "image" ? (md.thumb ?? "") : (md.body ?? ""),
-                mime: md.mime,
-                filename: md.name,
-                sourceNodeId: node.id,
-                parseFailed: md.parseFailed,
-              },
-            ],
-      );
+      setAttachments((prev) => appendMediaAttachment(prev, node));
     }
     addEdge({
       id: crypto.randomUUID(),
@@ -518,27 +496,14 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
     setAttachments((prev) => prev.filter((a) => a.sourceNodeId !== nodeId));
   };
 
-  // ===== 文本提取（划词右键，） =====
+  // ===== 文本提取（划词右键） =====
 
+  /** 划词菜单（右键时的视口坐标 + 选中文本）；null = 关闭。 */
   const [selMenu, setSelMenu] = useState<{
     x: number;
     y: number;
     text: string;
   } | null>(null);
-
-  useEffect(() => {
-    if (!selMenu) return;
-    const close = () => setSelMenu(null);
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
-    };
-    document.addEventListener("click", close);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("click", close);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [selMenu]);
 
   const handleMessagesCtx = (e: React.MouseEvent) => {
     const sel = window.getSelection();
@@ -546,12 +511,8 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
     if (!text) return;
     e.preventDefault();
     e.stopPropagation();
-    const rect = nodeRef.current?.getBoundingClientRect();
-    setSelMenu({
-      x: rect ? e.clientX - rect.left : e.clientX,
-      y: rect ? e.clientY - rect.top : e.clientY,
-      text,
-    });
+    // 视口坐标（Menu 经 PopupLayer portal 到 body 固定定位，无需转节点相对坐标）
+    setSelMenu({ x: e.clientX, y: e.clientY, text });
   };
 
   const extractToTextNode = () => {
@@ -689,7 +650,7 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
     !!last &&
     last.role === "assistant" &&
     !streaming &&
-    !last.content.startsWith("[错误]");
+    !last.content.startsWith(ERROR_PREFIX);
   // 输入框 overlay 分段：@提及 → 圆角标签段（可删除），其余普通文本段
   const segments = splitMentions(input, mentions);
 
@@ -940,33 +901,20 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
         )}
       </div>
 
-      {/* 划词浮动菜单（文本提取） */}
+      {/* 划词浮动菜单（文本提取）：统一 Menu（PopupLayer 壳：视口钳制 + Esc/外点关闭） */}
       {selMenu && (
-        <div
-          className="absolute z-50 border rounded shadow-lg py-1 w-44"
-          style={{
-            left: selMenu.x,
-            top: selMenu.y,
-            background: "var(--bg-secondary)",
-            borderColor: "var(--border)",
-          }}
-          onClick={(e) => e.stopPropagation()}
+        <Menu
+          x={selMenu.x}
+          y={selMenu.y}
+          widthClass="w-44"
+          stopPointerDown
+          onClose={() => setSelMenu(null)}
         >
-          <button
-            onClick={extractToTextNode}
-            className="w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)] inline-flex items-center gap-1.5"
-            style={{ color: "var(--text-primary)" }}
-          >
+          <MenuItem onClick={extractToTextNode}>
             <Scissors size={14} className="flex-shrink-0" /> 拉出为文本节点
-          </button>
-          <button
-            onClick={() => setSelMenu(null)}
-            className="w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
-            style={{ color: "var(--text-primary)" }}
-          >
-            取消
-          </button>
-        </div>
+          </MenuItem>
+          <MenuItem onClick={() => setSelMenu(null)}>取消</MenuItem>
+        </Menu>
       )}
 
       {/* @ 提及选择器 */}
