@@ -503,6 +503,26 @@ pub struct TablePatch {
     pub upsert_rows: Vec<TableRow>,
     #[serde(default)]
     pub removed_row_ids: Vec<String>,
+    /// 字段 id 全序（与上次落盘序列不同时携带；排序是数组属性，id 合并无法表达，须显式重排）。
+    #[serde(default)]
+    pub field_order: Option<Vec<String>>,
+    /// 行 id 全序（同上）。
+    #[serde(default)]
+    pub row_order: Option<Vec<String>>,
+}
+
+/// 按 id 顺序重排数组（稳定排序）：order 未出现的 id（同批删除/对端新增）保持相对顺序置于末尾。
+/// 用于补丁合并后应用 field_order/row_order——拖拽排序/复制行/左右插列的顺序变化落盘。
+pub fn reorder_by<T>(items: &mut Vec<T>, order: &[String], key: impl Fn(&T) -> &str) {
+    if items.len() <= 1 {
+        return;
+    }
+    let rank: HashMap<&str, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (id.as_str(), i))
+        .collect();
+    items.sort_by_key(|item| rank.get(key(item)).copied().unwrap_or(usize::MAX));
 }
 
 /// 递归扫描仓库内全部 `.atlx`（跳过隐藏/排除目录与 `.tmp`），返回列表行（按 updatedAt 倒序）。

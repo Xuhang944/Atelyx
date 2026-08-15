@@ -44,6 +44,7 @@ import { useSettingsStore } from "@/stores/settingsStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import { baseName, dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename } from "@/utils/filename";
+import { tablesEqual } from "@/utils/table";
 import type { BacklinkRow, DeleteFolderResult, FileTreeNode, RebuildLinksResult, TextData, VaultFileChange } from "@/types";
 
 /**
@@ -58,6 +59,26 @@ import type { BacklinkRow, DeleteFolderResult, FileTreeNode, RebuildLinksResult,
 let pendingRename: { oldFile: string; newFile: string } | null = null;
 export function isPendingRenameOldPath(path: string): boolean {
   return pendingRename?.oldFile === path;
+}
+
+/**
+ * watcher `table` 事件回放判别（打开表格路径命中时）：读盘（Rust 缓存，mtime+len 指纹失效，快）
+ * 与内存内容比对——一致 = 自写回放或已广播应用的对端写入 → 跳过（不重载，保护撤销栈/选中态）；
+ * 不一致 = 真实外部修改 → 静默重载。不用时间窗抑制（盲窗会吞掉对端写入），内容比对精确。
+ * 读失败（文件被外部删除等）：干净时交由 reloadFromDisk 的读错误路径降级提示。
+ */
+async function maybeReloadTableIfChanged(file: string): Promise<void> {
+  try {
+    const disk = await readTableVault(file);
+    // 读盘期间可能已切表/产生脏改动：以最新状态守卫，防误重载覆盖新编辑
+    const s = useTableStore.getState();
+    if (s.tableFile !== file || s.dirty) return;
+    if (tablesEqual(disk, { fields: s.fields, rows: s.rows })) return;
+    void s.reloadFromDisk();
+  } catch {
+    const s = useTableStore.getState();
+    if (s.tableFile === file && !s.dirty) void s.reloadFromDisk();
+  }
 }
 
 /** 最近一次软件内笔记重命名（保留跨渲染周期，供窗口联动区分「重命名」与「真删除」）。 */
@@ -892,20 +913,18 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
         }
 
         if (c.kind === "table") {
-          // 与 canvas 事件同策略：当前打开的表格被外部修改 → 无脏静默重载、有脏冲突提示
-          // （软件内重命名/自写回放跳过，防误触发）
+          // 当前打开的表格事件：干净 → 读盘内容比对判别（自写回放/已广播应用的对端写入跳过，
+          // 真实外部修改静默重载）；有脏 → 不弹冲突条——防抖保存 ≤500ms 内触发，乐观锁 +
+          // 自动三方合并收敛（冲突条仅作合并失败兜底，见 tableStore.reportError）。
+          // 软件内重命名旧路径的删除事件跳过（file 引用已同步）。
           const store = useTableStore.getState();
           if (
             c.path === store.tableFile &&
-            !isSelfSaveEcho(c.path) &&
             !isPendingRenameOldPath(c.path) &&
-            !isPendingFolderRenameOldPath(c.path)
+            !isPendingFolderRenameOldPath(c.path) &&
+            !store.dirty
           ) {
-            if (store.dirty) {
-              useTableStore.setState({ conflictPending: true });
-            } else {
-              void useTableStore.getState().reloadFromDisk();
-            }
+            void maybeReloadTableIfChanged(c.path);
           }
           // 画布上引用该表格的节点：silent 刷新快照（与 note 事件刷新 text 节点对称）
           if (!isPendingRenameOldPath(c.path) && !isPendingFolderRenameOldPath(c.path)) {

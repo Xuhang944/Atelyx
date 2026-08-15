@@ -5,7 +5,8 @@
  * 重命名/移动由 Rust 扫描所有 .atlx 同步 table 节点 file 引用（链接维护）。
  */
 import { invoke } from "@tauri-apps/api/core";
-import type { TableCreateResult, TableField, TableFile, TablePatch, TableRow } from "@/types";
+import { computeTablePatch } from "@/utils/table";
+import type { TableCreateResult, TableField, TableFile, TableRow } from "@/types";
 
 /** 新建空表格（自带一个「名称」文本字段），返回 { id, file }（dir 空 = 根目录）。 */
 export async function createTableVault(title: string, dir: string): Promise<TableCreateResult> {
@@ -36,7 +37,8 @@ export interface TableSaveSnapshot {
 
 /**
  * 增量保存 .atb（自动保存主路径）：与上次保存快照按引用 diff，只序列化变化/新增/删除的
- * 字段与行，经 `patch_table_vault` 按稳定 id 合并到磁盘全量文件——image dataURL 大字段不重传。
+ * 字段与行，经 `patch_table_vault` 按稳定 id 合并到磁盘全量文件——image dataURL 大字段不重传；
+ * 顺序变化（排序/插列）经 `fieldOrder`/`rowOrder` 携带。
  * 空补丁返回 null——调用方跳过 IPC（磁盘已一致）。
  * 返回写入后的 { updatedAt, file }（title 变更重命名时 file = 新相对路径）。
  * `force` = 保留本地（绕过乐观锁强制覆盖，冲突条「保留本地并保存」用）。
@@ -51,41 +53,9 @@ export async function patchTableVault(opts: {
   force: boolean;
 }): Promise<{ updatedAt: number; file: string } | null> {
   const { file, tableId, fields, rows, lastSaved, baseUpdatedAt, force } = opts;
-  const upsertFieldIds = new Set<string>();
-  for (const f of fields) {
-    const ls = lastSaved.fields.find((x) => x.id === f.id);
-    if (!ls || ls !== f) upsertFieldIds.add(f.id);
-  }
-  const currentFieldIds = new Set(fields.map((f) => f.id));
-  const removedFieldIds = lastSaved.fields
-    .filter((f) => !currentFieldIds.has(f.id))
-    .map((f) => f.id);
-  const upsertRowIds = new Set<string>();
-  for (const r of rows) {
-    const ls = lastSaved.rows.find((x) => x.id === r.id);
-    if (!ls || ls !== r) upsertRowIds.add(r.id);
-  }
-  const currentRowIds = new Set(rows.map((r) => r.id));
-  const removedRowIds = lastSaved.rows
-    .filter((r) => !currentRowIds.has(r.id))
-    .map((r) => r.id);
-  const upsertFields = fields.filter((f) => upsertFieldIds.has(f.id));
-  const upsertRows = rows.filter((r) => upsertRowIds.has(r.id));
-  if (
-    upsertFields.length === 0 &&
-    upsertRows.length === 0 &&
-    removedFieldIds.length === 0 &&
-    removedRowIds.length === 0
-  ) {
-    return null;
-  }
-  const patch: TablePatch = {
-    id: tableId,
-    upsertFields,
-    removedFieldIds,
-    upsertRows,
-    removedRowIds,
-  };
+  // diff 计算与协作实时广播共用同一纯函数（顺序变化也在此捕获，见 utils/table.ts）
+  const patch = computeTablePatch({ tableId, fields, rows, lastSaved });
+  if (!patch) return null;
   return invoke<{ updatedAt: number; file: string }>("patch_table_vault", {
     patch,
     file,

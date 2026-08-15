@@ -53,9 +53,11 @@ export interface TableCreateResult {
 }
 
 /**
- * 增量保存补丁（patch_table_vault，自动保存主路径）：只含变化/新增/删除的字段与行。
- * 前端按「上次保存快照引用 diff」计算（store 不可变更新，未变实体引用相同）；
+ * 增量保存补丁（patch_table_vault，自动保存主路径 + 协作实时广播共用）：只含变化/新增/删除
+ * 的字段与行。前端按「上次保存快照引用 diff」计算（store 不可变更新，未变实体引用相同）；
  * Rust 按稳定 id 合并到磁盘全量文件——image dataURL 大字段不重传。
+ * 顺序变化（行拖拽排序/复制行/左右插列）经 `fieldOrder`/`rowOrder` 携带（当前实体 id 全序）——
+ * 引用 diff 看不见数组顺序，必须显式传递，否则排序不落盘、协作者不可见。
  */
 export interface TablePatch {
   /** 表格 id（防串文件守卫）。 */
@@ -66,4 +68,8 @@ export interface TablePatch {
   removedFieldIds: string[];
   upsertRows: TableRow[];
   removedRowIds: string[];
+  /** 字段 id 全序（与 lastSaved 序列不同时携带；Rust 按此重排，未出现 id 保持相对顺序置尾）。 */
+  fieldOrder?: string[];
+  /** 行 id 全序（同上）。 */
+  rowOrder?: string[];
 }

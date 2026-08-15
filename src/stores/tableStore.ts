@@ -22,8 +22,8 @@ import { markSelfSave } from "@/stores/canvasStore";
 import { useVaultStore } from "@/stores/vaultStore";
 import { createPersistController } from "@/utils/persist";
 import { createUndoManager } from "@/utils/undoStack";
-import { coerceRowsJson } from "@/utils/table";
-import type { CalcType, CellValue, FieldType, TableField, TableRow } from "@/types";
+import { coerceRowsJson, computeTablePatch, sameIdSequence } from "@/utils/table";
+import type { CalcType, CellValue, FieldType, TableField, TablePatch, TableRow } from "@/types";
 
 /** 编辑器视图：表格 / 时间线（内存态不持久化）。 */
 export type TableView = "table" | "timeline";
@@ -131,6 +131,11 @@ interface TableStoreState {
   commitCellEdit: () => void;
   /** 编辑会话中止（Esc/未改动退出时调用）：丢弃空撤销单元（恢复被清的 redo）。 */
   abortCellEdit: () => void;
+  /** 协作实时广播钩子注入（collabStore init 时设置；null = 协作未启用，不广播）。 */
+  setCollabBroadcast: (fn: ((file: string, patch: TablePatch) => void) | null) => void;
+  /** 应用远端协作者的增量补丁（relay 收到 table-patch 时调用）：纯内存合并（与 Rust 合并同语义），
+   * 不置脏/不入撤销栈/不触发保存——落盘由发送方负责，本端下次保存经 diff 幂等收敛。 */
+  applyRemotePatch: (file: string, patch: TablePatch) => void;
 }
 
 /** 撤销快照：fields + rows（含 id/calcType/width/height/options/values，id 保真——撤销后选中引用不悬空）。 */
@@ -199,10 +204,27 @@ function abortEditSession(): void {
 }
 
 /**
+ * 合并产物按本地 id 序重排（本地相对「合并前基线」顺序变化时调用——排序 LWW 胜出；
+ * order 未出现的实体（对端并发新增）保持相对顺序置尾）。本地未改顺序则原样返回（跟随磁盘排序）。
+ */
+function applyLocalOrder<T extends { id: string }>(merged: T[], local: T[], baseline: T[]): T[] {
+  if (sameIdSequence(local, baseline)) return merged;
+  const rank = new Map(local.map((x, i) => [x.id, i] as const));
+  const known: T[] = [];
+  const unknown: T[] = [];
+  for (const x of merged) {
+    (rank.has(x.id) ? known : unknown).push(x);
+  }
+  known.sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+  return [...known, ...unknown];
+}
+
+/**
  * 乐观锁冲突（磁盘版本新于基准）自动合并重试：重读磁盘 → 以磁盘为基底应用本地增量
  * （同实体 = 本地后写者胜 LWW；本地删除生效；磁盘删除而本地未改 = 跟随磁盘不复活），
  * 合并结果写回内存并以磁盘为保存基线重发补丁——他人改动保留、本地改动落上，不再弹冲突条。
  * 未变实体直接引用磁盘对象，重发补丁引用 diff 天然只含真实增量。
+ * 顺序变化（排序/插列）按本地 id 序重排后随补丁重发（同实体 LWW 语义）。
  * 重读失败/身份不匹配/再次并发冲突 → 抛错回落冲突提示（用户手动决策）。
  */
 async function retryMergePersist(
@@ -263,16 +285,20 @@ async function retryMergePersist(
       mergedRows.push(r);
     }
   }
+  // 顺序变化（排序/插列）：本地相对合并前基线改过顺序 → 合并产物按本地 id 序重排，
+  // 重发补丁携带 order（本地排序 LWW 胜出，对端新增置尾）；未改顺序则跟随磁盘排序
+  const mergedFieldsFinal = applyLocalOrder(mergedFields, s.fields, lastSavedFields);
+  const mergedRowsFinal = applyLocalOrder(mergedRows, s.rows, lastSavedRows);
   // 写回内存前最后守卫：计算期间切表则放弃（补丁不重发，冲突留给下次保存）
   if (useTableStore.getState().tableFile !== file) return;
-  useTableStore.setState({ fields: mergedFields, rows: mergedRows });
+  useTableStore.setState({ fields: mergedFieldsFinal, rows: mergedRowsFinal });
   lastSavedFields = disk.fields;
   lastSavedRows = disk.rows;
   const result = await patchTableVault({
     file,
     tableId: disk.id,
-    fields: mergedFields,
-    rows: mergedRows,
+    fields: mergedFieldsFinal,
+    rows: mergedRowsFinal,
     lastSaved: { fields: disk.fields, rows: disk.rows },
     baseUpdatedAt: disk.updatedAt,
     force: false,
@@ -312,6 +338,9 @@ const persistCtl = createPersistController<boolean>({
         dirty: false,
         saving: false,
         error: null,
+        // 保存/自动合并成功 = 冲突已解决：清掉此前合并失败置位的冲突条（自愈，
+        // 用户无需手动点掉；真实合并失败时 reportError 会再次置位）
+        conflictPending: false,
       });
       syncLastSaved();
     };
@@ -369,6 +398,17 @@ const persistCtl = createPersistController<boolean>({
 function schedulePersist(): void {
   const st = useTableStore.getState();
   if (!st.tableFile) return;
+  // 协作实时广播：编辑即达（不等防抖落盘）。补丁 = 与落盘基线的引用 diff（幂等 LWW，
+  // 与磁盘合并语义一致，顺序变化经 order 携带）；applyRemotePatch 路径不调本函数 → 无广播回环。
+  if (collabBroadcast) {
+    const patch = computeTablePatch({
+      tableId: st.id,
+      fields: st.fields,
+      rows: st.rows,
+      lastSaved: { fields: lastSavedFields, rows: lastSavedRows },
+    });
+    if (patch) collabBroadcast(st.tableFile, patch);
+  }
   persistCtl.schedule();
 }
 
@@ -380,6 +420,21 @@ function schedulePersist(): void {
  */
 let lastSavedFields: TableField[] = [];
 let lastSavedRows: TableRow[] = [];
+
+/** 协作实时广播钩子（collabStore.init 注入，dispose 清空；null = 协作未启用）。 */
+let collabBroadcast: ((file: string, patch: TablePatch) => void) | null = null;
+
+/** 按 id 全序重排数组（应用远端补丁的 order；未出现 id 保持相对顺序置尾——与 Rust reorder_by 同语义）。 */
+function reorderByIds<T extends { id: string }>(items: T[], order: string[]): T[] {
+  const rank = new Map(order.map((id, i) => [id, i] as const));
+  const known: T[] = [];
+  const unknown: T[] = [];
+  for (const x of items) {
+    (rank.has(x.id) ? known : unknown).push(x);
+  }
+  known.sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+  return [...known, ...unknown];
+}
 
 /** 把当前运行时 fields/rows 引用记为「已落盘基线」。 */
 function syncLastSaved(): void {
@@ -836,4 +891,46 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   beginCellEdit: (rowId, fieldId) => beginEditSession(rowId, fieldId),
   commitCellEdit: () => commitEditSession(),
   abortCellEdit: () => abortEditSession(),
+
+  setCollabBroadcast: (fn) => {
+    collabBroadcast = fn;
+  },
+
+  applyRemotePatch: (file, patch) => {
+    // 只应用当前打开的表格；补丁表格 id 不符（陈旧/串文件）拒绝——防污染本端状态
+    const s = get();
+    if (file !== s.tableFile || patch.id !== s.id) return;
+    set((st) => {
+      // 与 Rust patch_table_vault 同语义：removed 过滤 → upsert 按 id 覆盖/追加 → order 重排
+      const removedFieldIds = new Set(patch.removedFieldIds);
+      let fields = st.fields.filter((f) => !removedFieldIds.has(f.id));
+      for (const f of patch.upsertFields) {
+        const i = fields.findIndex((x) => x.id === f.id);
+        if (i >= 0) fields[i] = f;
+        else fields.push(f);
+      }
+      if (patch.fieldOrder) fields = reorderByIds(fields, patch.fieldOrder);
+      const removedRowIds = new Set(patch.removedRowIds);
+      let rows = st.rows.filter((r) => !removedRowIds.has(r.id));
+      for (const r of patch.upsertRows) {
+        const i = rows.findIndex((x) => x.id === r.id);
+        if (i >= 0) rows[i] = r;
+        else rows.push(r);
+      }
+      if (patch.rowOrder) rows = reorderByIds(rows, patch.rowOrder);
+      // 远端删除使本端选中失效：清理（与 removeRow/removeField 同策略，防高亮残留）
+      const sel = st.selection;
+      const staleSel =
+        sel &&
+        (((sel.kind === "cell" || sel.kind === "column") && removedFieldIds.has(sel.fieldId)) ||
+          ((sel.kind === "cell" || sel.kind === "row") && removedRowIds.has(sel.rowId)));
+      return {
+        fields,
+        rows,
+        selection: staleSel ? null : sel,
+        selectedRowId:
+          st.selectedRowId && removedRowIds.has(st.selectedRowId) ? null : st.selectedRowId,
+      };
+    });
+  },
 }));

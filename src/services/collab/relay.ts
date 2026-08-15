@@ -1,15 +1,18 @@
 /**
  * 协作中转（collab-relay）WebSocket 客户端封装。
  *
- * 纯 I/O：连接/hello 入房/presence 上报/心跳保活/指数退避重连，状态与节流归 collabStore。
+ * 纯 I/O：连接/hello 入房/presence 上报/表格内容补丁上报/心跳保活/指数退避重连，
+ * 状态与节流归 collabStore。
  * 协议见 `collab-relay/src/main.rs`（JSON，camelCase）：
  * - C→S `hello`：`{ type, vaultId, nickname, color, deviceName }`（连接后首条必发）
  * - C→S `presence`：`{ type, file?, selection?, view? }`
+ * - C→S `table-patch`：`{ type, file, patch }`（表格增量补丁实时广播，LWW 按 id 应用）
  * - C→S `ping`（保活）/ `bye`（离开）
  * - S→C `peers`：`{ type, peers: [...] }`（房间成员变化全量推送）
  * - S→C `presence`：`{ type, peerId, presence }`（他人转发）
+ * - S→C `table-patch`：`{ type, peerId, file, patch }`（他人补丁转发，不含自己）
  */
-import type { CollabHello, CollabPeer, CollabPresence } from "@/types";
+import type { CollabHello, CollabPeer, CollabPresence, TablePatch } from "@/types";
 
 /** 心跳间隔：relay 侧 30s 无消息超时踢出，25s 发 ping 保活。 */
 const HEARTBEAT_MS = 25_000;
@@ -19,6 +22,7 @@ const MAX_RETRY_MS = 15_000;
 export type CollabClientMessage =
   | ({ type: "hello" } & CollabHello)
   | ({ type: "presence" } & CollabPresence)
+  | { type: "table-patch"; file: string; patch: TablePatch }
   | { type: "ping" }
   | { type: "bye" };
 
@@ -26,11 +30,14 @@ export type CollabServerMessage =
   | { type: "peers"; peers: CollabPeer[] }
   | { type: "hello-ack"; peerId: number }
   | { type: "presence"; peerId: number; presence: CollabPresence }
+  | { type: "table-patch"; peerId: number; file: string; patch: TablePatch }
   | { type: "error"; message: string };
 
 export interface CollabRelayHandle {
   /** 上报本端 presence（调用方自行节流）。 */
   sendPresence(presence: CollabPresence): void;
+  /** 广播表格增量补丁（relay 转发给房间内其他成员；未连接时静默丢弃）。 */
+  sendTablePatch(file: string, patch: TablePatch): void;
   /** 主动离开房间（切仓库/关闭应用）。 */
   sendBye(): void;
   /** 断开连接且不再重连。 */
@@ -44,6 +51,8 @@ export interface CollabRelayOptions {
   onHelloAck: (peerId: number) => void;
   onPeers: (peers: CollabPeer[]) => void;
   onPeerPresence: (peerId: number, presence: CollabPresence) => void;
+  /** 收到他人表格补丁（文件匹配由调用方判定——只应用当前打开的表格）。 */
+  onTablePatch: (peerId: number, file: string, patch: TablePatch) => void;
   onStatusChange: (connected: boolean) => void;
 }
 
@@ -84,6 +93,8 @@ export function connectCollabRelay(opts: CollabRelayOptions): CollabRelayHandle 
       if (msg.type === "hello-ack") opts.onHelloAck(msg.peerId);
       else if (msg.type === "peers") opts.onPeers(msg.peers);
       else if (msg.type === "presence") opts.onPeerPresence(msg.peerId, msg.presence);
+      else if (msg.type === "table-patch")
+        opts.onTablePatch(msg.peerId, msg.file, msg.patch);
     };
     ws.onerror = () => ws?.close(); // 收尾统一走 onclose
     ws.onclose = () => {
@@ -116,6 +127,10 @@ export function connectCollabRelay(opts: CollabRelayOptions): CollabRelayHandle 
     sendPresence: (presence) => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       ws.send(JSON.stringify({ type: "presence", ...presence }));
+    },
+    sendTablePatch: (file, patch) => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: "table-patch", file, patch }));
     },
     sendBye: () => {
       if (ws && ws.readyState === WebSocket.OPEN) {

@@ -1,18 +1,21 @@
-//! Atelyx 局域网协作中转（presence relay）。
+//! Atelyx 局域网协作中转（presence + 表格补丁 relay）。
 //!
-//! 无状态 WebSocket hub：客户端按仓库 id（vaultId）分房间，转发 presence
-//! （在线用户 + 打开文件 + 选中状态）。纯转发不持久化——断线即消失，30s 无消息心跳超时踢出。
-//! 无鉴权（局域网信任）：同一局域网内任何客户端可加入房间；单端口，部署 = 服务器
-//! `git clone && docker compose up -d`。
+//! 无状态 WebSocket hub：客户端按仓库 id（vaultId）分房间，转发 presence（在线用户 + 打开文件 +
+//! 选中状态）与表格内容补丁（`table-patch`，实时协作内容通道）。纯转发不持久化——断线即消失，
+//! 30s 无消息心跳超时踢出。无鉴权（局域网信任）：同一局域网内任何客户端可加入房间；单端口，
+//! 部署 = 服务器 `git clone && docker compose up -d`。
 //!
 //! 协议（JSON over WS，字段 camelCase）：
 //! - C→S `hello`：`{ type, vaultId, nickname, color, deviceName }`（首条必发）
 //! - C→S `presence`：`{ type, file?, selection?, view? }`（选中变化节流后发）
+//! - C→S `table-patch`：`{ type, file, patch }`（表格增量补丁广播；patch 不透明透传，
+//!   客户端按 file 匹配只应用当前打开的表格）
 //! - C→S `ping`（保活）/ `bye`（离开）
 //! - S→C `hello-ack`：`{ type, peerId }`（分配的本连接 id，先于 peers 帧——客户端据此把自己过滤出列表）
 //! - S→C `peers`：`{ type, peers: [{ peerId, nickname, color, deviceName, presence? }] }`
 //!   （房间成员变化时全量推送；presence 字段 = `{ file?, selection?, view? }`）
 //! - S→C `presence`：`{ type, peerId, presence }`（他人 presence 转发，不含自己）
+//! - S→C `table-patch`：`{ type, peerId, file, patch }`（他人补丁转发，不含自己）
 //! - S→C `error`：`{ type, message }`
 
 use std::collections::HashMap;
@@ -76,6 +79,9 @@ struct ClientMsg {
     selection: Option<serde_json::Value>,
     #[serde(default)]
     view: Option<String>,
+    /// 表格增量补丁（`table-patch` 消息；不透明透传，relay 不解析内容）。
+    #[serde(default)]
+    patch: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Clone)]
@@ -108,6 +114,10 @@ struct ServerMsg {
     peers: Option<Vec<PeerInfo>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     presence: Option<Presence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    patch: Option<serde_json::Value>,
 }
 
 fn server_msg(
@@ -115,8 +125,11 @@ fn server_msg(
     peer_id: Option<u64>,
     peers: Option<Vec<PeerInfo>>,
     presence: Option<Presence>,
+    file: Option<String>,
+    patch: Option<serde_json::Value>,
 ) -> Arc<String> {
-    let json = serde_json::to_string(&ServerMsg { kind, peer_id, peers, presence }).unwrap();
+    let json =
+        serde_json::to_string(&ServerMsg { kind, peer_id, peers, presence, file, patch }).unwrap();
     Arc::new(json)
 }
 
@@ -139,7 +152,7 @@ fn broadcast_peers(rooms: &Rooms, vault_id: &str) {
             presence: p.presence.clone(),
         })
         .collect();
-    let payload = server_msg("peers", None, Some(peers), None);
+    let payload = server_msg("peers", None, Some(peers), None, None, None);
     for p in room.values() {
         let _ = p.tx.send(payload.clone());
     }
@@ -200,7 +213,7 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
     });
     // 先告知本连接自己的 peerId（客户端据此把自己过滤出 peers），再广播全量快照——
     // 顺序颠倒会让客户端收到含自己的 peers 帧时还无法识别自己（一帧闪现）
-    let _ = btx.send(server_msg("hello-ack", Some(peer_id), None, None));
+    let _ = btx.send(server_msg("hello-ack", Some(peer_id), None, None, None, None));
     {
         let mut rooms = hub.0.lock().unwrap();
         let room = rooms.entry(hello.vault_id.clone()).or_default();
@@ -241,10 +254,31 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
                                 peer.presence = Some(presence.clone());
                             }
                             let payload =
-                                server_msg("presence", Some(peer_id), None, Some(presence));
+                                server_msg("presence", Some(peer_id), None, Some(presence), None, None);
                             for (id, peer) in room.iter() {
                                 if *id != peer_id {
                                     let _ = peer.tx.send(payload.clone());
+                                }
+                            }
+                        }
+                    }
+                    // 表格内容补丁：不存储、不透传解析，原样转发房间内其他成员（客户端按 file 匹配）
+                    "table-patch" => {
+                        if let (Some(file), Some(patch)) = (msg.file, msg.patch) {
+                            let mut rooms = hub.0.lock().unwrap();
+                            if let Some(room) = rooms.get_mut(&hello.vault_id) {
+                                let payload = server_msg(
+                                    "table-patch",
+                                    Some(peer_id),
+                                    None,
+                                    None,
+                                    Some(file),
+                                    Some(patch),
+                                );
+                                for (id, peer) in room.iter() {
+                                    if *id != peer_id {
+                                        let _ = peer.tx.send(payload.clone());
+                                    }
                                 }
                             }
                         }

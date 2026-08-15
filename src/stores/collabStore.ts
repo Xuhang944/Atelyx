@@ -90,6 +90,11 @@ function establishConnection(): void {
         peers: s.peers.map((p) => (p.peerId === peerId ? { ...p, presence } : p)),
       }));
     },
+    // 表格内容补丁实时广播接收：只应用当前打开的表格（applyRemotePatch 内部按 file + 表 id 守卫）
+    onTablePatch: (peerId, file, patch) => {
+      if (peerId === myPeerId) return;
+      useTableStore.getState().applyRemotePatch(file, patch);
+    },
     onStatusChange: (connected) => {
       useCollabStore.setState({ connected });
       // 连接建立后补发一次当前 presence：重连/进房间时本端选中立即可见，
@@ -141,6 +146,9 @@ export const useCollabStore = create<CollabStoreState>((set) => ({
     runtimeCfg = { ...cfg, color: cfg.color || randomPeerColor() };
     set({ deviceName: cfg.deviceName });
     currentVaultId = useAppStore.getState().vaultId;
+    // 注入表格补丁广播钩子（tableStore 在 schedulePersist 计算补丁后回调；handle 为模块级，
+    // establishConnection 重建连接后闭包自动指向新连接，无需重注入）
+    useTableStore.getState().setCollabBroadcast((file, patch) => handle?.sendTablePatch(file, patch));
     establishConnection();
   },
 
@@ -159,6 +167,8 @@ export const useCollabStore = create<CollabStoreState>((set) => ({
     handle?.sendBye();
     handle?.disconnect();
     handle = null;
+    // 解除广播钩子：协作关闭后表格编辑不再走 relay（回落 watcher/磁盘通道）
+    useTableStore.getState().setCollabBroadcast(null);
     runtimeCfg = null;
     myPeerId = null;
     if (broadcastTimer !== null) {

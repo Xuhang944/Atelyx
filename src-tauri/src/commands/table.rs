@@ -15,8 +15,9 @@ use tauri::{Manager, State};
 use crate::commands::vault::{collect_table_ref_updates, flush_canvas_updates, mime_from_ext};
 use crate::vault::{
     cache_put_table, delete_vault_file, read_table_file, read_table_file_cached,
-    rename_note_file, rel_with_new_title, safe_join, same_physical_file, sanitize_filename,
-    write_table_file, TableField, TableFile, TablePatch, VaultState, TABLE_SCHEMA,
+    reorder_by, rename_note_file, rel_with_new_title, safe_join, same_physical_file,
+    sanitize_filename, write_table_file, TableField, TableFile, TablePatch, VaultState,
+    TABLE_SCHEMA,
 };
 
 /// `create_table_vault` 返回值：id（运行时身份）+ file（磁盘定位）。
@@ -202,6 +203,14 @@ pub fn patch_table_vault(
             Some(existing) => *existing = r.clone(),
             None => table.rows.push(r.clone()),
         }
+    }
+    // 顺序变化（拖拽排序/复制行/左右插列）：按补丁携带的 id 全序重排——
+    // 已删 id 的下标自然空置，order 未出现的实体（并发新增）保持相对顺序置尾
+    if let Some(order) = &patch.field_order {
+        reorder_by(&mut table.fields, order, |f| f.id.as_str());
+    }
+    if let Some(order) = &patch.row_order {
+        reorder_by(&mut table.rows, order, |r| r.id.as_str());
     }
     table.updated_at = now;
     write_table_file(&new_path, &table)?;
