@@ -1,9 +1,9 @@
 import { Loader2, Plus, RefreshCw, Scissors, X } from "lucide-react";
-import { useEffect, useCallback, useMemo, useRef, useState } from "react";
-import { NodeResizeControl, useReactFlow, type NodeProps } from "@xyflow/react";
+import { useEffect, useCallback, useRef, useState } from "react";
+import { useReactFlow, type NodeProps } from "@xyflow/react";
 import { useShallow } from "zustand/react/shallow";
+import { ResizeHandle } from "./ResizeHandle";
 import { useCanvasStore } from "@/stores/canvasStore";
-import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useVaultStore } from "@/stores/vaultStore";
 import { useAutoScrollFollow } from "@/hooks/useAutoScrollFollow";
@@ -24,7 +24,7 @@ import {
   splitMentions,
   type MentionSeg,
 } from "@/utils/text";
-import { markdownComponents } from "@/utils/markdown";
+import { useMarkdownComponents } from "@/hooks/useMarkdownComponents";
 import type {
   ConversationData,
   MediaData,
@@ -667,26 +667,13 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
   // ===== 渲染 =====
 
   // assistant 消息的 Markdown 组件配置：useMemo 稳定化（气泡 memo 生效前提，流式期间历史消息不重渲染）
-  const messageMarkdownComponents = useMemo(
-    () =>
-      markdownComponents({
-        isLocatable: isWikiLocatable,
-        onLocate: handleLocateWiki,
-        onOpenNote: handleOpenWikiNote,
-        isVaultPathNote,
-        onOpenVaultPathNote: handleOpenVaultPathNote,
-        onCreateNote: handleCreateNote,
-        onOpenUrl: (url) => void useAppStore.getState().openUrl(url),
-      }),
-    [
-      isWikiLocatable,
-      handleLocateWiki,
-      handleOpenWikiNote,
-      isVaultPathNote,
-      handleOpenVaultPathNote,
-      handleCreateNote,
-    ],
-  );
+  const messageMarkdownComponents = useMarkdownComponents({
+    locate: { isLocatable: isWikiLocatable, onLocate: handleLocateWiki },
+    onOpenNote: handleOpenWikiNote,
+    isVaultPathNote,
+    onOpenVaultPathNote: handleOpenVaultPathNote,
+    onCreateNote: handleCreateNote,
+  });
   const handleRollback = useCallback(
     (messageId: string) => rollbackTo(id, messageId),
     [id, rollbackTo],
@@ -1135,17 +1122,7 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
         )}
       </div>
 
-      <NodeResizeControl
-        position="bottom-right"
-        style={{
-          width: 10,
-          height: 10,
-          background: "#fff",
-          border: "2px solid var(--accent)",
-          borderRadius: 2,
-          cursor: "nwse-resize",
-        }}
-      />
+      <ResizeHandle />
     </div>
   );
 }

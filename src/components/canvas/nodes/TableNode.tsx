@@ -11,7 +11,7 @@
  */
 import { AlertTriangle, Table as TableIcon, ExternalLink } from "lucide-react";
 import { useState } from "react";
-import { NodeResizeControl, type NodeProps } from "@xyflow/react";
+import type { NodeProps } from "@xyflow/react";
 import type { TableData } from "@/types";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useVaultStore } from "@/stores/vaultStore";
@@ -20,6 +20,7 @@ import {
   DEFAULT_TABLE_NODE_WIDTH,
 } from "@/constants/canvas";
 import { tableTitleFromFile } from "@/utils/filename";
+import { ResizeHandle } from "./ResizeHandle";
 import { ConnectionFrame } from "./ConnectionFrame";
 
 /** 打开表格窗口事件（detail = { file, title }；页面层 ProjectWorkspacePage 监听）。 */
@@ -194,19 +195,7 @@ export function TableNode({ id, data, width, height, selected }: NodeProps) {
         </div>
       )}
 
-      {!readOnly && (
-        <NodeResizeControl
-          position="bottom-right"
-          style={{
-            width: 10,
-            height: 10,
-            background: "#fff",
-            border: "2px solid var(--accent)",
-            borderRadius: 2,
-            cursor: "nwse-resize",
-          }}
-        />
-      )}
+      {!readOnly && <ResizeHandle />}
     </div>
   );
 }

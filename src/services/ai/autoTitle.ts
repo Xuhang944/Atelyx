@@ -74,7 +74,13 @@ export async function autoTitle(
   ];
   const controller = new AbortController();
   lastTitleController = controller;
-  const timer = setTimeout(() => controller.abort(), AUTO_NAMING_TIMEOUT_MS);
+  // 超时与主动取消都以 AbortError 呈现，必须区分：超时是真实失败（调用方按 failed 提示可重试），
+  // 主动取消（abortAutoTitle：发新消息/切仓库/手动接管）静默按 skipped 处理
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, AUTO_NAMING_TIMEOUT_MS);
   try {
     return {
       aborted: false,
@@ -83,8 +89,10 @@ export async function autoTitle(
       ),
     };
   } catch (e) {
-    // 被中止（主动取消/超时）与失败区分开：取消静默、失败由调用方提示
-    return { aborted: (e as Error).name === "AbortError", title: null };
+    if ((e as Error).name === "AbortError" && !timedOut) {
+      return { aborted: true, title: null };
+    }
+    return { aborted: false, title: null };
   } finally {
     clearTimeout(timer);
     if (lastTitleController === controller) lastTitleController = null;

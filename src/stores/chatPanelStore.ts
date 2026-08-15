@@ -576,18 +576,24 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
       const f = await readEditorChats();
       const sessions: EditorChatSession[] = [];
       let migratedV1 = false;
+      // v1 迁移：消息内嵌 JSON → 导出消息 .md（空会话不迁移），写盘时落 v2 索引。
+      // 迁移写盘延后到仓库守卫之后：等待期间切走不得在旧仓库落孤儿 .md（守卫通过 = 仍在本仓库才写）
+      const pendingMigrations: Array<{
+        sessionId: string;
+        file: string;
+        content: string;
+        baseline: EditorChatMessage[];
+      }> = [];
       if (f.schema === EDITOR_CHATS_SCHEMA_V1) {
-        // v1 迁移：消息内嵌 JSON → 导出消息 .md（空会话不迁移），写盘时落 v2 索引
         for (const s of f.sessions) {
           if (!s.messages || s.messages.length === 0) continue;
           const file = chatMessageFilePath(s.id);
-          try {
-            await writeChatMessages(file, stringifyChatMessages(s.id, s.messages));
-          } catch (e) {
-            console.error("迁移会话消息失败", e);
-          }
-          // 迁移即全量落盘：追加式基线 = 内嵌消息数组
-          transcriptBaseline.set(s.id, s.messages);
+          pendingMigrations.push({
+            sessionId: s.id,
+            file,
+            content: stringifyChatMessages(s.id, s.messages),
+            baseline: s.messages,
+          });
           sessions.push({
             id: s.id,
             title: s.title,
@@ -613,6 +619,16 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
       // 切仓库竞态守卫：后台填充链与 VaultSwitcher 快速切换并发时，
       // 旧仓库读取结果不得覆盖新仓库的会话（等待期间已切走则丢弃）
       if (useAppStore.getState().vaultId !== vaultId) return;
+      // 迁移落盘（守卫通过后才写；失败静默——下次进入该仓库重新迁移，幂等）
+      for (const m of pendingMigrations) {
+        try {
+          await writeChatMessages(m.file, m.content);
+        } catch (e) {
+          console.error("迁移会话消息失败", e);
+        }
+        // 迁移即全量落盘：追加式基线 = 内嵌消息数组
+        transcriptBaseline.set(m.sessionId, m.baseline);
+      }
       // 新仓库干净状态：清脏标记（旧仓库未写完的改动不再写回）；v1 迁移置脏以便落 v2 索引
       dirty = migratedV1;
       lastLoadedVaultId = vaultId;

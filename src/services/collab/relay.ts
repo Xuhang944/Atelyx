@@ -53,6 +53,8 @@ export interface CollabRelayOptions {
   onPeerPresence: (peerId: number, presence: CollabPresence) => void;
   /** 收到他人表格补丁（文件匹配由调用方判定——只应用当前打开的表格）。 */
   onTablePatch: (peerId: number, file: string, patch: TablePatch) => void;
+  /** 收到服务端 error 帧（协议异常/房间拒绝等）——调用方决定日志或 UI 反馈。 */
+  onServerError: (message: string) => void;
   onStatusChange: (connected: boolean) => void;
 }
 
@@ -95,6 +97,7 @@ export function connectCollabRelay(opts: CollabRelayOptions): CollabRelayHandle 
       else if (msg.type === "presence") opts.onPeerPresence(msg.peerId, msg.presence);
       else if (msg.type === "table-patch")
         opts.onTablePatch(msg.peerId, msg.file, msg.patch);
+      else if (msg.type === "error") opts.onServerError(msg.message);
     };
     ws.onerror = () => ws?.close(); // 收尾统一走 onclose
     ws.onclose = () => {

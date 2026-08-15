@@ -29,9 +29,9 @@ export async function getHostname(): Promise<string> {
 
 /**
  * 写全局配置（原子写，整体覆盖）。
- * **内部用**：调用方应改用 `updateGlobalConfig` 做 read-modify-write，避免覆盖其他字段。
+ * 内部用：调用方应改用 `updateGlobalConfig` 做 read-modify-write，避免覆盖其他字段。
  */
-export async function writeGlobalConfig(config: GlobalConfig): Promise<void> {
+async function writeGlobalConfig(config: GlobalConfig): Promise<void> {
   await invoke("write_global_config", { config });
 }
 

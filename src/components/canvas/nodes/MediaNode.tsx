@@ -1,9 +1,10 @@
 import { AlertTriangle, CircleHelp, FileText, Image } from "lucide-react";
 import type { SyntheticEvent } from "react";
-import { NodeResizeControl, type NodeProps } from "@xyflow/react";
+import type { NodeProps } from "@xyflow/react";
 import { useCanvasStore } from "@/stores/canvasStore";
 import type { MediaData } from "@/types";
 import { ConnectionFrame } from "./ConnectionFrame";
+import { ResizeHandle } from "./ResizeHandle";
 
 /** 图片最长边封顶（px），避免大图占满画布 */
 const IMG_MAX_DIM = 360;
@@ -158,20 +159,7 @@ export function MediaNode({ id, data, width, height, selected }: NodeProps) {
         )}
       </div>
 
-      {!readOnly && (
-        <NodeResizeControl
-          position="bottom-right"
-          onResizeStart={handleResizeStart}
-          style={{
-            width: 10,
-            height: 10,
-            background: "#fff",
-            border: "2px solid var(--accent)",
-            borderRadius: 2,
-            cursor: "nwse-resize",
-          }}
-        />
-      )}
+      {!readOnly && <ResizeHandle onResizeStart={handleResizeStart} />}
     </div>
   );
 }

@@ -898,7 +898,7 @@ fn collect_note_ref_updates(
     new_file: &str,
 ) -> Result<Vec<(PathBuf, CanvasFile)>, String> {
     collect_canvas_updates(root, &mut |canvas| {
-        update_note_refs_in_canvas(canvas, old_file, new_file)
+        update_refs_in_canvas(canvas, old_file, new_file)
     })
 }
 
@@ -909,7 +909,7 @@ fn collect_attachment_ref_updates(
     new_file: &str,
 ) -> Result<Vec<(PathBuf, CanvasFile)>, String> {
     collect_canvas_updates(root, &mut |canvas| {
-        update_attachment_refs_in_canvas(canvas, old_file, new_file)
+        update_refs_in_canvas(canvas, old_file, new_file)
     })
 }
 
@@ -920,54 +920,34 @@ pub(crate) fn collect_table_ref_updates(
     new_file: &str,
 ) -> Result<Vec<(PathBuf, CanvasFile)>, String> {
     collect_canvas_updates(root, &mut |canvas| {
-        update_table_refs_in_canvas(canvas, old_file, new_file)
+        update_refs_in_canvas(canvas, old_file, new_file)
     })
 }
 
-/// 更新单个 .atlx 内 table 节点的 file 引用（内存中），返回是否有变更。
-fn update_table_refs_in_canvas(canvas: &mut CanvasFile, old_file: &str, new_file: &str) -> bool {
-    let mut changed = false;
-    for node in &mut canvas.nodes {
-        if node.node_type != "table" {
-            continue;
-        }
-        if let Some(obj) = node.data.as_object_mut() {
-            if obj.get("file").and_then(|v| v.as_str()) == Some(old_file) {
-                obj.insert(
-                    "file".to_string(),
-                    serde_json::Value::String(new_file.to_string()),
-                );
-                changed = true;
-            }
-        }
+/// 节点类型 → 引用字段名（text/media/table 节点引用独立文件用 `file`；
+/// conversation 节点系统提示词引用 .md 用 `systemPromptFile`）。
+fn ref_field_of(node_type: &str) -> Option<&'static str> {
+    match node_type {
+        "text" | "media" | "table" => Some("file"),
+        "conversation" => Some("systemPromptFile"),
+        _ => None,
     }
-    changed
 }
 
-/// 更新单个 .atlx 内的 `.md` 引用（内存中）：text 节点的 `file` + conversation 节点的 `systemPromptFile`。
-/// 返回是否有变更。
-fn update_note_refs_in_canvas(
-    canvas: &mut CanvasFile,
-    old_file: &str,
-    new_file: &str,
-) -> bool {
+/// 更新单个 .atlx 内节点引用（内存中）：按节点类型替换 file/systemPromptFile 命中值，返回是否有变更。
+/// 三类引用（笔记 .md / 附件 / 表格 .atb）统一走此函数——旧路径按扩展名天然互斥，合并后行为等价。
+fn update_refs_in_canvas(canvas: &mut CanvasFile, old_file: &str, new_file: &str) -> bool {
     let mut changed = false;
     for node in &mut canvas.nodes {
+        let Some(field) = ref_field_of(&node.node_type) else {
+            continue;
+        };
         let Some(obj) = node.data.as_object_mut() else {
             continue;
         };
-        let ref_field = match node.node_type.as_str() {
-            // text 节点正文引用（笔记/*.md）
-            "text" => Some("file"),
-            // conversation 节点系统提示词引用（笔记/*.md，与 text 对称）
-            "conversation" => Some("systemPromptFile"),
-            _ => None,
-        };
-        if let Some(field) = ref_field {
-            if obj.get(field).and_then(|v| v.as_str()) == Some(old_file) {
-                obj.insert(field.to_string(), serde_json::Value::String(new_file.to_string()));
-                changed = true;
-            }
+        if obj.get(field).and_then(|v| v.as_str()) == Some(old_file) {
+            obj.insert(field.to_string(), serde_json::Value::String(new_file.to_string()));
+            changed = true;
         }
     }
     changed
@@ -980,30 +960,6 @@ pub(crate) fn flush_canvas_updates(updates: &[(PathBuf, CanvasFile)]) -> Result<
         write_canvas_file(path, canvas)?;
     }
     Ok(())
-}
-
-/// 更新单个 .atlx 内 media 节点的 file 引用（内存中），返回是否有变更。
-fn update_attachment_refs_in_canvas(
-    canvas: &mut CanvasFile,
-    old_file: &str,
-    new_file: &str,
-) -> bool {
-    let mut changed = false;
-    for node in &mut canvas.nodes {
-        if node.node_type != "media" {
-            continue;
-        }
-        if let Some(obj) = node.data.as_object_mut() {
-            if obj.get("file").and_then(|v| v.as_str()) == Some(old_file) {
-                obj.insert(
-                    "file".to_string(),
-                    serde_json::Value::String(new_file.to_string()),
-                );
-                changed = true;
-            }
-        }
-    }
-    changed
 }
 
 /// 更新单个 .atlx 内的目录前缀引用（内存中）：位于 `old_dir/` 下的 text `file`、

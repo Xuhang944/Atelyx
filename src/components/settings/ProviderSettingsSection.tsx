@@ -7,8 +7,9 @@ import {
   X,
   XCircle,
 } from "lucide-react";
-import { useEffect, useState } from "react";
-import { PROVIDER_PRESETS, type ProviderConfig } from "@/constants/providers";
+import { useEffect, useRef, useState } from "react";
+import { PROVIDER_PRESETS } from "@/constants/providers";
+import type { ProviderConfig } from "@/types";
 import { useSettingsStore } from "@/stores/settingsStore";
 
 /** 测试连通性结果（idle = 未测试；testing = 请求中）。 */
@@ -180,37 +181,61 @@ function ProviderForm({
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [test, setTest] = useState<TestState>({ status: "idle" });
   const [manualDraft, setManualDraft] = useState("");
+  /** 测试/拉取互斥：同一时刻只允许一个在途请求（两按钮共享）。 */
+  const [busy, setBusy] = useState(false);
+  /** 卸载竞态：ProviderForm 以 key={editing.id} 重挂载，切换供应商会卸载旧实例，
+   * await 返回后不再 setState（防陈旧结果覆盖新实例状态）。 */
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
 
   /** 测试连通性：GET /models 验证端点可达 + key 有效（免费，不触发模型计费）。 */
   const runTest = async () => {
+    if (busy) return;
+    setBusy(true);
     setTest({ status: "testing" });
     const start = performance.now();
     try {
       await fetchProviderModelIds(provider.id);
+      if (!aliveRef.current) return;
       setTest({
         status: "ok",
         latencyMs: Math.round(performance.now() - start),
       });
     } catch (e) {
+      if (!aliveRef.current) return;
       setTest({
         status: "fail",
         message: e instanceof Error ? e.message : String(e),
       });
+    } finally {
+      if (aliveRef.current) setBusy(false);
     }
   };
 
   /** 拉取供应商模型列表（成功即展示复选列表，失败降级为手动添加）。 */
   const fetchModels = async () => {
+    if (busy) return;
+    setBusy(true);
     setFetching(true);
     setFetchError(null);
     try {
       const ids = await fetchProviderModelIds(provider.id);
+      if (!aliveRef.current) return;
       setFetched(ids.sort((a, b) => a.localeCompare(b)));
     } catch (e) {
+      if (!aliveRef.current) return;
       setFetched(null);
       setFetchError(e instanceof Error ? e.message : String(e));
     } finally {
-      setFetching(false);
+      if (aliveRef.current) {
+        setFetching(false);
+        setBusy(false);
+      }
     }
   };
 
@@ -289,7 +314,7 @@ function ProviderForm({
           </div>
           <button
             onClick={() => void runTest()}
-            disabled={test.status === "testing"}
+            disabled={busy || test.status === "testing"}
             className="flex-shrink-0 px-2.5 py-1.5 rounded text-xs flex items-center gap-1.5 border hover:opacity-90 disabled:opacity-60"
             style={{
               color: "var(--text-secondary)",
@@ -330,7 +355,7 @@ function ProviderForm({
         <div className="flex items-center gap-2">
           <button
             onClick={() => void fetchModels()}
-            disabled={fetching}
+            disabled={busy || fetching}
             className="px-2.5 py-1 rounded text-xs flex items-center gap-1.5 border hover:opacity-90 disabled:opacity-60"
             style={{
               color: "var(--text-secondary)",

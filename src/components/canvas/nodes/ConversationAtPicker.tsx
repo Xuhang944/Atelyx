@@ -4,6 +4,7 @@ import { useCanvasStore } from "@/stores/canvasStore";
 import type { Node as FlowNode } from "@xyflow/react";
 import type { TableData, TextData, MediaData, SearchResultData } from "@/types";
 import { mentionTextOf } from "@/utils/text";
+import { useDismissOnOutside } from "@/hooks/useDismissOnOutside";
 
 /**
  * @ 提及选择器（反向：手动 @ → 自动建边 + @chip）。
@@ -81,14 +82,8 @@ export function ConversationAtPicker({ conversationId, x, y, openUp, yBottom, qu
     setActive((i) => (candidates.length ? Math.min(i, candidates.length - 1) : 0));
   }, [candidates.length]);
 
-  // 点击菜单外关闭
-  useEffect(() => {
-    const close = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [onClose]);
+  // 点击菜单外关闭（公共 hook；Esc 由下方捕获阶段键盘监听处理，hook 的 window Esc 为兜底，onClose 幂等）
+  useDismissOnOutside(onClose, ref);
 
   // 键盘导航：捕获阶段拦截，防止输入框的 Enter 发送 / 方向键默认行为
   useEffect(() => {

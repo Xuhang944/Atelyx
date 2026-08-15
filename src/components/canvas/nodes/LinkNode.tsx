@@ -7,12 +7,12 @@
  */
 import { Link2 } from "lucide-react";
 import { type NodeProps } from "@xyflow/react";
-import { NodeResizeControl } from "@xyflow/react";
 import { useAppStore } from "@/stores/appStore";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { DEFAULT_LINK_HEIGHT, DEFAULT_LINK_WIDTH } from "@/constants/canvas";
 import type { LinkFileData } from "@/types";
 import { ConnectionFrame } from "./ConnectionFrame";
+import { ResizeHandle } from "./ResizeHandle";
 
 /** 仅 http/https 链接可点击打开（其余协议/非法 URL 只展示）。 */
 function isOpenableUrl(raw: string): boolean {
@@ -80,19 +80,7 @@ export function LinkNode({ data, width, height, selected }: NodeProps) {
         </span>
       </div>
 
-      {!readOnly && (
-        <NodeResizeControl
-          position="bottom-right"
-          style={{
-            width: 10,
-            height: 10,
-            background: "#fff",
-            border: "2px solid var(--accent)",
-            borderRadius: 2,
-            cursor: "nwse-resize",
-          }}
-        />
-      )}
+      {!readOnly && <ResizeHandle />}
     </div>
   );
 }

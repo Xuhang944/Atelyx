@@ -1026,7 +1026,8 @@ pub fn delete_chat_messages_file(root: &Path, file: &str) -> Result<(), String> 
 ///   保持 `.tmp` 扩展名，让 watcher 能过滤自写副产物。
 /// - 写后 sync_all：崩溃/断电时 rename 已提交但数据未刷盘会丢最后一次保存。
 /// - rename 失败时清理临时文件，避免残留。
-fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
+/// pub(crate)：commands/global.rs 的全局配置/UI 状态写盘复用（保证全项目同一 durability 语义）。
+pub(crate) fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
     use std::io::Write;
     let uniq = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

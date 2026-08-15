@@ -6,7 +6,7 @@
  * - 可拖拽移动 / NodeResizeControl 调整大小；仅无向关联可连线（有向模式被拦截）
  */
 import { useEffect, useRef, useState } from "react";
-import { NodeResizeControl, type NodeProps } from "@xyflow/react";
+import type { NodeProps } from "@xyflow/react";
 import { useCanvasStore } from "@/stores/canvasStore";
 import {
   DEFAULT_GROUP_HEIGHT,
@@ -15,6 +15,7 @@ import {
 } from "@/constants/canvas";
 import type { GroupFileData } from "@/types";
 import { ConnectionFrame } from "./ConnectionFrame";
+import { ResizeHandle } from "./ResizeHandle";
 import { useInlineEdit } from "@/hooks/useInlineEdit";
 
 /** 色板顺序（色块按钮循环展示用）：1-5 + 默认（无色）。 */
@@ -173,19 +174,7 @@ export function GroupNode({ id, data, width, height, selected }: NodeProps) {
         </div>
       )}
 
-      {!readOnly && (
-        <NodeResizeControl
-          position="bottom-right"
-          style={{
-            width: 10,
-            height: 10,
-            background: "#fff",
-            border: "2px solid var(--accent)",
-            borderRadius: 2,
-            cursor: "nwse-resize",
-          }}
-        />
-      )}
+      {!readOnly && <ResizeHandle />}
     </div>
   );
 }

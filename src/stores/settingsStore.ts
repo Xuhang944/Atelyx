@@ -232,6 +232,18 @@ function cleanVaultConfig(vc: VaultConfig): VaultConfig {
   return out;
 }
 
+/** 仓库级配置写盘统一入口（各 setXxx 收敛于此）：merge patch → 更新内存 → 清理敏感字段 → 落盘。
+ * 失败仅记日志不打断 UI（配置丢失可重设，非关键路径）。 */
+async function commitVault(patch: Partial<VaultConfig>): Promise<void> {
+  const vc: VaultConfig = { ...(useSettingsStore.getState().vaultConfig ?? {}), ...patch };
+  useSettingsStore.setState({ vaultConfig: vc });
+  try {
+    await writeVaultConfig(cleanVaultConfig(vc));
+  } catch (e) {
+    console.error("保存仓库级配置失败", e);
+  }
+}
+
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   config: DEFAULT_AI_CONFIG,
   theme: "dark",
@@ -479,36 +491,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   setVaultModel: async (model) => {
-    const base = get().vaultConfig ?? {};
-    const vc: VaultConfig = { ...base, model: model ?? undefined };
-    set({ vaultConfig: vc });
-    try {
-      await writeVaultConfig(cleanVaultConfig(vc));
-    } catch (e) {
-      console.error("保存仓库级配置失败", e);
-    }
+    await commitVault({ model: model ?? undefined });
   },
 
   setAutoNamingEnabled: async (enabled) => {
-    const base = get().vaultConfig ?? {};
-    const vc: VaultConfig = { ...base, autoNamingEnabled: enabled };
-    set({ vaultConfig: vc });
-    try {
-      await writeVaultConfig(cleanVaultConfig(vc));
-    } catch (e) {
-      console.error("保存仓库级配置失败", e);
-    }
+    await commitVault({ autoNamingEnabled: enabled });
   },
 
   setAutoNamingModel: async (model) => {
-    const base = get().vaultConfig ?? {};
-    const vc: VaultConfig = { ...base, autoNamingModel: model ?? undefined };
-    set({ vaultConfig: vc });
-    try {
-      await writeVaultConfig(cleanVaultConfig(vc));
-    } catch (e) {
-      console.error("保存仓库级配置失败", e);
-    }
+    await commitVault({ autoNamingModel: model ?? undefined });
   },
 
   setFontSize: async (size) => {
@@ -542,14 +533,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   setFileExplorerSort: async (sortKey) => {
-    const base = get().vaultConfig ?? {};
-    const vc: VaultConfig = { ...base, fileExplorerSort: sortKey };
-    set({ vaultConfig: vc });
-    try {
-      await writeVaultConfig(cleanVaultConfig(vc));
-    } catch (e) {
-      console.error("保存仓库级配置失败", e);
-    }
+    await commitVault({ fileExplorerSort: sortKey });
   },
 
   /** 设应用级强调色（undefined = 恢复默认金色；只接受合法 hex 格式）。 */
@@ -564,26 +548,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   setExcludeFolders: async (folders) => {
-    const base = get().vaultConfig ?? {};
     // 空数组不落盘（缺省 = 无排除，保持 config.json 干净）
-    const vc: VaultConfig = { ...base, excludeFolders: folders.length ? folders : undefined };
-    set({ vaultConfig: vc });
-    try {
-      await writeVaultConfig(cleanVaultConfig(vc));
-    } catch (e) {
-      console.error("保存仓库级配置失败", e);
-    }
+    await commitVault({ excludeFolders: folders.length ? folders : undefined });
   },
 
   setSoftLineBreak: async (enabled) => {
-    const base = get().vaultConfig ?? {};
-    const vc: VaultConfig = { ...base, softLineBreak: enabled };
-    set({ vaultConfig: vc });
-    try {
-      await writeVaultConfig(cleanVaultConfig(vc));
-    } catch (e) {
-      console.error("保存仓库级配置失败", e);
-    }
+    await commitVault({ softLineBreak: enabled });
   },
 
   setAutoRestoreFiles: async (enabled) => {
@@ -617,14 +587,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   setAttachmentFolder: async (folder) => {
-    const base = get().vaultConfig ?? {};
-    const vc: VaultConfig = { ...base, attachmentFolder: folder || undefined };
-    set({ vaultConfig: vc });
-    try {
-      await writeVaultConfig(cleanVaultConfig(vc));
-    } catch (e) {
-      console.error("保存仓库级配置失败", e);
-    }
+    await commitVault({ attachmentFolder: folder || undefined });
   },
 
   /** 注册/注销系统提示词笔记：数组含该路径则移除，否则添加（空数组也落盘保持文件干净，独立于 config.json）。 */
@@ -669,14 +632,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setSearchConfig: async (patch) => {
     const next = { ...get().searchConfig, ...patch };
-    const base = get().vaultConfig ?? {};
-    const vc: VaultConfig = { ...base, search: next };
-    set({ searchConfig: next, vaultConfig: vc });
-    try {
-      await writeVaultConfig(cleanVaultConfig(vc));
-    } catch (e) {
-      console.error("保存搜索源配置失败", e);
-    }
+    set({ searchConfig: next });
+    await commitVault({ search: next });
   },
 
   setTavilyKey: async (key) => {

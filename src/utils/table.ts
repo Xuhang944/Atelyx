@@ -14,6 +14,14 @@
 import { MAX_TABLE_INJECT_ROWS, MAX_COL_WIDTH, MIN_COL_WIDTH } from "@/constants/table";
 import type { CellValue, TableField, TableFile, TablePatch, TableRow } from "@/types";
 
+/** CJK 全角字符（列宽/单元格宽度估算共用口径，双宽判定）。 */
+const CJK_WIDTH_RE = /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/;
+
+/** 字符显示宽度单位：CJK 全角 = 2，其余 = 1。 */
+function charUnits(ch: string): number {
+  return CJK_WIDTH_RE.test(ch) ? 2 : 1;
+}
+
 /**
  * 列宽默认值：按字段名称字数自适应（CJK 字符按双宽，每单位 7px + 边距 24px），
  * 钳制在 [MIN_COL_WIDTH, MAX_COL_WIDTH]；用户拖拽调整后存字段 `width` 覆盖。
@@ -21,7 +29,7 @@ import type { CellValue, TableField, TableFile, TablePatch, TableRow } from "@/t
 export function fieldDefaultWidth(name: string): number {
   let units = 0;
   for (const ch of name) {
-    units += /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/.test(ch) ? 2 : 1;
+    units += charUnits(ch);
   }
   return Math.max(MIN_COL_WIDTH, Math.min(MAX_COL_WIDTH, units * 7 + 24));
 }
@@ -34,7 +42,7 @@ function cellContentWidth(v: CellValue | undefined): number {
   for (const line of text.split("\n")) {
     let units = 0;
     for (const ch of line) {
-      units += /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/.test(ch) ? 2 : 1;
+      units += charUnits(ch);
     }
     maxUnits = Math.max(maxUnits, units);
   }
@@ -157,6 +165,18 @@ export function sameIdSequence(a: { id: string }[], b: { id: string }[]): boolea
     if (a[i].id !== b[i].id) return false;
   }
   return true;
+}
+
+/** 按 id 序重排（rank = id → 位置）：未出现在 rank 中的实体（对端并发新增）保持相对顺序置尾。
+ * 与 Rust `reorder_by` 同语义；合并产物重排（applyLocalOrder）与远端补丁 order 应用（reorderByIds）共用。 */
+export function reorderByRank<T extends { id: string }>(items: T[], rank: ReadonlyMap<string, number>): T[] {
+  const known: T[] = [];
+  const unknown: T[] = [];
+  for (const x of items) {
+    (rank.has(x.id) ? known : unknown).push(x);
+  }
+  known.sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+  return [...known, ...unknown];
 }
 
 /**

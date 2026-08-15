@@ -28,13 +28,13 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useCallback, useMemo, useRef, useState } from "react";
+import { useEffect, useCallback, useRef, useState } from "react";
 import { useAppStore } from "@/stores/appStore";
 import { useChatPanelStore } from "@/stores/chatPanelStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useVaultStore } from "@/stores/vaultStore";
 import { useAutoScrollFollow } from "@/hooks/useAutoScrollFollow";
-import { markdownComponents } from "@/utils/markdown";
+import { useMarkdownComponents } from "@/hooks/useMarkdownComponents";
 import {
   modelDisplayName,
   modelNameAcrossProviders,
@@ -137,23 +137,16 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
       setRenaming(false);
     }
   };
-  // assistant/user 消息的 Markdown 组件配置：useMemo 稳定化（气泡 memo 生效前提）。
+  // assistant/user 消息的 Markdown 组件配置：hook 统一 useMemo 稳定化（气泡 memo 生效前提）。
   // 回调全部来自 useVaultLinkHandlers（useCallback 稳定 + 内部 getState 实时读 noteList），无需响应 noteList 变化重建
   const { handleOpenWikiNote, isVaultPathNote, handleOpenVaultPathNote, handleCreateNote } =
     useVaultLinkHandlers();
-  const chatMarkdownComponents = useMemo(
-    () =>
-      markdownComponents({
-        isLocatable: () => false,
-        onLocate: () => {},
-        onOpenNote: handleOpenWikiNote,
-        isVaultPathNote,
-        onOpenVaultPathNote: handleOpenVaultPathNote,
-        onCreateNote: handleCreateNote,
-        onOpenUrl: (url) => void useAppStore.getState().openUrl(url),
-      }),
-    [handleOpenWikiNote, isVaultPathNote, handleOpenVaultPathNote, handleCreateNote]
-  );
+  const chatMarkdownComponents = useMarkdownComponents({
+    onOpenNote: handleOpenWikiNote,
+    isVaultPathNote,
+    onOpenVaultPathNote: handleOpenVaultPathNote,
+    onCreateNote: handleCreateNote,
+  });
   // 气泡操作回调稳定化（memo 生效前提）
   const handleRollback = useCallback(
     (messageId: string) => {

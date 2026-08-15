@@ -30,8 +30,6 @@ interface CollabStoreState {
   connected: boolean;
   /** 当前房间（同仓库 vaultId）在线用户列表。 */
   peers: CollabPeer[];
-  /** 设备名（Rust get_hostname，身份兜底 + 展示）。 */
-  deviceName: string;
 
   /** 应用启动时调用：载入配置并建立连接（无配置 = 不连）。 */
   init: (cfg: CollabInitConfig) => void;
@@ -95,6 +93,8 @@ function establishConnection(): void {
       if (peerId === myPeerId) return;
       useTableStore.getState().applyRemotePatch(file, patch);
     },
+    // 服务端 error 帧（协议异常/房间拒绝）：协作是尽力而为的辅助能力，仅记录不打断使用
+    onServerError: (message) => console.warn("协作中转错误：", message),
     onStatusChange: (connected) => {
       useCollabStore.setState({ connected });
       // 连接建立后补发一次当前 presence：重连/进房间时本端选中立即可见，
@@ -139,12 +139,10 @@ function ensureSubscriptions(): void {
 export const useCollabStore = create<CollabStoreState>((set) => ({
   connected: false,
   peers: [],
-  deviceName: "",
 
   init: (cfg) => {
     ensureSubscriptions();
     runtimeCfg = { ...cfg, color: cfg.color || randomPeerColor() };
-    set({ deviceName: cfg.deviceName });
     currentVaultId = useAppStore.getState().vaultId;
     // 注入表格补丁广播钩子（tableStore 在 schedulePersist 计算补丁后回调；handle 为模块级，
     // establishConnection 重建连接后闭包自动指向新连接，无需重注入）

@@ -134,17 +134,14 @@ pub fn read_global_config(app: AppHandle) -> Result<GlobalConfig, String> {
     Ok(config)
 }
 
-/// 写全局配置（原子写：`.tmp` → rename）。
+/// 写全局配置（原子写：临时文件 + fsync + rename，与 vault 侧 `atomic_write` 同一 durability 语义）。
 /// 写入前对 recentVaults 归一化去重，保证落盘路径格式统一（验收标准：无 `\\?\` 前缀）。
 #[tauri::command]
 pub fn write_global_config(app: AppHandle, mut config: GlobalConfig) -> Result<(), String> {
     config.recent_vaults = normalize_and_dedupe_vaults(config.recent_vaults);
     let path = global_config_path(&app)?;
     let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
-    Ok(())
+    crate::vault::atomic_write(&path, &json)
 }
 
 // ===== 应用级 UI 使用状态（app_data_dir/ui-state.json）=====
@@ -205,13 +202,10 @@ pub fn read_app_ui_state(app: AppHandle) -> Result<AppUiState, String> {
     Ok(state)
 }
 
-/// 写应用级 UI 状态（原子写：`.tmp` → rename）。
+/// 写应用级 UI 状态（原子写：临时文件 + fsync + rename，与 vault 侧 `atomic_write` 同一 durability 语义）。
 #[tauri::command]
 pub fn write_app_ui_state(app: AppHandle, state: AppUiState) -> Result<(), String> {
     let path = app_ui_state_path(&app)?;
     let json = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
-    Ok(())
+    crate::vault::atomic_write(&path, &json)
 }

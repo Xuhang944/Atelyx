@@ -20,6 +20,7 @@ import {
   deleteNote,
   isKnownNoteDiskContent as isKnownNoteDiskContentSvc,
   listVaultTree,
+  recordNoteDiskContent as recordNoteDiskContentSvc,
   readAttachmentDataUrl as readAttachmentDataUrlSvc,
   readNote,
   renameAttachment as renameAttachmentSvc,
@@ -489,6 +490,47 @@ interface VaultFileState {
   startFileWatcher: (enabled: boolean) => void;
 }
 
+/**
+ * 重命名文件公共骨架（note/table 共用）：新标题净化 + 补扩展名 + 同目录防重名 + no-op 判断。
+ * 落盘变更由 apply 注入（各文件类型的引用同步差异）；
+ * attachment 重命名不走此骨架——用户输入保留原样（不净化、不补扩展名）。
+ */
+async function renameVaultFile(
+  oldFile: string,
+  newTitle: string,
+  ext: string,
+  fallback: string,
+  apply: (newFile: string) => Promise<void>,
+): Promise<string> {
+  const oldDir = parentDir(oldFile);
+  const base = sanitizeFilename(newTitle) || fallback;
+  const newName = dedupeFilename(
+    `${base}${ext}`,
+    siblingFileNames(oldDir).filter((n) => n !== baseName(oldFile)),
+  );
+  const newFile = oldDir ? `${oldDir}/${newName}` : newName;
+  if (newFile === oldFile) return newFile;
+  await apply(newFile);
+  return newFile;
+}
+
+/** 移动文件公共骨架（note/attachment/table 共用）：保持文件名 + 目标目录防重名 + no-op 判断。 */
+async function moveVaultFile(
+  oldFile: string,
+  targetDir: string,
+  apply: (newFile: string) => Promise<void>,
+): Promise<string> {
+  const name = baseName(oldFile);
+  const existing = siblingFileNames(targetDir).filter(
+    (n) => (targetDir ? `${targetDir}/${n}` : n) !== oldFile,
+  );
+  const safe = dedupeFilename(name, existing);
+  const newFile = targetDir ? `${targetDir}/${safe}` : safe;
+  if (newFile === oldFile) return oldFile;
+  await apply(newFile);
+  return newFile;
+}
+
 export const useVaultStore = create<VaultFileState>((set, get) => ({
   tree: [],
   noteList: [],
@@ -571,6 +613,9 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     }
     try {
       await writeNote(target.file, result);
+      // 登记磁盘基线：应用自写（AI 行级修改）须被 isKnownNoteDiskContent 识别，
+      // 否则 watcher 回波会被 NoteEditor 误判为外部修改弹假冲突
+      recordNoteDiskContentSvc(target.file, result);
     } catch (e) {
       return { ok: false, summary: `写入笔记失败：${e instanceof Error ? e.message : String(e)}` };
     }
@@ -581,30 +626,15 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
   },
 
   renameNote: async (oldFile, newTitle) => {
-    const oldDir = parentDir(oldFile);
-    const base = sanitizeFilename(newTitle) || "未命名";
-    // 同名自动加序号（排除自身，改名到原名不重复）
-    const newName = dedupeFilename(
-      `${base}.md`,
-      siblingFileNames(oldDir).filter((n) => n !== baseName(oldFile)),
+    return renameVaultFile(oldFile, newTitle, ".md", "未命名", (newFile) =>
+      applyNoteFileChange(oldFile, newFile, newTitle),
     );
-    const newFile = oldDir ? `${oldDir}/${newName}` : newName;
-    if (newFile === oldFile) return newFile;
-    await applyNoteFileChange(oldFile, newFile, newTitle);
-    return newFile;
   },
 
   moveNote: async (oldFile, targetDir) => {
-    // 保持文件名，目标文件夹同名自动加序号（排除自身 = 同目录移动 no-op）
-    const name = baseName(oldFile);
-    const existing = siblingFileNames(targetDir).filter(
-      (n) => (targetDir ? `${targetDir}/${n}` : n) !== oldFile,
+    return moveVaultFile(oldFile, targetDir, (newFile) =>
+      applyNoteFileChange(oldFile, newFile, null),
     );
-    const safe = dedupeFilename(name, existing);
-    const newFile = targetDir ? `${targetDir}/${safe}` : safe;
-    if (newFile === oldFile) return oldFile;
-    await applyNoteFileChange(oldFile, newFile, null);
-    return newFile;
   },
 
   deleteNote: async (file) => {
@@ -633,16 +663,9 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
   },
 
   moveAttachment: async (oldFile, targetDir) => {
-    // 保持文件名，目标文件夹同名自动加序号（排除自身 = 同目录移动 no-op）
-    const name = baseName(oldFile);
-    const existing = siblingFileNames(targetDir).filter(
-      (n) => (targetDir ? `${targetDir}/${n}` : n) !== oldFile,
+    return moveVaultFile(oldFile, targetDir, (newFile) =>
+      applyAttachmentFileChange(oldFile, newFile),
     );
-    const safe = dedupeFilename(name, existing);
-    const newFile = targetDir ? `${targetDir}/${safe}` : safe;
-    if (newFile === oldFile) return oldFile;
-    await applyAttachmentFileChange(oldFile, newFile);
-    return newFile;
   },
 
   deleteAttachment: async (file) => {
@@ -665,29 +688,15 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
   },
 
   renameTable: async (oldFile, newTitle) => {
-    const oldDir = parentDir(oldFile);
-    const base = sanitizeFilename(newTitle) || "未命名表格";
-    // 同名自动加序号（排除自身，改名到原名不重复）
-    const newName = dedupeFilename(
-      `${base}.atb`,
-      siblingFileNames(oldDir).filter((n) => n !== baseName(oldFile)),
+    return renameVaultFile(oldFile, newTitle, ".atb", "未命名表格", (newFile) =>
+      applyTableFileChange(oldFile, newFile, baseName(newFile).replace(/\.atb$/i, "")),
     );
-    const newFile = oldDir ? `${oldDir}/${newName}` : newName;
-    if (newFile === oldFile) return newFile;
-    await applyTableFileChange(oldFile, newFile, newName.replace(/\.atb$/i, ""));
-    return newFile;
   },
 
   moveTable: async (oldFile, targetDir) => {
-    const name = baseName(oldFile);
-    const existing = siblingFileNames(targetDir).filter(
-      (n) => (targetDir ? `${targetDir}/${n}` : n) !== oldFile,
+    return moveVaultFile(oldFile, targetDir, (newFile) =>
+      applyTableFileChange(oldFile, newFile, null),
     );
-    const safe = dedupeFilename(name, existing);
-    const newFile = targetDir ? `${targetDir}/${safe}` : safe;
-    if (newFile === oldFile) return oldFile;
-    await applyTableFileChange(oldFile, newFile, null);
-    return newFile;
   },
 
   deleteTable: async (file) => {
@@ -790,6 +799,8 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     const file = await get().createNote(d.title || "未命名");
     try {
       await writeNote(file, d.bodyMd ?? "");
+      // 登记磁盘基线（同 saveNoteContent/applyNoteEdits：应用自写须被外部修改感知识别）
+      recordNoteDiskContentSvc(file, d.bodyMd ?? "");
     } catch (e) {
       // 写正文失败：回滚已建的空文件（防根目录残留孤儿 .md），节点保持画布内文本不转引用
       console.error("保存为笔记失败", e);
@@ -807,6 +818,8 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
 
   saveNoteContent: async (file, content) => {
     await writeNote(file, content);
+    // 登记磁盘基线（同 applyNoteEdits/saveTextNodeAsNote）：应用自写须被外部修改感知识别
+    recordNoteDiskContentSvc(file, content);
     await get().loadFiles();
   },
 

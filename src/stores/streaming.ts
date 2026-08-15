@@ -168,6 +168,10 @@ export async function runStreamExchange(
         },
       );
 
+      // 空闲超时只覆盖「等待 token」阶段：streamChat 一结束立即收掉计时器，
+      // 否则计时器贯穿 executeTools——慢工具执行（搜索等）会被误判挂起中止
+      clearIdle();
+
       if (roundError) {
         cancelRaf();
         clearIdle();
@@ -223,7 +227,7 @@ export async function runStreamExchange(
         }),
       );
       // 已达工具上限：本轮工具已执行（结果已沉淀），不再回填继续请求
-      if (round >= maxRounds) break;
+      // （末轮 toolsForRound 恒为空、toolCalls 恒为空，178 行已 break——此处无需守卫）
       apiMessages = [
         ...apiMessages,
         // OpenAI 规范：assistant 带 tool_calls 时 content 为 null（部分兼容网关对空串返回 500）

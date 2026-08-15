@@ -1,22 +1,19 @@
 import { AlertTriangle, Eye, FileText, Pencil, StickyNote } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
-import { NodeResizeControl, type NodeProps } from "@xyflow/react";
+import { useRef, useState } from "react";
+import type { NodeProps } from "@xyflow/react";
 import ReactMarkdown from "react-markdown";
 import type { TextData } from "@/types";
 import { useCanvasStore } from "@/stores/canvasStore";
-import { useAppStore } from "@/stores/appStore";
 import { useVaultStore } from "@/stores/vaultStore";
+import { ResizeHandle } from "./ResizeHandle";
 import {
   DEFAULT_TEXT_NODE_HEIGHT,
   DEFAULT_TEXT_NODE_WIDTH,
 } from "@/constants/canvas";
-import {
-  MARKDOWN_PLUGINS,
-  REHYPE_PLUGINS,
-  markdownComponents,
-} from "@/utils/markdown";
+import { MARKDOWN_PLUGINS, REHYPE_PLUGINS } from "@/utils/markdown";
 import { ConnectionFrame } from "./ConnectionFrame";
 import { useInlineEdit } from "@/hooks/useInlineEdit";
+import { useMarkdownComponents } from "@/hooks/useMarkdownComponents";
 import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
 import { useWikiNodeLocate } from "@/hooks/useWikiNodeLocate";
 
@@ -81,26 +78,13 @@ export function TextNode({ id, data, width, height, selected }: NodeProps) {
     handleCreateNote,
   } = useVaultLinkHandlers();
   // Markdown 组件配置稳定化（回调全部稳定，useMemo 防每次渲染重建）
-  const textMarkdownComponents = useMemo(
-    () =>
-      markdownComponents({
-        isLocatable: isWikiLocatable,
-        onLocate: handleLocateWiki,
-        onOpenNote: handleOpenWikiNote,
-        isVaultPathNote,
-        onOpenVaultPathNote: handleOpenVaultPathNote,
-        onCreateNote: handleCreateNote,
-        onOpenUrl: (url) => void useAppStore.getState().openUrl(url),
-      }),
-    [
-      isWikiLocatable,
-      handleLocateWiki,
-      handleOpenWikiNote,
-      isVaultPathNote,
-      handleOpenVaultPathNote,
-      handleCreateNote,
-    ],
-  );
+  const textMarkdownComponents = useMarkdownComponents({
+    locate: { isLocatable: isWikiLocatable, onLocate: handleLocateWiki },
+    onOpenNote: handleOpenWikiNote,
+    isVaultPathNote,
+    onOpenVaultPathNote: handleOpenVaultPathNote,
+    onCreateNote: handleCreateNote,
+  });
 
   return (
     <div
@@ -230,19 +214,7 @@ export function TextNode({ id, data, width, height, selected }: NodeProps) {
         )}
       </div>
 
-      {!readOnly && (
-        <NodeResizeControl
-          position="bottom-right"
-          style={{
-            width: 10,
-            height: 10,
-            background: "#fff",
-            border: "2px solid var(--accent)",
-            borderRadius: 2,
-            cursor: "nwse-resize",
-          }}
-        />
-      )}
+      {!readOnly && <ResizeHandle />}
     </div>
   );
 }

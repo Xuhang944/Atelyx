@@ -1,10 +1,12 @@
 import { AlertTriangle, FileText, Pin, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type { PendingAttachment } from "@/types";
+import { Menu, MenuItem } from "@/components/common/Menu";
 
 /**
  * 待发送附件托盘（临时附件通道）。
  * 纯展示组件：缩略图 chip 列表 + 移除；chip 右键「固定到画布」（仅无源附件）。
+ * 右键菜单走公共 Menu（portal 到 body + 视口坐标，天然避开 React Flow transform 容器）。
  */
 interface Props {
   attachments: PendingAttachment[];
@@ -14,24 +16,6 @@ interface Props {
 
 export function ConversationAttachmentTray({ attachments, onRemove, onPin }: Props) {
   const [menu, setMenu] = useState<{ att: PendingAttachment; x: number; y: number } | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  // 外部点击 / Esc 关闭菜单（与 ConversationNode 的 confirmMenu 同款）
-  useEffect(() => {
-    if (!menu) return;
-    const onDown = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenu(null);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMenu(null);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [menu]);
 
   if (attachments.length === 0) return null;
 
@@ -47,9 +31,8 @@ export function ConversationAttachmentTray({ attachments, onRemove, onPin }: Pro
             e.preventDefault();
             e.stopPropagation();
             if (att.sourceNodeId) return;
-            // 菜单 absolute 相对托盘根定位，避免 React Flow transform 容器下 fixed 漂移
-            const rect = e.currentTarget.offsetParent?.getBoundingClientRect();
-            setMenu({ att, x: e.clientX - (rect?.left ?? 0), y: e.clientY - (rect?.top ?? 0) });
+            // 视口坐标（e.clientX/Y）——Menu portal 到 body 后按视口渲染，无需 offsetParent 换算
+            setMenu({ att, x: e.clientX, y: e.clientY });
           }}
         >
           {att.kind === "image" && att.payload ? (
@@ -77,31 +60,19 @@ export function ConversationAttachmentTray({ attachments, onRemove, onPin }: Pro
       ))}
 
       {menu && (
-        <div
-          ref={menuRef}
-          className="absolute z-[60] border rounded shadow-lg py-1 w-40"
-          style={{
-            left: menu.x,
-            top: menu.y,
-            background: "var(--bg-secondary)",
-            borderColor: "var(--border)",
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button
+        <Menu x={menu.x} y={menu.y} onClose={() => setMenu(null)} widthClass="w-40" stopPointerDown>
+          <MenuItem
             onClick={() => {
               onPin(menu.att);
               setMenu(null);
             }}
-            className="w-full text-left px-3 py-1.5 text-sm hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
-            style={{ color: "var(--text-primary)" }}
           >
             <span className="inline-flex items-center gap-1.5">
               <Pin size={14} />
               固定到画布
             </span>
-          </button>
-        </div>
+          </MenuItem>
+        </Menu>
       )}
     </div>
   );

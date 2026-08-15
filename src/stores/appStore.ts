@@ -171,6 +171,13 @@ interface AppState {
   convertWhiteboard: (file: string) => Promise<CanvasFileRow | null>;
 }
 
+/** 画布 CRUD 后统一刷新两个数据源：canvases 列表（appStore）+ 文件树（vaultStore.tree 含 .atlx 行）。
+ * 漏刷会导致文件面板不显示新画布，直到重进仓库——所有画布写操作后必须走这里。 */
+async function refreshCanvasAndTree(): Promise<void> {
+  await useAppStore.getState().loadList();
+  await useVaultStore.getState().loadFiles();
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   view: "vaultSelect",
   vaultRoot: null,
@@ -313,8 +320,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // UI 使用状态（布局/展开/上次文件）为应用级，启动时已加载，切仓库不重载
       void (async () => {
         try {
-          await get().loadList();
-          await useVaultStore.getState().loadFiles();
+          await refreshCanvasAndTree();
           await useChatPanelStore.getState().load(info.id);
         } catch (e) {
           console.error("加载仓库数据失败", e);
@@ -449,10 +455,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const { id, file } = await createCanvasVault(actual, dir);
       markSelfSave(file);
-      // 画布 CRUD 需同时刷新两个数据源：canvases 列表（appStore）+ 文件树（vaultStore.tree 含 .atlx 行），
-      // 漏刷会导致文件面板不显示新画布，直到重进仓库（bug 修复
-      await get().loadList();
-      await useVaultStore.getState().loadFiles();
+      await refreshCanvasAndTree();
       return { id, file, title: actual };
     } catch (e) {
       console.error("新建画布失败", e);
@@ -478,9 +481,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (get().currentCanvasFile === row.file) {
         useCanvasStore.setState({ canvasFile: newFile });
       }
-      await get().loadList();
-      // 文件树同步刷新（.atlx 行名 = 文件名，重命名后需重新扫描）
-      await useVaultStore.getState().loadFiles();
+      await refreshCanvasAndTree();
     } catch (e) {
       console.error("重命名失败", e);
     }
@@ -503,8 +504,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (get().currentCanvasFile === row.file) {
         useCanvasStore.setState({ canvasFile: newFile });
       }
-      await get().loadList();
-      await useVaultStore.getState().loadFiles();
+      await refreshCanvasAndTree();
       return newFile;
     } catch (e) {
       // 不吞错误：调用方（FileExplorerPanel.handleMoveFile）据此提示「移动文件失败」
@@ -526,9 +526,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const target = siblingPath(row.file, `${sanitizeFilename(actual)}.atlx`);
       await writeCanvasVault(canvas, target);
       markSelfSave(target);
-      await get().loadList();
-      // 文件树同步刷新（新增 .atlx 行）
-      await useVaultStore.getState().loadFiles();
+      await refreshCanvasAndTree();
       return actual;
     } catch (e) {
       console.error("复制画布失败", e);
@@ -553,9 +551,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         currentCanvasId: row.id === currentCanvasId ? null : currentCanvasId,
         currentCanvasFile: row.id === currentCanvasId ? null : currentCanvasFile,
       });
-      await get().loadList();
-      // 文件树同步刷新（.atlx 行从树中移除）
-      await useVaultStore.getState().loadFiles();
+      await refreshCanvasAndTree();
     } catch (e) {
       console.error("删除失败", e);
     }
@@ -590,9 +586,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const row = await convertWhiteboardToAtlx(file, title, siblings);
       markSelfSave(row.file);
-      // 转换生成了新 .atlx：刷新两个数据源（画布列表 + 文件树），成功后打开新画布
-      await get().loadList();
-      await useVaultStore.getState().loadFiles();
+      // 转换生成了新 .atlx：刷新两个数据源后打开新画布
+      await refreshCanvasAndTree();
       get().openCanvas(row);
       return row;
     } catch (e) {

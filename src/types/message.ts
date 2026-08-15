@@ -1,5 +1,5 @@
 /**
- * 对话消息类型，对应 DB messages 表。
+ * 对话消息类型：画布对话节点（.atlx 内嵌）与 AI 对话面板会话共用。
  * role 遵循 OpenAI 兼容协议。
  */
 export type Role = "system" | "user" | "assistant";

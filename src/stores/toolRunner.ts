@@ -146,6 +146,8 @@ export async function runToolCalls(
         const res = await useTableStore
           .getState()
           .appendRowsFromAi(tableTitle, rows);
+        // 停止后不回填（与 write_note 一致：副作用已发生，结果消息随引擎中止一并丢弃）
+        if (signal.aborted) break;
         toolMessages.push({
           role: "tool",
           tool_call_id: tc.id,
@@ -172,6 +174,8 @@ export async function runToolCalls(
         }
         if (signal.aborted) break;
         const res = await useVaultStore.getState().applyNoteEdits(note, edits);
+        // 停止后不回填（与 write_note 一致：副作用已发生，结果消息随引擎中止一并丢弃）
+        if (signal.aborted) break;
         toolMessages.push({
           role: "tool",
           tool_call_id: tc.id,

@@ -1,7 +1,5 @@
 import type { ProviderConfig } from "@/types";
 
-export type { ProviderConfig };
-
 export const PROVIDER_PRESETS: Array<Pick<ProviderConfig, "name" | "baseUrl" | "models">> = [
   {
     name: "OpenAI",

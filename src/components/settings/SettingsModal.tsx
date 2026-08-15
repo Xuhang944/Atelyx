@@ -35,9 +35,38 @@ type Tab =
   | "editor"
   | "about";
 
+/** 输入草稿：本地 state + 外部值变化时同步（受控输入中间态防拒 + blur 提交模式）。
+ * 注意：外部值变化会覆盖草稿（如非法输入回滚/其他面板修改配置），与既有行为一致。 */
+function useDraftSync<T>(value: T): [T, (v: T) => void] {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+  return [draft, setDraft];
+}
+
+/** 防抖提交草稿：拖动/连续 onChange 场景（取色器），防抖 delay 后落盘（避免每帧一次配置原子写/relay 重连）。 */
+function useDebouncedDraft<T>(init: T, onCommit: (v: T) => void, delay = 200): [T, (v: T) => void] {
+  const [draft, setDraft] = useState(init);
+  const timerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    };
+  }, []);
+  const commit = (v: T) => {
+    setDraft(v);
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = null;
+      onCommit(v);
+    }, delay);
+  };
+  return [draft, commit];
+}
+
 /** 左侧 tab 栏配置（图标 + 标签；折叠后仅显示图标）。 */
-const TAB_ITEMS: { key: Tab; label: string; icon: LucideIcon }[] = [
-  { key: "general", label: "通用", icon: Settings },
+const TAB_ITEMS: { key: Tab; label: string; icon: LucideIcon }[] = [  { key: "general", label: "通用", icon: Settings },
   { key: "providers", label: "模型供应商", icon: Server },
   { key: "modelServices", label: "模型服务", icon: Bot },
   { key: "search", label: "联网搜索", icon: Search },
@@ -97,22 +126,6 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const collabConnected = useCollabStore((s) => s.connected);
   // 仓库内设置（仓库级，七 tab）：通用 / 模型供应商 / 模型服务 / 联网搜索 / 文件与路径 / 编辑器 / 关于
   const [tab, setTab] = useState<Tab>("general");
-  /** 强调色取色器草稿：取色器拖动连续触发 onChange，防抖 200ms 后落盘（避免每帧一次配置原子写）。 */
-  const [accentDraft, setAccentDraft] = useState(accentColor ?? DEFAULT_ACCENT);
-  const accentTimerRef = useRef<number | null>(null);
-  const commitAccentDraft = (v: string) => {
-    setAccentDraft(v);
-    if (accentTimerRef.current !== null) window.clearTimeout(accentTimerRef.current);
-    accentTimerRef.current = window.setTimeout(() => {
-      accentTimerRef.current = null;
-      void setAccentColor(v);
-    }, 200);
-  };
-  useEffect(() => {
-    return () => {
-      if (accentTimerRef.current !== null) window.clearTimeout(accentTimerRef.current);
-    };
-  }, []);
   /** 左侧 tab 栏折叠状态（折叠后仅显示图标）。 */
   const [tabsCollapsed, setTabsCollapsed] = useState(false);
   /** 重建内部链接：确认弹窗 / 执行中 / 内联结果（编辑器 tab）。 */
@@ -151,6 +164,11 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const setSyncKeys = useSettingsStore((s) => s.setSyncKeys);
   const setAutoNamingEnabled = useSettingsStore((s) => s.setAutoNamingEnabled);
   const setAutoNamingModel = useSettingsStore((s) => s.setAutoNamingModel);
+  // 强调色/协作色取色器草稿：拖动连续 onChange，防抖 200ms 后落盘（避免每帧一次配置原子写/relay 重连）
+  const [accentDraft, commitAccentDraft] = useDebouncedDraft(
+    accentColor ?? DEFAULT_ACCENT,
+    (v) => void setAccentColor(v),
+  );
   /** 宽松换行：缺省开启（单个换行渲染为换行）。 */
   const softLineBreak = vaultConfig?.softLineBreak ?? true;
   /** 话题自动命名：缺省不启用（下拉「不启用」项）。 */
@@ -159,12 +177,9 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const autoNamingModelValue = vaultConfig?.autoNamingModel?.model ?? "";
 
   // 排除文件夹/附件文件夹用本地草稿 + blur 提交（与字号同模式：避免每键一次 IPC）
-  const [excludeDraft, setExcludeDraft] = useState(
+  const [excludeDraft, setExcludeDraft] = useDraftSync(
     vaultConfig?.excludeFolders?.join(", ") ?? "",
   );
-  useEffect(() => {
-    setExcludeDraft(vaultConfig?.excludeFolders?.join(", ") ?? "");
-  }, [vaultConfig?.excludeFolders]);
   const commitExcludeFolders = () => {
     const list = excludeDraft
       .split(/[,，]/)
@@ -172,24 +187,18 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
       .filter(Boolean);
     void setExcludeFolders(list);
   };
-  const [attachmentDraft, setAttachmentDraft] = useState(
+  const [attachmentDraft, setAttachmentDraft] = useDraftSync(
     vaultConfig?.attachmentFolder ?? "",
   );
-  useEffect(() => {
-    setAttachmentDraft(vaultConfig?.attachmentFolder ?? "");
-  }, [vaultConfig?.attachmentFolder]);
   const commitAttachmentFolder = () => {
     const v = attachmentDraft.trim();
     void setAttachmentFolder(v || undefined);
   };
 
   // 字号用本地草稿 + blur 提交：受控 + 范围校验会拒绝输入中间态（如敲 "1" 准备输 15）导致无法输入
-  const [fontSizeDraft, setFontSizeDraft] = useState(
+  const [fontSizeDraft, setFontSizeDraft] = useDraftSync(
     fontSize !== undefined ? String(fontSize) : "",
   );
-  useEffect(() => {
-    setFontSizeDraft(fontSize !== undefined ? String(fontSize) : "");
-  }, [fontSize]);
 
   /** blur/Enter 提交字号；非法值回滚为当前配置值。 */
   const commitFontSize = () => {
@@ -207,38 +216,20 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   };
 
   // 协作地址/昵称草稿（blur/Enter 提交，避免每键一次 IPC）
-  const [relayUrlDraft, setRelayUrlDraft] = useState(collabRelayUrl);
-  useEffect(() => {
-    setRelayUrlDraft(collabRelayUrl);
-  }, [collabRelayUrl]);
+  const [relayUrlDraft, setRelayUrlDraft] = useDraftSync(collabRelayUrl);
   const commitRelayUrl = () => {
     // 只输 host:port 也能用：自动补全 ws:// 与 /ws 后存盘
     void setCollabConfig({ collabRelayUrl: normalizeRelayUrl(relayUrlDraft) });
   };
-  const [collabNicknameDraft, setCollabNicknameDraft] = useState(collabNickname);
-  useEffect(() => {
-    setCollabNicknameDraft(collabNickname);
-  }, [collabNickname]);
+  const [collabNicknameDraft, setCollabNicknameDraft] = useDraftSync(collabNickname);
   const commitCollabNickname = () => {
     void setCollabConfig({ collabNickname: collabNicknameDraft.trim() });
   };
-  // 协作身份色草稿：取色器拖动连续触发 onChange，防抖 200ms 后落盘（同强调色模式，
-  // 避免每帧一次配置原子写 + relay 全量重连）
-  const [collabColorDraft, setCollabColorDraft] = useState(collabColor || "#e06c75");
-  const collabColorTimerRef = useRef<number | null>(null);
-  const commitCollabColorDraft = (v: string) => {
-    setCollabColorDraft(v);
-    if (collabColorTimerRef.current !== null) window.clearTimeout(collabColorTimerRef.current);
-    collabColorTimerRef.current = window.setTimeout(() => {
-      collabColorTimerRef.current = null;
-      void setCollabConfig({ collabColor: v });
-    }, 200);
-  };
-  useEffect(() => {
-    return () => {
-      if (collabColorTimerRef.current !== null) window.clearTimeout(collabColorTimerRef.current);
-    };
-  }, []);
+  // 协作身份色草稿：取色器拖动连续触发 onChange，防抖 200ms 后落盘（同强调色模式）
+  const [collabColorDraft, commitCollabColorDraft] = useDebouncedDraft(
+    collabColor || "#e06c75",
+    (v) => void setCollabConfig({ collabColor: v }),
+  );
 
   const config = useSettingsStore((s) => s.config);
   // 仓库默认模型选项：仓库内已配置供应商的全部模型去重；存量值（供应商被删/改模型）兼容展示
@@ -381,10 +372,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                         return (
                           <button
                             key={c}
-                            onClick={() => {
-                              setAccentDraft(c);
-                              void setAccentColor(c);
-                            }}
+                            onClick={() => commitAccentDraft(c)}
                             title={`强调色 ${c}`}
                             className="w-5 h-5 rounded-full flex items-center justify-center transition hover:scale-110 flex-shrink-0"
                             style={{ background: c }}
@@ -402,10 +390,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                       className="w-6 h-6 rounded cursor-pointer bg-transparent p-0 border-0"
                     />
                     <button
-                      onClick={() => {
-                        setAccentDraft(DEFAULT_ACCENT);
-                        void setAccentColor(undefined);
-                      }}
+                      onClick={() => commitAccentDraft(DEFAULT_ACCENT)}
                       title="恢复默认金色"
                       className="flex items-center gap-1 text-xs rounded px-1.5 py-1 hover:bg-[var(--hover)] flex-shrink-0"
                       style={{ color: "var(--text-secondary)" }}
@@ -559,9 +544,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                         <button
                           onClick={() => {
                             // 随机 = 提交一个新随机色存显式值（重启不变）；空色仅作未配置时的启动随机兜底
-                            const c = randomPeerColor();
-                            setCollabColorDraft(c);
-                            void setCollabConfig({ collabColor: c });
+                            commitCollabColorDraft(randomPeerColor());
                           }}
                           title="随机换色"
                           className="flex items-center gap-1 text-xs rounded px-1.5 py-1 hover:bg-[var(--hover)] flex-shrink-0"

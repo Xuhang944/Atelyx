@@ -22,7 +22,7 @@ import { markSelfSave } from "@/stores/canvasStore";
 import { useVaultStore } from "@/stores/vaultStore";
 import { createPersistController } from "@/utils/persist";
 import { createUndoManager } from "@/utils/undoStack";
-import { coerceRowsJson, computeTablePatch, sameIdSequence } from "@/utils/table";
+import { coerceRowsJson, computeTablePatch, reorderByRank, sameIdSequence } from "@/utils/table";
 import type { CalcType, CellValue, FieldType, TableField, TablePatch, TableRow } from "@/types";
 
 /** 编辑器视图：表格 / 时间线（内存态不持久化）。 */
@@ -209,14 +209,7 @@ function abortEditSession(): void {
  */
 function applyLocalOrder<T extends { id: string }>(merged: T[], local: T[], baseline: T[]): T[] {
   if (sameIdSequence(local, baseline)) return merged;
-  const rank = new Map(local.map((x, i) => [x.id, i] as const));
-  const known: T[] = [];
-  const unknown: T[] = [];
-  for (const x of merged) {
-    (rank.has(x.id) ? known : unknown).push(x);
-  }
-  known.sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
-  return [...known, ...unknown];
+  return reorderByRank(merged, new Map(local.map((x, i) => [x.id, i] as const)));
 }
 
 /**
@@ -354,6 +347,20 @@ const persistCtl = createPersistController<boolean>({
         useTableStore.setState({ error: "自动保存失败，请检查磁盘空间或权限", saving: false });
       }
     };
+    /** 磁盘文件被外部删除：补丁只含变化实体，重建会丢未变化部分——回退全量写（与旧行为一致）。
+     * 主补丁路径与乐观锁合并路径共用（合并路径读盘时同样可能遇到文件已删）。 */
+    const rewriteFull = async (): Promise<void> => {
+      try {
+        const updatedAt = await writeTableVault(
+          { schema: TABLE_SCHEMA, id, title, fields, rows, createdAt: 0, updatedAt: Date.now() },
+          tableFile,
+          force ? undefined : baseUpdatedAt,
+        );
+        finish(updatedAt);
+      } catch (e2) {
+        reportError(e2);
+      }
+    };
     try {
       const result = await patchTableVault({
         file: tableFile,
@@ -367,24 +374,22 @@ const persistCtl = createPersistController<boolean>({
       finish(result ? result.updatedAt : null, result?.file);
     } catch (e) {
       if (typeof e === "string" && e.includes("表格文件不存在（已从磁盘删除）")) {
-        // 磁盘文件被外部删除：补丁只含变化实体，重建会丢未变化部分——回退全量写（与旧行为一致）
-        try {
-          const updatedAt = await writeTableVault(
-            { schema: TABLE_SCHEMA, id, title, fields, rows, createdAt: 0, updatedAt: Date.now() },
-            tableFile,
-            force ? undefined : baseUpdatedAt,
-          );
-          finish(updatedAt);
-        } catch (e2) {
-          reportError(e2);
-        }
+        await rewriteFull();
       } else if (typeof e === "string" && e.includes("已被外部修改")) {
         // 乐观锁冲突：自动三方合并（磁盘基底 + 本地增量 LWW）重发补丁；
         // 合并本身失败/再冲突（并发窗口）→ 回落冲突提示由用户决策
         try {
           await retryMergePersist(tableFile, finish);
         } catch (mergeErr) {
-          reportError(mergeErr);
+          if (
+            typeof mergeErr === "string" &&
+            mergeErr.includes("表格文件不存在（已从磁盘删除）")
+          ) {
+            // 合并读盘时磁盘文件已被外部删除：同样回退全量重建
+            await rewriteFull();
+          } else {
+            reportError(mergeErr);
+          }
         }
       } else {
         reportError(e);
@@ -426,14 +431,7 @@ let collabBroadcast: ((file: string, patch: TablePatch) => void) | null = null;
 
 /** 按 id 全序重排数组（应用远端补丁的 order；未出现 id 保持相对顺序置尾——与 Rust reorder_by 同语义）。 */
 function reorderByIds<T extends { id: string }>(items: T[], order: string[]): T[] {
-  const rank = new Map(order.map((id, i) => [id, i] as const));
-  const known: T[] = [];
-  const unknown: T[] = [];
-  for (const x of items) {
-    (rank.has(x.id) ? known : unknown).push(x);
-  }
-  known.sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
-  return [...known, ...unknown];
+  return reorderByRank(items, new Map(order.map((id, i) => [id, i] as const)));
 }
 
 /** 把当前运行时 fields/rows 引用记为「已落盘基线」。 */

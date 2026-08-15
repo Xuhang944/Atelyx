@@ -1216,7 +1216,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         }
         return;
       }
-      // 未连接：立即建边（不入 undo 栈——取消引用 = 删 @标签自动断边，无需撤销）+ 输入框 @标签
+      // 未连接：立即建边（不入 undo 栈——取消引用 = 删 @标签自动断边，无需撤销）+ 输入框 @标签；
+      // 属非入栈数据变更，必须作废 redo 栈（防 undo 后 Ctrl+Y 用旧快照抹掉本边）
+      touchRedo();
       const nodesNow = get().nodes;
       const edge = withHandles({ ...connection, animated: false }, nodesNow);
       set({ edges: rfAddEdge(edge, get().edges) });

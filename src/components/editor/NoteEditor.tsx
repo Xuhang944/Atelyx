@@ -19,13 +19,13 @@ import type { BacklinkRow } from "@/types";
 import {
   MARKDOWN_PLUGINS,
   REHYPE_PLUGINS,
-  markdownComponents,
   remarkSoftLineBreak,
 } from "@/utils/markdown";
 import { parseFrontmatter, stringifyFrontmatter } from "@/utils/frontmatter";
 import { noteTitleFromFile } from "@/utils/filename";
 import { NotePropertiesView } from "@/components/editor/NotePropertiesView";
 import { MarkdownEditor } from "@/components/editor/MarkdownEditor";
+import { useMarkdownComponents } from "@/hooks/useMarkdownComponents";
 import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
 
 type SaveState = NoteSaveStatus["state"];
@@ -188,9 +188,15 @@ export function NoteEditor({ file }: { file: string }) {
       .then((disk) => {
         if (cancelled || !mountedRef.current || disk === lastSavedRef.current) return;
         if (dirtyRef.current) {
-          // 应用内其他编辑面写入（画布文本节点写盘）：静默保留本地输入，不弹「外部修改冲突」
-          // （磁盘 = 应用最近已知内容，见 isKnownNoteDiskContent）
-          if (isKnownNoteDiskContent(file, disk)) return;
+          // 应用内其他编辑面写入（画布文本节点/AI 改笔记/保存为笔记）：静默保留本地输入，不弹「外部修改冲突」
+          // （磁盘 = 应用最近已知内容，见 isKnownNoteDiskContent）；
+          // 同时把 lastSavedRef 推进到该自写内容——挂起的 debounce 保存的写盘前校验
+          // （handleChange 里「磁盘 ≠ lastSavedRef = 外部修改」）以此基线判定，不推进会把
+          // 应用自写误判为外部修改弹冲突；推进后本地编辑按 LWW 覆盖应用自写（同编辑面语义）
+          if (isKnownNoteDiskContent(file, disk)) {
+            lastSavedRef.current = disk;
+            return;
+          }
           // 取消挂起的 debounce 保存（外部修改前已调度），防到点写盘覆盖外部修改
           if (timerRef.current) {
             clearTimeout(timerRef.current);
@@ -326,6 +332,13 @@ export function NoteEditor({ file }: { file: string }) {
   /** 笔记链接打开/新建（公共接线簇，见 hooks/useVaultLinkHandlers；本编辑器不做画布定位）。 */
   const { handleOpenWikiNote, isVaultPathNote, handleOpenVaultPathNote, handleCreateNote } =
     useVaultLinkHandlers();
+  // 预览的 Markdown 组件配置：hook 统一 useMemo 稳定化（回调全部稳定，防预览随输入重渲染）
+  const noteMarkdownComponents = useMarkdownComponents({
+    onOpenNote: handleOpenWikiNote,
+    isVaultPathNote,
+    onOpenVaultPathNote: handleOpenVaultPathNote,
+    onCreateNote: handleCreateNote,
+  });
 
   /** 反链：全仓库 .md 中引用本文档的笔记（自身排除）；索引缓存 + 指纹增量刷新，扫描开销毫秒级。
    * 只在「切换打开的笔记」时扫描——不随仓库文件变化重扫（根除全量风暴），磁盘为真相自愈。
@@ -492,15 +505,7 @@ export function NoteEditor({ file }: { file: string }) {
           <ReactMarkdown
             remarkPlugins={previewPlugins}
             rehypePlugins={REHYPE_PLUGINS}
-            components={markdownComponents({
-              isLocatable: () => false,
-              onLocate: () => {},
-              onOpenNote: handleOpenWikiNote,
-              isVaultPathNote,
-              onOpenVaultPathNote: handleOpenVaultPathNote,
-              onCreateNote: handleCreateNote,
-              onOpenUrl: (url) => void useAppStore.getState().openUrl(url),
-            })}
+            components={noteMarkdownComponents}
           >
             {content}
           </ReactMarkdown>
