@@ -29,6 +29,7 @@ export async function installUpdate(): Promise<void> {
   await relaunch();
 }
 
+/** 启动静默自动更新链路：dev 跳过；检查/下载/安装失败静默降级（下次启动再试）。 */
 export async function checkAndAutoUpdate(): Promise<void> {
   if (import.meta.env.DEV) return;
   try {

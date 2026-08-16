@@ -103,11 +103,13 @@ interface AppState {
   removeRecentVault: (root: string) => Promise<void>;
   /** 返回仓库选择页（VaultSwitcher「管理仓库」入口）。 */
   backToVaultSelect: () => void;
-  /** 立即落盘全部 store 的 pending 改动（画布/表格/面板会话/UI 状态/配置；关窗与更新重启前调用）。 */
+  /** 立即落盘全部 store 的 pending 改动（画布/表格/面板会话/UI 状态/配置；关窗与更新重启前调用）。
+   *  不含协作连接收尾（本函数也会被启动自动更新检查调用，dispose 会误杀会话内协作连接）；
+   *  协作 dispose 只在关窗守卫（真退出）调用，见 installCloseGuard。 */
   flushAllPending: () => Promise<void>;
   /** 注册窗口关闭守卫：关窗前先 flushAllPending 再销毁（幂等，App 挂载时调用一次）。 */
   installCloseGuard: () => void;
-  /** 静默自动更新链路（启动时 autoUpdate 开启才调用）：先落盘再下载安装重启，失败静默降级。 */
+  /** 静默自动更新链路（启动时 autoUpdate 开启才调用）：先落盘再检查安装，失败静默降级。 */
   runAutoUpdate: () => Promise<void>;
 
   /** 调系统目录选择器，选中路径（用户取消返回 null）。 */
@@ -269,6 +271,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ installing: true, updateError: "" });
     try {
       // 更新安装后 relaunch 重启：先落盘全部 pending 改动，防 debounce 保存随 webview 销毁丢失
+      // （协作连接无需在此 dispose：安装成功后进程退出，relay 按 TCP 断开即移除 peer）
       await useAppStore.getState().flushAllPending();
       await installUpdateSvc();
     } catch (e) {
@@ -369,20 +372,25 @@ export const useAppStore = create<AppState>((set, get) => ({
     await useChatPanelStore.getState().flush(get().vaultId);
     await useUiStateStore.getState().flush();
     await useSettingsStore.getState().flush();
-    // 协作连接收尾：发 bye 离开房间并停止重连（关窗/更新重启共用此入口）
-    useCollabStore.getState().dispose();
+    // 协作连接收尾不在此处（本函数启动自动更新检查时也会调用）：dispose 会断开会话内协作连接
+    // 且清空 runtimeCfg，之后 applyConfig 全部失效、状态永久未连接。dispose 只由关窗守卫
+    // （真退出）显式调用发 bye；更新 relaunch 场景进程退出即断，relay 按 TCP 断开立即移除 peer
   },
 
   installCloseGuard: () => {
     if (closeGuardInstalled) return;
     closeGuardInstalled = true;
-    void onCloseRequestedSvc(() => useAppStore.getState().flushAllPending());
+    void onCloseRequestedSvc(async () => {
+      await useAppStore.getState().flushAllPending();
+      // 关窗 = 真退出：发 bye 离开协作房间并停止重连，防 relay 侧 30s 心跳残留幽灵在线
+      useCollabStore.getState().dispose();
+    });
   },
 
   runAutoUpdate: async () => {
     try {
       // 更新重启前先落盘：relaunch 会销毁 webview，pending 的 debounce 保存随之中断；
-      // dev 跳过守卫在 service（checkAndAutoUpdateSvc）内
+      // dev 跳过守卫在 service（checkAndAutoUpdateSvc）内；协作连接收尾不在此处见 flushAllPending
       await useAppStore.getState().flushAllPending();
       await checkAndAutoUpdateSvc();
     } catch (e) {

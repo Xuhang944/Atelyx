@@ -135,7 +135,8 @@ export default function App() {
         await useAppStore.getState().selectVault(autoEnterRoot);
       }
       // 自动更新（应用级，global.json）：开启时启动静默检查一次，失败静默跳过。
-      // 走 store 包装（runAutoUpdate 内部先 flush 全部 pending 改动再检查安装，重启不丢数据）
+      // 走 store 包装（runAutoUpdate 内部先 flush 全部 pending 改动再检查安装，重启不丢数据；
+      // 协作连接收尾不随 flush 执行，见 appStore.flushAllPending 注释）
       if (useAppStore.getState().autoUpdate) {
         void useAppStore.getState().runAutoUpdate();
       }
