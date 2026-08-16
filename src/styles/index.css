@@ -297,6 +297,12 @@ body {
   display: none;
 }
 
+/* 表格视图缩放：CSS zoom（Chromium/WebKit 原生属性），值经 --table-zoom 变量驱动，
+   缩放范围与交互补偿见 TableEditor（列宽/行高拖拽按 zoom 除回、滚动条替身/状态栏保持对齐） */
+.table-zoom {
+  zoom: var(--table-zoom, 1);
+}
+
 /* ===== Markdown ===== */
 /* 段落间距统一对齐源码空行高度：`\n\n` 的空行 = 一整行行高（line-height 1.625），
    宽松换行下单换行 `<br>` 天然同高；首/末段 margin 归零防内容顶部/底部多出空白 */

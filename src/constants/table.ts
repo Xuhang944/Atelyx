@@ -60,3 +60,6 @@ export const MAX_ROW_HEIGHT = 600;
 export const ROW_NUM_COL_WIDTH = 40;
 /** 表头末尾「+」添加字段列固定宽度（px）。 */
 export const ADD_FIELD_COL_WIDTH = 48;
+/** 表格视图缩放下限 / 上限（Ctrl+滚轮缩放，纯视图状态不持久化）。 */
+export const MIN_TABLE_ZOOM = 0.5;
+export const MAX_TABLE_ZOOM = 2;

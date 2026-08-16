@@ -40,11 +40,16 @@ import {
   CALC_TYPE_LABELS,
   MAX_COL_WIDTH,
   MAX_ROW_HEIGHT,
+  MAX_TABLE_ZOOM,
   MIN_COL_WIDTH,
   MIN_ROW_HEIGHT,
+  MIN_TABLE_ZOOM,
   ROW_NUM_COL_WIDTH,
 } from "@/constants/table";
 import type { TableField, TableRow } from "@/types";
+
+/** Ctrl+滚轮缩放灵敏度（指数因子：deltaY px → zoom 倍率，负号 = 上滚放大）。 */
+const ZOOM_SENSITIVITY = 0.0015;
 
 /** 表格编辑器：areaId 用于聚焦判定（撤销/重做快捷键门控，同画布快捷键惯例）。 */
 export function TableEditor({ areaId }: { areaId: string }) {
@@ -74,6 +79,30 @@ export function TableEditor({ areaId }: { areaId: string }) {
   const [addFieldMenu, setAddFieldMenu] = useState<{ x: number; y: number } | null>(null);
   const [statMenu, setStatMenu] = useState<{ fieldId: string; x: number; y: number } | null>(null);
   const [allMenu, setAllMenu] = useState<{ x: number; y: number } | null>(null);
+
+  // ===== 视图缩放（Ctrl+滚轮，CSS zoom；纯视图状态，不持久化、不入撤销栈，切文件随重挂复位）=====
+  const [zoom, setZoom] = useState(1);
+  /** zoom 的 ref 镜像：wheel 监听常驻（deps 仅 view），回调内读最新值免重复绑定。 */
+  const zoomRef = useRef(1);
+  /** 缩放包装层（表格主体 + 状态栏 + 底部横向滑动条：同一缩放坐标系，滚动同步天然精确）。 */
+  const zoomWrapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = zoomWrapRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      // 拦截默认整页缩放（WebView2 默认 Ctrl+滚轮 = 页面整体缩放），钳制边界同样生效
+      e.preventDefault();
+      // deltaMode 1 = 行（部分 Linux 驱动），统一换算像素；指数曲线平滑且天然夹在正区间
+      const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+      const next = Math.min(MAX_TABLE_ZOOM, Math.max(MIN_TABLE_ZOOM, zoomRef.current * Math.exp(-dy * ZOOM_SENSITIVITY)));
+      const rounded = Math.round(next * 100) / 100;
+      zoomRef.current = rounded;
+      setZoom(rounded);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [view]);
 
   // ===== 行拖拽插入排序（pointer 模拟）=====
   const dragRef = useRef<{ rowId: string; startX: number; startY: number; active: boolean } | null>(null);
@@ -241,8 +270,8 @@ export function TableEditor({ areaId }: { areaId: string }) {
 
   // ===== 列宽 / 行高拖拽调整（指针模拟，与行拖拽同策略）=====
   const resizeRef = useRef<
-    | { kind: "col"; fieldId: string; startX: number; startWidth: number }
-    | { kind: "row"; rowId: string; startY: number; startHeight: number }
+    | { kind: "col"; fieldId: string; startX: number; startWidth: number; zoom: number }
+    | { kind: "row"; rowId: string; startY: number; startHeight: number; zoom: number }
     | null
   >(null);
   /** 拖拽是否已入栈（首次实际变化才 push，点击未拖动不产生空撤销单元）。 */
@@ -254,8 +283,9 @@ export function TableEditor({ areaId }: { areaId: string }) {
       const r = resizeRef.current;
       if (!r) return;
       if (r.kind === "col") {
+        // 缩放补偿：视口像素 ÷ zoom 才是数据宽度增量（视觉 1:1 跟手）
         const width = Math.round(
-          Math.max(MIN_COL_WIDTH, Math.min(MAX_COL_WIDTH, r.startWidth + (e.clientX - r.startX))),
+          Math.max(MIN_COL_WIDTH, Math.min(MAX_COL_WIDTH, r.startWidth + (e.clientX - r.startX) / r.zoom)),
         );
         // 拖拽会话首次实际变化才入栈（期间连续调整合并为一步撤销）
         if (!pushedRef.current && width !== r.startWidth) {
@@ -265,7 +295,7 @@ export function TableEditor({ areaId }: { areaId: string }) {
         setFieldWidth(r.fieldId, width);
       } else {
         const height = Math.round(
-          Math.max(MIN_ROW_HEIGHT, Math.min(MAX_ROW_HEIGHT, r.startHeight + (e.clientY - r.startY))),
+          Math.max(MIN_ROW_HEIGHT, Math.min(MAX_ROW_HEIGHT, r.startHeight + (e.clientY - r.startY) / r.zoom)),
         );
         if (!pushedRef.current && height !== r.startHeight) {
           useTableStore.getState().pushUndo();
@@ -297,6 +327,7 @@ export function TableEditor({ areaId }: { areaId: string }) {
       fieldId: field.id,
       startX: e.clientX,
       startWidth: field.width ?? fieldDefaultWidth(field.name),
+      zoom: zoomRef.current,
     };
     pushedRef.current = false;
     document.body.style.cursor = "col-resize";
@@ -313,6 +344,7 @@ export function TableEditor({ areaId }: { areaId: string }) {
       rowId: row.id,
       startY: e.clientY,
       startHeight: row.height ?? el?.offsetHeight ?? MIN_ROW_HEIGHT,
+      zoom: zoomRef.current,
     };
     pushedRef.current = false;
     document.body.style.cursor = "row-resize";
@@ -451,6 +483,14 @@ export function TableEditor({ areaId }: { areaId: string }) {
             时间线
           </button>
         </div>
+        {/* 缩放百分比（Ctrl+滚轮缩放表格视图，纯视图状态） */}
+        <span
+          className="flex-shrink-0 tabular-nums"
+          style={{ color: "var(--text-muted)" }}
+          title="Ctrl+滚轮缩放表格视图"
+        >
+          {Math.round(zoom * 100)}%
+        </span>
         <span className="flex-shrink-0" style={{ color: "var(--text-muted)" }}>
           {rows.length} 行 · {fields.length} 列
         </span>
@@ -491,10 +531,17 @@ export function TableEditor({ areaId }: { areaId: string }) {
         <TableTimeline />
       ) : (
         <>
-          {/* 表格主体（横向溢出滚动；onScroll 同步底部滑动条；原生横向滚动条隐藏避免双条） */}
+          {/* 缩放包装层：表格主体 + 状态栏 + 底部横向滑动条整体 CSS zoom（列/行/字体/表头随缩放比例；
+              三者同一缩放坐标系，滚动同步 raw scrollLeft 与列对齐天然精确；底部条轨高经 8/zoom 补偿保持常 8px） */}
+      <div
+        ref={zoomWrapRef}
+        className="table-zoom flex-1 min-h-0 flex flex-col"
+        style={{ "--table-zoom": zoom } as React.CSSProperties}
+      >
+        {/* 表格主体（横向溢出滚动；onScroll 同步底部滑动条；原生横向滚动条隐藏避免双条） */}
       <div
         ref={rowsElRef}
-        className="flex-1 overflow-auto relative no-horizontal-scrollbar"
+        className="flex-1 min-h-0 overflow-auto relative no-horizontal-scrollbar"
         onScroll={onTableScroll}
         // 整表选中时右键任意数据单元格 → 列宽/行高自适应菜单（行首/表头各自处理；实时读 selection 防冒泡冲突）
         onContextMenu={(e) => {
@@ -679,18 +726,6 @@ export function TableEditor({ areaId }: { areaId: string }) {
         </div>
         </div>
 
-        {/* 底部横向滑动条：与表格横向滚动双向同步（常显，防视图切换后消失）。
-            高度 = border 1px + 轨道 6px + 内容余量 1px——轨道紧贴横隔线且内容高度 ≥ 1px，
-            否则 Chromium 水平滚动条内容区为 0 时 scrollWidth 塌陷、滚动失效 */}
-        <div
-          ref={bottomScrollRef}
-          onScroll={onBottomScroll}
-          className="overflow-x-auto flex-shrink-0 border-t"
-          style={{ borderColor: "var(--border)", height: 8 }}
-        >
-          <div style={{ width: totalWidth + 8, height: "100%" }} />
-        </div>
-
         {/* 状态栏：列自动计算（整格点击选择计算类型，hover 高亮，内容居中，横向滚动与表格同步） */}
         <div
           ref={statBarRef}
@@ -731,6 +766,20 @@ export function TableEditor({ areaId }: { areaId: string }) {
             })}
             <div className="flex-shrink-0" style={{ width: ADD_FIELD_COL_WIDTH }} />
           </div>
+        </div>
+
+        {/* 底部横向滑动条：与表格横向滚动双向同步（常显，防视图切换后消失）。
+            放在缩放包装层内：与表格同一缩放坐标系，任意 zoom 下 raw scrollLeft 同步天然精确；
+            高 = 8/zoom 抵消 zoom 让渲染高度恒为 8px（含边框；内容区渲染高 = 8-2·zoom ≥ 4px，
+            满足 Chromium 水平滚动条内容高 ≥ 1px 防 scrollWidth 塌陷） */}
+        <div
+          ref={bottomScrollRef}
+          onScroll={onBottomScroll}
+          className="overflow-x-auto flex-shrink-0 border-t"
+          style={{ borderColor: "var(--border)", height: 8 / zoom }}
+        >
+          <div style={{ width: totalWidth + 8, height: "100%" }} />
+        </div>
         </div>
         </>
       )}

@@ -21,6 +21,7 @@
  */
 import { ChevronLeft, ChevronRight, ImagePlus, Plus, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { ChangeEvent, KeyboardEvent, MouseEvent } from "react";
 import { useTableStore } from "@/stores/tableStore";
 import { ImageLightbox } from "@/components/table/ImageLightbox";
@@ -588,20 +589,23 @@ function ImageCell({ field, row }: { field: TableField; row: TableRow }) {
           <X size={11} />
         </button>
       </div>
-      {lightbox && (
-        <ImageLightbox
-          images={images}
-          index={cur}
-          onIndexChange={(i) => setIdx(i)}
-          onClose={() => setLightbox(false)}
-          onCopyImage={(url) => useTableStore.getState().copyImageToClipboard(url)}
-          onDownloadImage={(url) =>
-            useTableStore
-              .getState()
-              .downloadImageToDownloads(`${title || "图片"}-${field.name}-${cur + 1}`, url)
-          }
-        />
-      )}
+      {/* 预览 portal 到 body：逃离表格缩放包装层（CSS zoom 会使 fixed 后代被缩放） */}
+      {lightbox &&
+        createPortal(
+          <ImageLightbox
+            images={images}
+            index={cur}
+            onIndexChange={(i) => setIdx(i)}
+            onClose={() => setLightbox(false)}
+            onCopyImage={(url) => useTableStore.getState().copyImageToClipboard(url)}
+            onDownloadImage={(url) =>
+              useTableStore
+                .getState()
+                .downloadImageToDownloads(`${title || "图片"}-${field.name}-${cur + 1}`, url)
+            }
+          />,
+          document.body,
+        )}
     </div>
   );
 }
