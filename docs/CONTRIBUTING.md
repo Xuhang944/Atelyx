@@ -9,21 +9,21 @@
 
 ## 本地开发
 
-前置要求：Node.js 18+、Rust（stable）、Tauri 2 系统依赖。
+前置要求：Node.js 18+、pnpm、Rust（stable）、Tauri 2 系统依赖。
 
 ```bash
 git clone https://github.com/Xuhang944/Atelyx.git
 cd Atelyx
-npm install
-npm run tauri:dev    # 启动开发（自动开 Vite + Tauri 窗口）
+pnpm install
+pnpm run tauri:dev    # 启动开发（自动开 Vite + Tauri 窗口）
 ```
 
 常用命令：
 
 ```bash
-npm run check       # 类型检查 + ESLint（提交前必须通过）
-npm run format      # Prettier 格式化
-npm run tauri:build # 打包
+pnpm run check       # 类型检查 + ESLint（提交前必须通过）
+pnpm run format      # Prettier 格式化
+pnpm run tauri:build # 打包
 ```
 
 ## 代码约定
@@ -60,4 +60,4 @@ npm run tauri:build # 打包
 - 分支式开发，一个 PR 只做一件事，说明改动动机与验证方式。
 - 提交前自行审查 diff（`git diff` / `git status`），确认无调试残留、无多余文件。
 - commit 描述用中文、一句话简短点题（如 `feat: 支持 xxx` / `fix: 修复 xxx`），内容与描述一一对应。
-- 合并前确保 `npm run check` 通过。
+- 合并前确保 `pnpm run check` 通过。

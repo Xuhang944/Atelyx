@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.2.1",
   "type": "module",
+  "packageManager": "pnpm@10.20.0",
   "description": "一款优雅的桌面创作工作台：把对话、笔记、表格都放到一张无限画布上，思路随手连，AI 帮你记和整理",
   "scripts": {
     "dev": "vite",
@@ -14,7 +15,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "check": "npm run typecheck && npm run lint"
+    "check": "pnpm run typecheck && pnpm run lint"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.4",
@@ -34,6 +35,7 @@
     "@xyflow/react": "^12.11.2",
     "gray-matter": "^4.0.3",
     "hast-util-sanitize": "^5.0.2",
+    "highlight.js": "^11.0.0",
     "katex": "^0.16.11",
     "lucide-react": "^1.28.0",
     "mdast-util-from-markdown": "^2.0.3",
@@ -64,6 +66,7 @@
     "eslint": "^9.12.0",
     "eslint-plugin-react-hooks": "^5.0.0",
     "eslint-plugin-react-refresh": "^0.4.12",
+    "globals": "^16.0.0",
     "postcss": "^8.4.47",
     "prettier": "^3.3.3",
     "tailwindcss": "^3.4.13",

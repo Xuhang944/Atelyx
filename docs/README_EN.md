@@ -111,12 +111,12 @@ Download the installer for your platform from [GitHub Releases](https://github.c
 Or build from source:
 
 ```bash
-npm install         # install frontend dependencies
-npm run tauri:dev   # start dev (Vite + Tauri window)
-npm run tauri:build # build installers
+pnpm install         # install frontend dependencies
+pnpm run tauri:dev   # start dev (Vite + Tauri window)
+pnpm run tauri:build # build installers
 ```
 
-Prerequisites: Node.js 18+, Rust (stable), Tauri 2 system dependencies (see [Tauri docs](https://v2.tauri.app/start/prerequisites/)).
+Prerequisites: Node.js 18+, pnpm, Rust (stable), Tauri 2 system dependencies (see [Tauri docs](https://v2.tauri.app/start/prerequisites/)).
 
 ## Vault Layout
 
@@ -154,11 +154,11 @@ my-vault/
 ## Development
 
 ```bash
-npm run dev         # Vite dev server
-npm run check       # typecheck + ESLint
-npm run format      # Prettier
-npm run tauri:dev   # start dev (Vite + Tauri window)
-npm run tauri:build # build installers
+pnpm run dev         # Vite dev server
+pnpm run check       # typecheck + ESLint
+pnpm run format      # Prettier
+pnpm run tauri:dev   # start dev (Vite + Tauri window)
+pnpm run tauri:build # build installers
 ```
 
 ## Privacy & Security

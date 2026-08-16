@@ -111,12 +111,12 @@ Atelyx 的起点正是这样的「切来切去」。我们想：如果对话、�
 或从源码构建：
 
 ```bash
-npm install         # 安装前端依赖
-npm run tauri:dev   # 启动开发（自动开 Vite + Tauri 窗口）
-npm run tauri:build # 打包
+pnpm install         # 安装前端依赖
+pnpm run tauri:dev   # 启动开发（自动开 Vite + Tauri 窗口）
+pnpm run tauri:build # 打包
 ```
 
-前置要求：Node.js 18+、Rust（stable）、Tauri 2 系统依赖（见 [Tauri 官方文档](https://v2.tauri.app/start/prerequisites/)）。
+前置要求：Node.js 18+、pnpm、Rust（stable）、Tauri 2 系统依赖（见 [Tauri 官方文档](https://v2.tauri.app/start/prerequisites/)）。
 
 ## 仓库文件一览
 
@@ -154,11 +154,11 @@ npm run tauri:build # 打包
 ## 开发命令
 
 ```bash
-npm run dev        # Vite 开发服务器
-npm run check      # 类型检查 + ESLint
-npm run format     # Prettier 格式化
-npm run tauri:dev  # 启动开发（自动开 Vite + Tauri 窗口）
-npm run tauri:build # 打包
+pnpm run dev        # Vite 开发服务器
+pnpm run check      # 类型检查 + ESLint
+pnpm run format     # Prettier 格式化
+pnpm run tauri:dev  # 启动开发（自动开 Vite + Tauri 窗口）
+pnpm run tauri:build # 打包
 ```
 
 ## 隐私与安全
