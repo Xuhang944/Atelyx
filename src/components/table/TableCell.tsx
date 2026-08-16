@@ -26,6 +26,7 @@ import type { ChangeEvent, KeyboardEvent, MouseEvent } from "react";
 import { useTableStore } from "@/stores/tableStore";
 import { ImageLightbox } from "@/components/table/ImageLightbox";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
+import { resolveTableImageEntries, useTableImageSrc } from "@/hooks/useTableImageSrc";
 import type { TableField, TableRow } from "@/types";
 
 /**
@@ -491,7 +492,9 @@ function NumberCell({
   );
 }
 
-/** 图片单元格：多图缩略图 + 左右切换 + 角标 + 追加/移除 + 点击放大预览。 */
+/** 图片单元格：多图缩略图 + 左右切换 + 角标 + 追加/移除 + 点击放大预览。
+ * 条目为仓库附件相对路径（图片外置）或遗留内嵌 dataURL：显示经 useTableImageSrc 解析，
+ * 预览/复制/下载用解析后的完整 dataURL。 */
 function ImageCell({ field, row }: { field: TableField; row: TableRow }) {
   const value = row.values[field.id];
   const images = Array.isArray(value) ? value : [];
@@ -500,8 +503,21 @@ function ImageCell({ field, row }: { field: TableField; row: TableRow }) {
   const removeImageAt = useTableStore((s) => s.removeImageAt);
   const [idx, setIdx] = useState(0);
   const [lightbox, setLightbox] = useState(false);
+  const [lightboxUrls, setLightboxUrls] = useState<string[] | null>(null);
   // 图片数变化（增删）时钳制当前下标
   const cur = images.length === 0 ? 0 : Math.min(idx, images.length - 1);
+  const currentSrc = useTableImageSrc(images[cur]);
+
+  const openLightbox = async () => {
+    if (images.length === 0) return;
+    try {
+      // 预览需要完整字节（大图）：一次性解析全部条目（data: 透传/路径走缓存），失败则不打开
+      setLightboxUrls(await resolveTableImageEntries(images));
+      setLightbox(true);
+    } catch {
+      setLightboxUrls(null);
+    }
+  };
 
   if (images.length === 0) {
     return (
@@ -523,13 +539,23 @@ function ImageCell({ field, row }: { field: TableField; row: TableRow }) {
   return (
     // overflow-hidden + maxHeight：行高固定时缩略图超行高部分被裁剪（与文本单元格截断一致）
     <div className="relative p-1 group overflow-hidden" style={{ maxHeight: row.height ?? undefined }}>
-      <img
-        src={images[cur]}
-        alt={`${field.name} ${cur + 1}`}
-        className="h-16 rounded object-cover cursor-zoom-in block"
-        onClick={() => setLightbox(true)}
-        draggable={false}
-      />
+      {currentSrc ? (
+        <img
+          src={currentSrc}
+          alt={`${field.name} ${cur + 1}`}
+          className="h-16 rounded object-cover cursor-zoom-in block"
+          onClick={() => void openLightbox()}
+          draggable={false}
+        />
+      ) : (
+        // 路径条目首次读取中/失败：占位（不显示破图图标），点击仍可重试打开预览
+        <div
+          className="h-16 rounded bg-[var(--hover)] cursor-zoom-in flex items-center justify-center"
+          style={{ color: "var(--text-muted)" }}
+          title="图片加载中…"
+          onClick={() => void openLightbox()}
+        />
+      )}
       {/* 多图：左右切换 + 角标 */}
       {images.length > 1 && (
         <>
@@ -590,10 +616,10 @@ function ImageCell({ field, row }: { field: TableField; row: TableRow }) {
         </button>
       </div>
       {/* 预览 portal 到 body：逃离表格缩放包装层（CSS zoom 会使 fixed 后代被缩放） */}
-      {lightbox &&
+      {lightbox && lightboxUrls &&
         createPortal(
           <ImageLightbox
-            images={images}
+            images={lightboxUrls}
             index={cur}
             onIndexChange={(i) => setIdx(i)}
             onClose={() => setLightbox(false)}

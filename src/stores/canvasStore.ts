@@ -274,8 +274,9 @@ interface CanvasState {
   /**
    * silent 刷新 table 节点快照（重读 `.atb`，不 persist 避免回环）。
    * 读失败 → markFileMissing。无引用节点时 no-op。
+   * opts.snapshot：调用方已持有最新内容（打开表格自写回波用内存字段/行构建）→ 免整表读盘。
    */
-  refreshTableContent: (file: string) => Promise<void>;
+  refreshTableContent: (file: string, opts?: { snapshot?: string }) => Promise<void>;
   /** 标记某 file 引用缺失（删除/重命名事件用，不删节点保留位置与边）。 */
   markFileMissing: (file: string, kind: "text" | "media" | "table") => void;
   /** 重载当前画布（外部修改自动重载时调用，读磁盘最新内容）。 */
@@ -1460,7 +1461,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       data: { title, file, snapshot, fileMissing } as unknown as Node["data"],
     });
   },
-  refreshTableContent: async (file) => {
+  refreshTableContent: async (file, opts) => {
     // 同一 .atb 可被多个 table 节点引用（同画布多节点），全部刷新（与 refreshTextContent 同构）
     const ids = get()
       .nodes.filter(
@@ -1470,7 +1471,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       .map((n) => n.id);
     if (ids.length === 0) return;
     try {
-      const snapshot = tableToSnapshotText(await readTableVault(file));
+      const snapshot = opts?.snapshot ?? tableToSnapshotText(await readTableVault(file));
       // silent set：直接改 nodes，不调 schedulePersist（变更来自磁盘，写回会回环）
       set((s) => ({
         nodes: s.nodes.map((n) =>

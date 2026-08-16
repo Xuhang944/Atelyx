@@ -299,33 +299,188 @@ pub fn move_table_vault(
 }
 
 /// 删除表格 .atb 文件（不更新 .atlx 引用，画布 table 节点断链降级「文件缺失」）。
+/// 附件目录按 tableId 划分、随表私有：删除前读表拿 id，删文件后随删整个附件目录
+/// （读不到 id——文件损坏/已被外部删除——则跳过，残留目录不拦截删除）。
 #[tauri::command]
 pub fn delete_table_vault(file: String, state: State<'_, VaultState>) -> Result<(), String> {
     let root = state.root()?;
-    delete_vault_file(&root, &file)
+    let table_id = read_table_file(&safe_join(&root, &file, false)?)
+        .ok()
+        .map(|t| t.id);
+    delete_vault_file(&root, &file)?;
+    if let Some(id) = table_id {
+        if let Ok(dir) = safe_join(&root, &table_attachments_rel(&id), false) {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+    Ok(())
 }
 
-/// 读系统文件选择器选中的图片为 dataURL（多图单元格导入用；任意绝对路径，仅图片扩展名）。
-/// 路径来自 OS 对话框（用户显式选择），非仓库内路径不走 safe_join（防穿越只约束仓库内输入）。
+/// 回收表格孤儿图片附件：删除 `.atelyx/attachments/<tableId>/` 下未被 .atb 任一 image
+/// 单元格引用的文件。文件名每次导入唯一（`img-<nanoid>.<ext>`）——未被引用即确定孤儿，
+/// 无共享文件、无其他消费者（目录按 tableId 私有）。
+/// 会话内不调用（删除后 Ctrl+Z 需能恢复引用）；切表/关闭表格时调用（该表撤销栈已清、
+/// 显示缓存已清，无跨会话恢复路径）。读盘失败（文件损坏/已被外部删除）返回 0 保守不清理——
+/// 引用集合未知，防误删引用中的文件。返回删除文件数。
 #[tauri::command]
-pub fn read_external_image_data_url(src: String) -> Result<String, String> {
-    let path = std::path::Path::new(&src);
-    if !path.is_file() {
+pub fn cleanup_table_attachments_vault(
+    file: String,
+    state: State<'_, VaultState>,
+) -> Result<usize, String> {
+    let root = state.root()?;
+    let table = match read_table_file(&safe_join(&root, &file, false)?) {
+        Ok(t) => t,
+        Err(_) => return Ok(0),
+    };
+    // 收集全部 image 单元格的路径引用（遗留 `data:` 条目非路径，不计入）
+    let mut referenced: HashSet<String> = HashSet::new();
+    for field in &table.fields {
+        if field.field_type != "image" {
+            continue;
+        }
+        for row in &table.rows {
+            let Some(value) = row.values.get(&field.id) else { continue };
+            let Some(arr) = value.as_array() else { continue };
+            for item in arr {
+                if let Some(s) = item.as_str() {
+                    if !s.starts_with("data:") {
+                        referenced.insert(s.to_string());
+                    }
+                }
+            }
+        }
+    }
+    // 目录不存在 = 无附件可清
+    let Ok(dir) = safe_join(&root, &table_attachments_rel(&table.id), false) else {
+        return Ok(0);
+    };
+    if !dir.is_dir() {
+        return Ok(0);
+    }
+    // 只删顶层普通文件（附件均为单层存放，不递归——防误删子目录）
+    let mut removed = 0;
+    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let rel = format!("{}/{}", table_attachments_rel(&table.id), name);
+        if referenced.contains(&rel) {
+            continue;
+        }
+        if entry.file_type().map(|t| t.is_file()).unwrap_or(false)
+            && std::fs::remove_file(entry.path()).is_ok()
+        {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/// 表格附件目录（相对仓库根）：`.atelyx/attachments/<tableId>/`。隐藏目录（`.` 开头）——
+/// watcher / 文件树 / 全仓库扫描天然跳过，图片写盘零回波、零树噪声。
+/// 图片字节不随 .atb 内嵌，单元格只存路径引用（大表多图免每次保存全量序列化图片）。
+fn table_attachments_rel(table_id: &str) -> String {
+    format!(".atelyx/attachments/{table_id}")
+}
+
+/// 图片条目字节：遗留内嵌 dataURL → base64 解码；外置路径引用 → 读仓库附件（safe_join 校验）。
+/// xlsx 导出用；非 dataURL 条目按相对仓库根路径解析。
+fn resolve_table_image_bytes(root: &std::path::Path, entry: &str) -> Result<Vec<u8>, String> {
+    if entry.starts_with("data:") {
+        data_url_to_bytes(entry).ok_or_else(|| "图片数据解码失败".to_string())
+    } else {
+        let path = safe_join(root, entry, false)?;
+        std::fs::read(&path).map_err(|e| format!("读取图片失败：{} ({e})", entry))
+    }
+}
+
+/// 把系统文件选择器选中的图片复制为表格附件，返回相对仓库根路径。
+/// 文件名 = `img-<nanoid>.<ext>`（每次导入唯一：删除后重导不覆盖旧文件、不撞缓存/撤销引用；
+/// 与迁移的确定性命名 `img-<rowId>-<fieldId>-<idx>` 前缀不同，互不冲突）。
+/// 路径来自 OS 对话框（用户显式选择），非仓库内路径不走 safe_join（同旧 read_external_image_data_url）。
+#[tauri::command]
+pub fn import_table_image_vault(
+    src: String,
+    table_id: String,
+    state: State<'_, VaultState>,
+) -> Result<String, String> {
+    let root = state.root()?;
+    let src_path = std::path::Path::new(&src);
+    if !src_path.is_file() {
         return Err(format!("文件不存在：{}", src));
     }
-    let mime = mime_from_ext(&src).ok_or_else(|| format!("非图片文件：{}", src))?;
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    Ok(format!("data:{mime};base64,{b64}"))
+    let ext = mime_from_ext(&src)
+        .and_then(ext_from_mime)
+        .ok_or_else(|| format!("非图片文件：{}", src))?;
+    let rel = format!("{}/img-{}.{}", table_attachments_rel(&table_id), nanoid!(), ext);
+    let dest = safe_join(&root, &rel, true)?;
+    // 唯一名不可能已存在；直接复制
+    std::fs::copy(&src_path, &dest).map_err(|e| format!("复制图片失败：{e}"))?;
+    Ok(rel)
+}
+
+/// 迁移遗留内嵌图片（单元格值 `data:` 前缀）→ 表格附件文件：先写全部附件
+/// （确定性命名 `img-<rowId>-<fieldId>-<idx>.<ext>`，重入幂等覆盖），成功后再重写 .atb
+/// 单元格值为相对路径——中途失败不损坏原表（.atb 未改，重开重试）。
+/// 无遗留 dataURL 时原样返回（零开销）。返回迁移后的表格（前端直接使用 + 同步乐观锁基准）。
+#[tauri::command]
+pub fn migrate_table_images_vault(
+    file: String,
+    state: State<'_, VaultState>,
+) -> Result<TableFile, String> {
+    let root = state.root()?;
+    let path = safe_join(&root, &file, false)?;
+    let mut table = read_table_file(&path)?;
+    let dir_rel = table_attachments_rel(&table.id);
+    let mut migrated_any = false;
+    for field in &table.fields {
+        if field.field_type != "image" {
+            continue;
+        }
+        for row in &mut table.rows {
+            let Some(value) = row.values.get_mut(&field.id) else { continue };
+            let Some(arr) = value.as_array_mut() else { continue };
+            for (i, item) in arr.iter_mut().enumerate() {
+                let Some(url) = item.as_str() else { continue };
+                if !url.starts_with("data:") {
+                    continue;
+                }
+                let bytes = data_url_to_bytes(url)
+                    .ok_or_else(|| format!("图片数据解码失败（{} 行 {} 字段）", row.id, field.id))?;
+                let mime = url
+                    .split_once(';')
+                    .and_then(|(p, _)| p.strip_prefix("data:"))
+                    .and_then(ext_from_mime)
+                    .ok_or_else(|| "不支持的图片格式".to_string())?;
+                let rel = format!("{dir_rel}/img-{}-{}-{}.{}", row.id, field.id, i, mime);
+                let dest = safe_join(&root, &rel, true)?;
+                std::fs::write(&dest, &bytes).map_err(|e| format!("迁移图片写入失败：{e}"))?;
+                *item = serde_json::Value::String(rel);
+                migrated_any = true;
+            }
+        }
+    }
+    if migrated_any {
+        table.updated_at = Utc::now().timestamp();
+        write_table_file(&path, &table)?;
+        cache_evict_table(&state, &file);
+        cache_put_table(&state, &path, &file, &table);
+    }
+    Ok(table)
 }
 
 /// 导出表格为 .xlsx（目标路径来自系统保存对话框，任意位置可写）。
 /// 列 = 字段顺序，表头 = 字段名（金色底 + 粗体 + 全表边框 + 冻结首行）；
 /// image 字段嵌入单元格首图（等比缩至 140x90），text 换行，number/duration 数值，其余文本。
+/// 图片条目兼容两种形态：遗留内嵌 dataURL 直接解码；外置附件路径按仓库根读取。
 #[tauri::command]
-pub fn export_table_xlsx(table: TableFile, target_path: String) -> Result<(), String> {
+pub fn export_table_xlsx(
+    table: TableFile,
+    target_path: String,
+    state: State<'_, VaultState>,
+) -> Result<(), String> {
     use rust_xlsxwriter::{Format, FormatBorder, Image, Workbook};
 
+    let root = state.root()?;
     let mut workbook = Workbook::new();
     let sheet = workbook.add_worksheet();
     sheet
@@ -355,10 +510,10 @@ pub fn export_table_xlsx(table: TableFile, target_path: String) -> Result<(), St
             let col = c as u16;
             let Some(value) = row.values.get(&field.id) else { continue };
             match field.field_type.as_str() {
-                // 多图单元格 v1 只导首图；dataURL 剥前缀 → 等比缩至 140x90 嵌入（行高撑开）
+                // 多图单元格 v1 只导首图；dataURL/附件路径 → 字节 → 等比缩至 140x90 嵌入（行高撑开）
                 "image" => {
                     if let Some(url) = value.as_array().and_then(|a| a.first()).and_then(|v| v.as_str()) {
-                        if let Some(bytes) = data_url_to_bytes(url) {
+                        if let Ok(bytes) = resolve_table_image_bytes(&root, url) {
                             if let Ok(mut img) = Image::new_from_buffer(&bytes) {
                                 img = img.set_scale_to_size(140, 90, true);
                                 if sheet.insert_image(excel_row, col, &img).is_ok() {

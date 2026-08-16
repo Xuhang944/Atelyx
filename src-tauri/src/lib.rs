@@ -75,7 +75,9 @@ pub fn run() {
             commands::table::rename_table_vault,
             commands::table::move_table_vault,
             commands::table::delete_table_vault,
-            commands::table::read_external_image_data_url,
+            commands::table::import_table_image_vault,
+            commands::table::migrate_table_images_vault,
+            commands::table::cleanup_table_attachments_vault,
             commands::table::export_table_xlsx,
             commands::table::save_image_to_downloads,
             // 全局配置（global.json，最近仓库列表等）

@@ -1,0 +1,69 @@
+/**
+ * 表格图片显示缓存：图片外置后单元格值存仓库相对路径（`.atelyx/attachments/<tableId>/…`），
+ * 渲染时经此缓存解析为 dataURL（底层走 `read_attachment_data_url`，与画布媒体节点同源）。
+ *
+ * 模块级 LRU（条目上限，淘汰最久未用）+ 进行中 promise 复用（多单元格引用同一图片只发一次 IPC）。
+ * 键 = 相对路径（含 tableId 目录段，跨表天然不撞）；读取失败不留缓存（下次重试）。
+ * 遗留内嵌 `data:` 条目原样透传（不读盘不入缓存）。缓存命中返回原字符串引用（零拷贝）。
+ */
+import { readAttachmentDataUrl } from "@/services/vault";
+
+/** 缓存条目上限：~256 张（大表全量图片超限时自动淘汰最久未用，重渲染再读）。 */
+const MAX_ENTRIES = 256;
+
+interface CacheEntry {
+  url: string;
+  at: number;
+}
+
+const cache = new Map<string, CacheEntry>();
+/** 进行中的读取：同一路径并发请求共用同一 promise（首读突发时去重）。 */
+const inflight = new Map<string, Promise<string>>();
+
+/** 解析表格图片条目为 dataURL；进行中复用、成功入缓存、失败丢弃（下次重试）。
+ * 遗留内嵌 dataURL 条目原样透传（不读盘不入缓存——大字符串缓存无收益）。 */
+export function resolveTableImageUrl(file: string): Promise<string> {
+  if (file.startsWith("data:")) return Promise.resolve(file);
+  const hit = cache.get(file);
+  if (hit) {
+    hit.at = Date.now();
+    return Promise.resolve(hit.url);
+  }
+  const pending = inflight.get(file);
+  if (pending) return pending;
+  const p = readAttachmentDataUrl(file)
+    .then((url) => {
+      inflight.delete(file);
+      cache.set(file, { url, at: Date.now() });
+      if (cache.size > MAX_ENTRIES) evictLeastRecent();
+      return url;
+    })
+    .catch((e) => {
+      inflight.delete(file);
+      throw e;
+    });
+  inflight.set(file, p);
+  return p;
+}
+
+/** 清除指定路径缓存（图片被移除/替换后防旧图残留渲染；其余路径不动）。 */
+export function invalidateTableImageUrl(file: string): void {
+  cache.delete(file);
+}
+
+/** 清空缓存（load/clear 时调用：换表后旧图不入内存，防长会话内存累积）。 */
+export function clearTableImageCache(): void {
+  cache.clear();
+}
+
+function evictLeastRecent(): void {
+  let oldestKey: string | null = null;
+  let oldestAt = Infinity;
+  for (const [k, v] of cache) {
+    if (v.at < oldestAt) {
+      oldestAt = v.at;
+      oldestKey = k;
+    }
+  }
+  if (oldestKey !== null) cache.delete(oldestKey);
+}

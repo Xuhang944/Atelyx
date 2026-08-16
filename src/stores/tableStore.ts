@@ -9,9 +9,11 @@
 import { create } from "zustand";
 import { CALC_TYPES_BY_FIELD, TABLE_SCHEMA } from "@/constants/table";
 import {
+  cleanupTableAttachments,
   exportTableXlsx,
+  importTableImage,
+  migrateTableImages,
   patchTableVault,
-  readExternalImageDataUrl,
   readTableVault,
   saveImageToDownloads,
   writeTableVault,
@@ -19,11 +21,13 @@ import {
 import { copyImageToClipboard as copyImageSvc } from "@/services/clipboard";
 import { pickFile, saveFile } from "@/services/dialog";
 import { markSelfSave } from "@/utils/selfSave";
+import { clearTableImageCache } from "@/services/tableImageCache";
 import { useVaultStore } from "@/stores/vaultStore";
+import { useCollabStore } from "@/stores/collabStore";
 import { createPersistController } from "@/utils/persist";
 import { createUndoManager } from "@/utils/undoStack";
 import { coerceRowsJson, computeTablePatch, reorderByRank, sameIdSequence } from "@/utils/table";
-import type { CalcType, CellValue, FieldType, TableField, TablePatch, TableRow } from "@/types";
+import type { CalcType, CellValue, FieldType, TableField, TableFile, TablePatch, TableRow } from "@/types";
 
 /** 编辑器视图：表格 / 时间线（内存态不持久化）。 */
 export type TableView = "table" | "timeline";
@@ -453,6 +457,12 @@ function syncLastSaved(): void {
   lastSavedRows = s.rows;
 }
 
+/** 协作对端是否同表在线：其内存/撤销栈可能仍引用附件文件（共享盘文件多人共用），
+ * 本端单方回收会使其破图——有对端在线时跳过回收（磁盘堆积可接受，数据安全优先）。 */
+function hasCollabPeerOnTable(file: string): boolean {
+  return useCollabStore.getState().peers.some((p) => p.presence?.file === file);
+}
+
 export const useTableStore = create<TableStoreState>((set, get) => ({
   tableFile: null,
   id: "",
@@ -474,8 +484,41 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
     persistCtl.cancel();
     undoMgr.clear();
     abortEditSession();
+    // 离开旧表：先落盘再回收其孤儿图片附件——防抖窗口内新导入的图片引用尚未写盘，
+    // 直接按磁盘引用集合回收会把它误判孤儿删掉（丢图）；flush 失败（乐观锁冲突等）时
+    // 磁盘集合同样可能缺本地引用，跳过回收留到下次切表；协作对端同表在线也跳过（见
+    // hasCollabPeerOnTable）。切表即清空旧表撤销栈与显示缓存，会话内删除的图片此刻才
+    // 没有恢复路径，回收安全（读盘失败保守跳过，不阻塞打开）
+    const prevFile = get().tableFile;
+    if (prevFile && prevFile !== file) {
+      void (async () => {
+        try {
+          await get().flush();
+        } catch {
+          return;
+        }
+        const s = useTableStore.getState();
+        if (s.tableFile !== prevFile && !s.dirty && !hasCollabPeerOnTable(prevFile)) {
+          void cleanupTableAttachments(prevFile).catch((e) =>
+            console.error("回收表格孤儿图片失败", e),
+          );
+        }
+      })();
+    }
+    // 换表清上一张表图片显示缓存（路径含 tableId 目录段不会撞，防长会话内存累积）
+    clearTableImageCache();
     try {
-      const table = await readTableVault(file);
+      // 存量表格图片迁移（内嵌 dataURL → 附件路径，一次性）：迁移后 .atb 只存路径引用，
+      // 保存不再全量序列化图片字节（大表多图保存提速的主路径）；失败降级按内嵌使用
+      let migrationFailed = false;
+      let table: TableFile;
+      try {
+        table = await migrateTableImages(file);
+      } catch (e) {
+        console.error("表格图片迁移失败（按内嵌 dataURL 继续使用）", e);
+        migrationFailed = true;
+        table = await readTableVault(file);
+      }
       set({
         tableFile: file,
         id: table.id,
@@ -491,6 +534,9 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
         selection: null,
         undoResetCell: null,
       });
+      if (migrationFailed) {
+        set({ error: "表格图片迁移失败，已按内嵌方式继续使用（保存可能较慢）" });
+      }
       // 已落盘基线 = 加载的磁盘状态（后续保存按引用 diff，未变实体不重写）
       syncLastSaved();
     } catch (e) {
@@ -535,6 +581,16 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
     persistCtl.cancel();
     undoMgr.clear();
     abortEditSession();
+    // 关闭表格：回收其孤儿图片附件（撤销栈/显示缓存随 clear 清空，删除的图片无恢复路径；
+    // 调用方契约已先 flush——closeTable 先落盘，closeTableSilent 文件已删读盘失败保守跳过）。
+    // 协作对端同表在线跳过（见 hasCollabPeerOnTable）
+    const prevFile = get().tableFile;
+    if (prevFile && !hasCollabPeerOnTable(prevFile)) {
+      void cleanupTableAttachments(prevFile).catch((e) =>
+        console.error("回收表格孤儿图片失败", e),
+      );
+    }
+    clearTableImageCache();
     set({
       tableFile: null,
       id: "",
@@ -580,15 +636,19 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   },
 
   addImageToCell: async (rowId, fieldId) => {
+    const { id, tableFile } = get();
+    if (!tableFile) return;
     try {
       const src = await pickFile([{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "gif"] }]);
       if (!src) return;
+      // 图片字节落 `.atelyx/attachments/<tableId>/`（隐藏目录：watcher/文件树零噪声），
+      // 单元格只存唯一路径引用——保存补丁不含图片字节（大表保存提速）
+      const rel = await importTableImage(src, id);
       // 图片增删 = 独立操作，一次一个撤销单元（读盘成功、变更前入栈）
-      const dataUrl = await readExternalImageDataUrl(src);
       undoMgr.push();
       const current = get().rows.find((r) => r.id === rowId)?.values[fieldId];
       const list = Array.isArray(current) ? [...current] : [];
-      list.push(dataUrl);
+      list.push(rel);
       get().updateCell(rowId, fieldId, list);
     } catch (e) {
       console.error("添加图片失败", e);

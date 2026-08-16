@@ -79,9 +79,34 @@ export async function deleteTableVault(file: string): Promise<void> {
   await invoke("delete_table_vault", { file });
 }
 
-/** 读系统文件选择器选中的图片为 dataURL（多图单元格导入用，任意绝对路径）。 */
-export async function readExternalImageDataUrl(src: string): Promise<string> {
-  return invoke<string>("read_external_image_data_url", { src });
+/**
+ * 把系统文件选择器选中的图片复制为表格附件（`.atelyx/attachments/<tableId>/` 隐藏目录，
+ * 图片字节不随 .atb 内嵌），返回唯一相对路径供单元格引用（每次导入新文件，
+ * 删除后重导不覆盖旧文件、不撞显示缓存）。
+ */
+export async function importTableImage(
+  src: string,
+  tableId: string,
+): Promise<string> {
+  return invoke<string>("import_table_image_vault", { src, tableId });
+}
+
+/**
+ * 迁移遗留内嵌图片（单元格值 `data:` 前缀）为表格附件路径引用，返回迁移后的表格
+ * （无遗留条目时原样返回零开销；迁移失败由调用方降级按 dataURL 加载）。
+ * 存量大表打开时一次性执行：迁移后 .atb 只存路径，保存不再全量序列化图片字节。
+ */
+export async function migrateTableImages(file: string): Promise<TableFile> {
+  return invoke<TableFile>("migrate_table_images_vault", { file });
+}
+
+/**
+ * 回收表格孤儿图片附件（切表/关闭表格时 fire-and-forget 调用）：删除附件目录中
+ * 未被 .atb 任一 image 单元格引用的文件。会话内不调用——删除后 Ctrl+Z 可恢复引用；
+ * 切表/关闭时该表撤销栈与显示缓存已清，无跨会话恢复路径。返回删除文件数。
+ */
+export async function cleanupTableAttachments(file: string): Promise<number> {
+  return invoke<number>("cleanup_table_attachments_vault", { file });
 }
 
 /** 保存 dataURL 图片到系统 Downloads 文件夹（放大预览右键「下载」用；重名自动加序号）。 */

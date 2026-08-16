@@ -63,7 +63,7 @@ export function columnAutoWidth(field: TableField, rows: TableRow[]): number {
   return Math.max(MIN_COL_WIDTH, Math.min(MAX_COL_WIDTH, Math.max(nameWidth, contentWidth)));
 }
 
-export function tableToSnapshotText(table: TableFile): string {
+export function tableToSnapshotText(table: Pick<TableFile, "fields" | "rows">): string {
   const header = `字段：${table.fields.map((f) => f.name).join(" | ")}`;
   const lines: string[] = [header];
   const shown = table.rows.slice(0, MAX_TABLE_INJECT_ROWS);
@@ -191,9 +191,12 @@ export function computeTablePatch(opts: {
   lastSaved: { fields: TableField[]; rows: TableRow[] };
 }): TablePatch | null {
   const { tableId, fields, rows, lastSaved } = opts;
+  // 预建 id → 实体索引代替循环内 .find()（大表 O(R²) → O(N)，每次按键/每次保存都会跑）
+  const lastFieldsById = new Map(lastSaved.fields.map((f) => [f.id, f]));
+  const lastRowsById = new Map(lastSaved.rows.map((r) => [r.id, r]));
   const upsertFieldIds = new Set<string>();
   for (const f of fields) {
-    const ls = lastSaved.fields.find((x) => x.id === f.id);
+    const ls = lastFieldsById.get(f.id);
     if (!ls || ls !== f) upsertFieldIds.add(f.id);
   }
   const currentFieldIds = new Set(fields.map((f) => f.id));
@@ -202,7 +205,7 @@ export function computeTablePatch(opts: {
     .map((f) => f.id);
   const upsertRowIds = new Set<string>();
   for (const r of rows) {
-    const ls = lastSaved.rows.find((x) => x.id === r.id);
+    const ls = lastRowsById.get(r.id);
     if (!ls || ls !== r) upsertRowIds.add(r.id);
   }
   const currentRowIds = new Set(rows.map((r) => r.id));

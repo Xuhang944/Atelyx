@@ -12,7 +12,11 @@ export type FieldType = "text" | "number" | "duration" | "singleSelect" | "image
 /** 状态栏列自动计算类型。 */
 export type CalcType = "sum" | "avg" | "max" | "min" | "count";
 
-/** 单元格值：text/singleSelect = string；number/duration = number（秒）；image = dataURL 数组（多图）。 */
+/**
+ * 单元格值：text/singleSelect = string；number/duration = number（秒）；image = 字符串数组（多图），
+ * 条目 = 表格附件相对仓库根路径（`.atelyx/attachments/<tableId>/…`，图片外置）；
+ * 遗留文件兼容 `data:` 内嵌 dataURL（加载迁移为附件路径，显示层两者均支持）。
+ */
 export type CellValue = string | number | string[];
 
 export interface TableField {
@@ -55,7 +59,8 @@ export interface TableCreateResult {
 /**
  * 增量保存补丁（patch_table_vault，自动保存主路径 + 协作实时广播共用）：只含变化/新增/删除
  * 的字段与行。前端按「上次保存快照引用 diff」计算（store 不可变更新，未变实体引用相同）；
- * Rust 按稳定 id 合并到磁盘全量文件——image dataURL 大字段不重传。
+ * Rust 按稳定 id 合并到磁盘全量文件——image 字段只传路径引用（图片字节落隐藏附件目录，
+ * 不随补丁/IPC 传输）。
  * 顺序变化（行拖拽排序/复制行/左右插列）经 `fieldOrder`/`rowOrder` 携带（当前实体 id 全序）——
  * 引用 diff 看不见数组顺序，必须显式传递，否则排序不落盘、协作者不可见。
  */

@@ -46,7 +46,7 @@ import { useSettingsStore } from "@/stores/settingsStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import { baseName, dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename } from "@/utils/filename";
-import { tablesEqual } from "@/utils/table";
+import { tableToSnapshotText, tablesEqual } from "@/utils/table";
 import type { BacklinkRow, DeleteFolderResult, FileTreeNode, RebuildLinksResult, TextData, VaultFileChange } from "@/types";
 
 /**
@@ -939,21 +939,32 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
           // 当前打开的表格事件：干净 → 读盘内容比对判别（自写回放/已广播应用的对端写入跳过，
           // 真实外部修改静默重载）；有脏 → 不弹冲突条——防抖保存 ≤500ms 内触发，乐观锁 +
           // 自动三方合并收敛（冲突条仅作合并失败兜底，见 tableStore.reportError）。
-          // 软件内重命名旧路径的删除事件跳过（file 引用已同步）。
+          // 自写回波（本端刚写盘，内容已知）同样跳过读比——省去大表每次保存后的整表读盘 +
+          // tablesEqual 深比（大表图片多时 .atb 可达数十 MB，JS 主线程开销显著，保存后卡顿主因）；
+          // 自写窗口内（markSelfSave 2s）的外部编辑可能漏检，乐观锁 + 自动三方合并兜底收敛
+          // （与 canvas 分支同语义）。软件内重命名旧路径的删除事件跳过（file 引用已同步）。
           const store = useTableStore.getState();
+          const selfEcho = isSelfSaveEcho(c.path);
           if (
             c.path === store.tableFile &&
             !isPendingRenameOldPath(c.path) &&
             !isPendingFolderRenameOldPath(c.path) &&
+            !selfEcho &&
             !store.dirty
           ) {
             void maybeReloadTableIfChanged(c.path);
           }
-          // 画布上引用该表格的节点：silent 刷新快照（与 note 事件刷新 text 节点对称）
+          // 画布上引用该表格的节点：silent 刷新快照（与 note 事件刷新 text 节点对称）。
+          // 打开表格的自写回波直接用内存内容构建快照（磁盘 == 内存），免再整表读盘。
           if (!isPendingRenameOldPath(c.path) && !isPendingFolderRenameOldPath(c.path)) {
-            void useCanvasStore.getState().refreshTableContent(c.path);
+            void useCanvasStore.getState().refreshTableContent(c.path, {
+              ...(selfEcho && c.path === store.tableFile
+                ? { snapshot: tableToSnapshotText({ fields: store.fields, rows: store.rows }) }
+                : {}),
+            });
           }
-          void get().loadFiles();
+          // 纯内容写（自写回波）不改变文件树结构：跳过全仓库重扫（与 canvas 分支同语义）
+          if (!selfEcho) void get().loadFiles();
           return;
         }
 

@@ -21,7 +21,24 @@ import {
 } from "@/constants/table";
 import { useTableStore } from "@/stores/tableStore";
 import { useCollabStore } from "@/stores/collabStore";
+import { useTableImageSrc } from "@/hooks/useTableImageSrc";
 import type { TableRow } from "@/types";
+
+/** 时间线卡片缩略图：条目路径经 useTableImageSrc 解析（加载中/失败显示文字摘要兜底）。 */
+function CardThumb({ entry, summary }: { entry: string | undefined; summary: string }) {
+  const src = useTableImageSrc(entry ?? "");
+  if (!src) {
+    return (
+      <div
+        className="w-full h-full p-1.5 text-[10px] leading-4 overflow-hidden whitespace-pre-wrap break-words"
+        style={{ color: "var(--text-muted)" }}
+      >
+        {summary || "…"}
+      </div>
+    );
+  }
+  return <img src={src} alt="" className="w-full h-full object-cover" draggable={false} />;
+}
 
 /** 单行播放时长：duration 字段值（>0 才有效），缺省 3s。 */
 function rowDuration(row: TableRow, durationFieldId: string | undefined): number {
@@ -157,6 +174,13 @@ export function TableTimeline() {
     return `${m}:${String(s).padStart(2, "0")}`;
   };
 
+  // 预览区大图条目（当前播放行首个 image）→ 显示 dataURL（路径经缓存解析；换行/换卡片自动重取）
+  const coverEntry =
+    shotIndex >= 0 && imageField
+      ? (rows[shotIndex]?.values[imageField.id] as string[] | undefined)?.[0]
+      : undefined;
+  const coverSrc = useTableImageSrc(coverEntry ?? "");
+
   if (rows.length === 0) {
     return (
       <div className="h-full w-full flex items-center justify-center" style={{ background: "var(--bg-primary)" }}>
@@ -175,12 +199,21 @@ export function TableTimeline() {
       <div className="flex-1 min-h-0 flex items-center justify-center p-4 relative">
         <div className="flex flex-col items-center gap-2 max-w-full">
           {imageField && Array.isArray(currentRow.values[imageField.id]) && (currentRow.values[imageField.id] as string[]).length > 0 ? (
-            <img
-              src={(currentRow.values[imageField.id] as string[])[0]}
-              alt={`行 ${shotIndex + 1}`}
-              className="max-h-[55vh] max-w-full object-contain rounded shadow-lg"
-              draggable={false}
-            />
+            coverSrc ? (
+              <img
+                src={coverSrc}
+                alt={`行 ${shotIndex + 1}`}
+                className="max-h-[55vh] max-w-full object-contain rounded shadow-lg"
+                draggable={false}
+              />
+            ) : (
+              <div
+                className="w-72 aspect-video rounded flex items-center justify-center text-xs"
+                style={{ background: "var(--bg-secondary)", color: "var(--text-muted)", border: "1px dashed var(--border)" }}
+              >
+                图片加载中…
+              </div>
+            )
           ) : textField && typeof currentRow.values[textField.id] === "string" && currentRow.values[textField.id] ? (
             <div
               className="max-w-xl max-h-[55vh] overflow-auto p-4 rounded whitespace-pre-wrap text-sm"
@@ -291,7 +324,7 @@ export function TableTimeline() {
                 >
                   <div className="h-20 overflow-hidden flex items-center justify-center" style={{ background: "var(--bg-tertiary)" }}>
                     {images.length > 0 ? (
-                      <img src={images[0]} alt="" className="w-full h-full object-cover" draggable={false} />
+                      <CardThumb entry={images[0]} summary={summary} />
                     ) : (
                       <div
                         className="w-full h-full p-1.5 text-[10px] leading-4 overflow-hidden whitespace-pre-wrap break-words"
