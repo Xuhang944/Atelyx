@@ -10,6 +10,7 @@ import {
   Search,
   Server,
   Settings,
+  Users,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -17,7 +18,12 @@ import { useEffect, useState } from "react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
 import { useVaultStore } from "@/stores/vaultStore";
-import { useCollabStore, randomPeerColor } from "@/stores/collabStore";
+import {
+  useCollabStore,
+  normalizeRelayUrl,
+  randomPeerColor,
+  type RelayTestResult,
+} from "@/stores/collabStore";
 import { useDraftSync, useDebouncedDraft } from "@/hooks/useDraftSync";
 import { ProviderSettingsSection } from "@/components/settings/ProviderSettingsSection";
 import { AboutSection } from "@/components/settings/AboutSection";
@@ -29,6 +35,7 @@ import { DEFAULT_ACCENT, foregroundFor } from "@/utils/color";
 
 type Tab =
   | "general"
+  | "collab"
   | "providers"
   | "modelServices"
   | "search"
@@ -39,6 +46,7 @@ type Tab =
 /** 左侧 tab 栏配置（图标 + 标签；折叠后仅显示图标）。 */
 const TAB_ITEMS: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: "general", label: "通用", icon: Settings },
+  { key: "collab", label: "多人协作", icon: Users },
   { key: "providers", label: "模型供应商", icon: Server },
   { key: "modelServices", label: "模型服务", icon: Bot },
   { key: "search", label: "联网搜索", icon: Search },
@@ -46,20 +54,6 @@ const TAB_ITEMS: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: "editor", label: "编辑器", icon: PenLine },
   { key: "about", label: "关于", icon: Info },
 ];
-
-/** 中转地址规范化：补协议（ws://）与 /ws 路径（relay 唯一路由），
- *  如 `192.168.1.10:17701` → `ws://192.168.1.10:17701/ws`；空/无法解析的输入原样返回。 */
-function normalizeRelayUrl(raw: string): string {
-  const input = raw.trim();
-  if (!input) return "";
-  const withProto = /^wss?:\/\//i.test(input) ? input : `ws://${input}`;
-  try {
-    const u = new URL(withProto);
-    return `${u.protocol}//${u.host}/ws`;
-  } catch {
-    return withProto;
-  }
-}
 
 /** 界面字体选项（value = CSS font-family；空串 = 跟随系统默认）。 */
 const FONT_OPTIONS: { label: string; value: string }[] = [
@@ -96,10 +90,24 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const collabColor = useSettingsStore((s) => s.collabColor);
   const setCollabConfig = useSettingsStore((s) => s.setCollabConfig);
   const collabConnected = useCollabStore((s) => s.connected);
-  // 仓库内设置（仓库级，七 tab）：通用 / 模型供应商 / 模型服务 / 联网搜索 / 文件与路径 / 编辑器 / 关于
+  // 设置内容（左侧八 tab）：应用级（通用 / 多人协作 / 关于）+ 仓库级（模型供应商 / 模型服务 / 联网搜索 / 文件与路径 / 编辑器）
   const [tab, setTab] = useState<Tab>("general");
   /** 左侧 tab 栏折叠状态（折叠后仅显示图标）。 */
   const [tabsCollapsed, setTabsCollapsed] = useState(false);
+  /** 检查中转连接：执行中 / 结果（多人协作 tab）。 */
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<RelayTestResult | null>(null);
+  const runConnectionTest = async () => {
+    // 先提交草稿地址（使已测试的地址即保存的配置），再一次性探测 relay（独立连接，不影响常驻）
+    commitRelayUrl();
+    setTesting(true);
+    setTestResult(null);
+    try {
+      setTestResult(await useCollabStore.getState().testConnection(relayUrlDraft));
+    } finally {
+      setTesting(false);
+    }
+  };
   /** 重建内部链接：确认弹窗 / 执行中 / 内联结果（编辑器 tab）。 */
   const [rebuildConfirm, setRebuildConfirm] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
@@ -438,8 +446,23 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                   />
                 </SettingCard>
 
-                {/* 多人协作（应用级）：局域网中转——同仓库在线成员实时互见选中单元格（presence）。
-                    需在局域网服务器部署 collab-relay（docker compose），填对地址即连 */}
+                {/* API key 随仓库保存（仓库级）：开 = key 明文随 config.json 同步多设备；关 = 仅存本机钥匙串 */}
+                <SettingCard
+                  title="API key 随仓库保存"
+                  description="key 随仓库同步共用；仓库公开/共享时可能泄露"
+                >
+                  <ToggleSwitch
+                    checked={!!vaultConfig?.syncKeys}
+                    onChange={(v) => void setSyncKeys(v)}
+                    title="API key 随仓库保存"
+                  />
+                </SettingCard>
+              </section>
+            ) : tab === "collab" ? (
+              /* ===== 多人协作面板（应用级）：局域网中转——同仓库在线成员经 relay 实时互见（presence）。
+                   需在局域网服务器部署 collab-relay（docker compose），填对地址即连 */
+              <section className="flex-1 p-5 overflow-auto space-y-4">
+                {/* 开关：开启即连接（地址/身份变化即时重建连接） */}
                 <SettingCard
                   title="多人协作"
                   description="局域网内同仓库成员实时互见（选中高亮）"
@@ -464,12 +487,15 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                     )}
                   </div>
                 </SettingCard>
-                {collabEnabled && (
-                  <>
-                    <SettingCard
-                      title="中转地址"
-                      description="中转服务地址，多人须指向同一中转"
-                    >
+
+                {/* 中转地址 + 检查连接：地址模糊可补全（只输 host:port）；检查 = 独立连接发探测 hello，
+                    收到 hello-ack 判成功（不影响常驻连接；未开启协作也可先测） */}
+                <SettingCard
+                  title="中转地址"
+                  description="中转服务地址，多人须指向同一中转"
+                >
+                  <div className="flex flex-col items-start gap-1.5 w-[340px]">
+                    <div className="flex items-center gap-2 w-full">
                       <input
                         value={relayUrlDraft}
                         onChange={(e) => setRelayUrlDraft(e.target.value)}
@@ -485,61 +511,71 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                           border: "1px solid var(--input-border)",
                         }}
                       />
-                    </SettingCard>
-                    <SettingCard
-                      title="昵称与颜色"
-                      description="空昵称 = 设备名；空颜色 = 随机分配"
-                    >
-                      <div className="flex items-center gap-2">
-                        <input
-                          value={collabNicknameDraft}
-                          onChange={(e) => setCollabNicknameDraft(e.target.value)}
-                          onBlur={commitCollabNickname}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") e.currentTarget.blur();
-                          }}
-                          placeholder="设备名"
-                          className="text-sm rounded px-2 py-1 outline-none max-w-[140px]"
-                          style={{
-                            color: "var(--text-primary)",
-                            background: "var(--input-bg)",
-                            border: "1px solid var(--input-border)",
-                          }}
-                        />
-                        <input
-                          type="color"
-                          value={collabColorDraft}
-                          onChange={(e) => commitCollabColorDraft(e.target.value)}
-                          title="身份颜色"
-                          className="w-6 h-6 rounded cursor-pointer bg-transparent p-0 border-0"
-                        />
-                        <button
-                          onClick={() => {
-                            // 随机 = 提交一个新随机色存显式值（重启不变）；空色仅作未配置时的启动随机兜底
-                            commitCollabColorDraft(randomPeerColor());
-                          }}
-                          title="随机换色"
-                          className="flex items-center gap-1 text-xs rounded px-1.5 py-1 hover:bg-[var(--hover)] flex-shrink-0"
-                          style={{ color: "var(--text-secondary)" }}
-                        >
-                          <RotateCcw size={12} />
-                          随机
-                        </button>
-                      </div>
-                    </SettingCard>
-                  </>
-                )}
+                      <button
+                        onClick={runConnectionTest}
+                        disabled={testing}
+                        title="连接中转服务测试连通性"
+                        className="px-2.5 py-1 text-xs rounded border flex-shrink-0 hover:opacity-80 disabled:opacity-50"
+                        style={{
+                          borderColor: "var(--border)",
+                          color: "var(--text-secondary)",
+                        }}
+                      >
+                        {testing ? "检查中…" : "检查连接"}
+                      </button>
+                    </div>
+                    {testResult && (
+                      <span
+                        className="text-xs"
+                        style={{ color: testResult.ok ? "#22c55e" : "#f87171" }}
+                      >
+                        {testResult.message}
+                      </span>
+                    )}
+                  </div>
+                </SettingCard>
 
-                {/* API key 随仓库保存（仓库级）：开 = key 明文随 config.json 同步多设备；关 = 仅存本机钥匙串 */}
+                {/* 身份：昵称 = 在线列表展示名；颜色 = 远端选中高亮描边色 */}
                 <SettingCard
-                  title="API key 随仓库保存"
-                  description="key 随仓库同步共用；仓库公开/共享时可能泄露"
+                  title="昵称与颜色"
+                  description="空昵称 = 设备名；空颜色 = 随机分配"
                 >
-                  <ToggleSwitch
-                    checked={!!vaultConfig?.syncKeys}
-                    onChange={(v) => void setSyncKeys(v)}
-                    title="API key 随仓库保存"
-                  />
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={collabNicknameDraft}
+                      onChange={(e) => setCollabNicknameDraft(e.target.value)}
+                      onBlur={commitCollabNickname}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") e.currentTarget.blur();
+                      }}
+                      placeholder="设备名"
+                      className="text-sm rounded px-2 py-1 outline-none max-w-[140px]"
+                      style={{
+                        color: "var(--text-primary)",
+                        background: "var(--input-bg)",
+                        border: "1px solid var(--input-border)",
+                      }}
+                    />
+                    <input
+                      type="color"
+                      value={collabColorDraft}
+                      onChange={(e) => commitCollabColorDraft(e.target.value)}
+                      title="身份颜色"
+                      className="w-6 h-6 rounded cursor-pointer bg-transparent p-0 border-0"
+                    />
+                    <button
+                      onClick={() => {
+                        // 随机 = 提交一个新随机色存显式值（重启不变）；空色仅作未配置时的启动随机兜底
+                        commitCollabColorDraft(randomPeerColor());
+                      }}
+                      title="随机换色"
+                      className="flex items-center gap-1 text-xs rounded px-1.5 py-1 hover:bg-[var(--hover)] flex-shrink-0"
+                      style={{ color: "var(--text-secondary)" }}
+                    >
+                      <RotateCcw size={12} />
+                      随机
+                    </button>
+                  </div>
                 </SettingCard>
               </section>
             ) : tab === "providers" ? (

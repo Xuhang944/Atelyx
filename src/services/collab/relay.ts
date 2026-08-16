@@ -18,6 +18,85 @@ import type { CollabHello, CollabPeer, CollabPresence, TablePatch } from "@/type
 const HEARTBEAT_MS = 25_000;
 /** 断线重连退避：1s 起，翻倍，封顶 15s。 */
 const MAX_RETRY_MS = 15_000;
+/** 连通性测试（检查连接）等待 hello-ack 的超时。 */
+const TEST_TIMEOUT_MS = 5_000;
+
+/** 中转地址规范化：补协议（ws://）与 /ws 路径（relay 唯一路由），
+ *  如 `192.168.1.10:17701` → `ws://192.168.1.10:17701/ws`；空/无法解析的输入原样返回。 */
+export function normalizeRelayUrl(raw: string): string {
+  const input = raw.trim();
+  if (!input) return "";
+  const withProto = /^wss?:\/\//i.test(input) ? input : `ws://${input}`;
+  try {
+    const u = new URL(withProto);
+    return `${u.protocol}//${u.host}/ws`;
+  } catch {
+    return withProto;
+  }
+}
+
+/** 连通性测试结果（设置页「检查连接」展示）。 */
+export interface RelayTestResult {
+  ok: boolean;
+  message: string;
+}
+
+/**
+ * 一次性连通性测试（设置页「检查连接」）：独立 WebSocket 连上后发探测 hello（随机房间 id），
+ * 收到 hello-ack 即判定中转服务正常并立即断开——与常驻连接互不干扰（不复用连接、不触发重连）。
+ * 失败原因：地址不可解析 / 网络不可达 / 中转拒绝（error 帧）/ 超时无应答 / 提前关闭。
+ */
+export function testRelayConnection(
+  url: string,
+  timeoutMs: number = TEST_TIMEOUT_MS,
+): Promise<RelayTestResult> {
+  return new Promise((resolve) => {
+    let ws: WebSocket | null = null;
+    let timer: number | null = null;
+    let settled = false;
+    const finish = (result: RelayTestResult) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      ws?.close();
+      resolve(result);
+    };
+    try {
+      ws = new WebSocket(url);
+    } catch {
+      finish({ ok: false, message: "地址无法连接（格式错误或协议不受支持）" });
+      return;
+    }
+    timer = window.setTimeout(
+      () => finish({ ok: false, message: `连接超时（${timeoutMs / 1000}s 内未收到中转响应）` }),
+      timeoutMs,
+    );
+    ws.onopen = () => {
+      // hello 首条必发（relay 才回 hello-ack）；随机房间 id 防误入真实仓库房间
+      ws?.send(
+        JSON.stringify({
+          type: "hello",
+          vaultId: `__probe__${Date.now()}`,
+          nickname: "连接测试",
+          color: "#888888",
+          deviceName: "probe",
+        }),
+      );
+    };
+    ws.onmessage = (e) => {
+      let msg: CollabServerMessage;
+      try {
+        msg = JSON.parse(e.data);
+      } catch {
+        return;
+      }
+      if (msg.type === "hello-ack") finish({ ok: true, message: "连接成功，中转服务正常" });
+      else if (msg.type === "error") finish({ ok: false, message: `中转拒绝：${msg.message}` });
+    };
+    ws.onerror = () => finish({ ok: false, message: "无法连接（网络不可达或地址错误）" });
+    ws.onclose = () => finish({ ok: false, message: "连接被对端关闭" });
+  });
+}
 
 export type CollabClientMessage =
   | ({ type: "hello" } & CollabHello)

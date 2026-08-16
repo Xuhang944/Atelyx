@@ -8,11 +8,16 @@
 import { create } from "zustand";
 import {
   connectCollabRelay,
+  normalizeRelayUrl,
+  testRelayConnection,
   type CollabRelayHandle,
+  type RelayTestResult,
 } from "@/services/collab/relay";
 import { useAppStore } from "@/stores/appStore";
 import { useTableStore } from "@/stores/tableStore";
 import type { CollabPeer, CollabPresence } from "@/types";
+
+export { normalizeRelayUrl, type RelayTestResult } from "@/services/collab/relay";
 
 /** 本端 presence 广播节流（选中高频变化合并，不刷屏 relay）。 */
 const BROADCAST_THROTTLE_MS = 100;
@@ -35,6 +40,8 @@ interface CollabStoreState {
   init: (cfg: CollabInitConfig) => void;
   /** 设置变更（开关/地址/昵称/颜色）：重建连接。 */
   applyConfig: (patch: Partial<Omit<CollabInitConfig, "deviceName">>) => void;
+  /** 检查中转连通性（设置页「检查连接」）：按输入地址一次性探测 relay，不影响常驻连接。 */
+  testConnection: (rawUrl: string) => Promise<RelayTestResult>;
   /** 断开连接并停止广播（应用退出）。 */
   dispose: () => void;
 }
@@ -162,6 +169,12 @@ export const useCollabStore = create<CollabStoreState>((set) => ({
       color: patch.color || runtimeCfg.color,
     };
     establishConnection();
+  },
+
+  testConnection: async (rawUrl) => {
+    const url = normalizeRelayUrl(rawUrl);
+    if (!url) return { ok: false, message: "请先填写中转地址" };
+    return testRelayConnection(url);
   },
 
   dispose: () => {
