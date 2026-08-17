@@ -20,10 +20,10 @@ import {
   GitBranch,
   Globe,
   History,
+  Link,
   Loader2,
   PenLine,
   RefreshCw,
-  Table,
   Wrench,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -301,12 +301,14 @@ function toolIcon(name: string, size: number) {
   switch (name) {
     case "web_search":
       return <Globe size={size} className="flex-shrink-0" />;
-    case "write_note":
-      return <FilePlus size={size} className="flex-shrink-0" />;
-    case "append_table_row":
-      return <Table size={size} className="flex-shrink-0" />;
-    case "edit_note":
+    case "web_fetch":
+      return <Link size={size} className="flex-shrink-0" />;
+    case "read_file":
+      return <FileText size={size} className="flex-shrink-0" />;
+    case "edit_file":
       return <PenLine size={size} className="flex-shrink-0" />;
+    case "write_file":
+      return <FilePlus size={size} className="flex-shrink-0" />;
     default:
       return <Wrench size={size} className="flex-shrink-0" />;
   }

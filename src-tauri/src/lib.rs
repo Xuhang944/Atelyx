@@ -41,6 +41,8 @@ pub fn run() {
             commands::vault::scan_wiki_backlinks,
             commands::vault::rebuild_internal_links,
             commands::vault::write_note,
+            commands::vault::read_vault_file,
+            commands::vault::write_vault_file,
             commands::vault::read_whiteboard_canvas,
             commands::vault::rename_note,
             commands::vault::read_vault_config,
@@ -94,6 +96,7 @@ pub fn run() {
             commands::keychain::delete_api_key,
             // 联网搜索代理（Tavily/SearXNG，Rust 侧请求绕 CORS + key 不进 WebView）
             commands::search::search_web,
+            commands::web::fetch_web,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

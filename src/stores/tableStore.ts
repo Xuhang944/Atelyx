@@ -22,11 +22,10 @@ import { copyImageToClipboard as copyImageSvc } from "@/services/clipboard";
 import { pickFile, saveFile } from "@/services/dialog";
 import { markSelfSave } from "@/utils/selfSave";
 import { clearTableImageCache } from "@/services/tableImageCache";
-import { useVaultStore } from "@/stores/vaultStore";
 import { useCollabStore } from "@/stores/collabStore";
 import { createPersistController } from "@/utils/persist";
 import { createUndoManager } from "@/utils/undoStack";
-import { coerceRowsJson, computeTablePatch, reorderByRank, sameIdSequence } from "@/utils/table";
+import { computeTablePatch, reorderByRank, sameIdSequence } from "@/utils/table";
 import type { CalcType, CellValue, FieldType, TableField, TableFile, TablePatch, TableRow } from "@/types";
 
 /** 编辑器视图：表格 / 时间线（内存态不持久化）。 */
@@ -86,15 +85,6 @@ interface TableStoreState {
   downloadImageToDownloads: (fileName: string, dataUrl: string) => Promise<boolean>;
   /** 导出 xlsx：系统保存对话框选目标路径 → 导出当前内容。成功返回 true。 */
   exportXlsx: () => Promise<boolean>;
-  /**
-   * AI 自主填行（append_table_row 工具）：按标题匹配目标表，字段名强转后**追加**行。
-   * 目标表非当前打开 → 先落盘当前表再加载目标表（切换为用户可见行为）。
-   * 返回回填给 AI 的结果（成功追加行数 / 失败原因，summary 供工具可视化块展示）。
-   */
-  appendRowsFromAi: (
-    tableTitle: string,
-    rows: unknown[],
-  ) => Promise<{ ok: boolean; summary: string }>;
   addField: (name: string, type: FieldType) => void;
   insertField: (index: number, name: string, type: FieldType) => void;
   renameField: (fieldId: string, name: string) => void;
@@ -706,50 +696,6 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
       set({ error: "导出 xlsx 失败，请重试" });
       return false;
     }
-  },
-
-  appendRowsFromAi: async (tableTitle, rows) => {
-    // 按标题匹配（文件名 = 标题，含 .atb 扩展名；大小写不敏感兜底）
-    const tables = useVaultStore.getState().tableList;
-    const target =
-      tables.find((t) => t.name.replace(/\.atb$/i, "") === tableTitle) ??
-      tables.find(
-        (t) => t.name.toLowerCase().replace(/\.atb$/i, "") === tableTitle.toLowerCase(),
-      );
-    if (!target) {
-      const available = tables.map((t) => t.name.replace(/\.atb$/i, "")).join("、");
-      return {
-        ok: false,
-        summary: `未找到标题为「${tableTitle}」的表格（可用标题：${available || "无"}）`,
-      };
-    }
-    // 目标表非当前打开：先落盘当前表（防脏编辑丢失）再加载目标表（其字段成为强转基准）
-    if (get().tableFile !== target.file) {
-      await get().flush();
-      await get().load(target.file);
-      if (get().tableFile !== target.file) {
-        return { ok: false, summary: "读取目标表格失败" };
-      }
-    }
-    const { fields, title } = get();
-    if (fields.length === 0) {
-      return { ok: false, summary: "目标表格没有字段，请先添加字段" };
-    }
-    // 字段名强转兜底；空行（字段名全不匹配）丢弃
-    const coerced = coerceRowsJson(rows, fields).filter(
-      (r) => Object.keys(r.values).length > 0,
-    );
-    if (coerced.length === 0) {
-      return {
-        ok: false,
-        summary: `行数据与字段不匹配（字段：${fields.map((f) => f.name).join("、")}）`,
-      };
-    }
-    // 追加 = 一步撤销单元（结构性变更，用户预期可撤销）
-    undoMgr.push();
-    set((s) => ({ rows: [...s.rows, ...coerced] }));
-    schedulePersist();
-    return { ok: true, summary: `已向「${title}」追加 ${coerced.length} 行` };
   },
 
   addField: (name, type) => {

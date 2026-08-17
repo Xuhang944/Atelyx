@@ -420,6 +420,26 @@ pub fn write_note(
     write_note_file(&root, &file, &content)
 }
 
+/// 读仓库内任意文本文件（安全边界 = 仓库根，safe_join 校验；非 UTF-8 返回替换字符容错）。
+/// AI read_file 等通用文件工具的后端。
+#[tauri::command]
+pub fn read_vault_file(file: String, state: State<'_, VaultState>) -> Result<String, String> {
+    let root = state.root()?;
+    read_note_file(&root, &file)
+}
+
+/// 写仓库内任意文本文件（指定相对路径；原子写 + 自动建父目录）。
+/// AI write_file/edit_file 等通用文件工具的后端。
+#[tauri::command]
+pub fn write_vault_file(
+    file: String,
+    content: String,
+    state: State<'_, VaultState>,
+) -> Result<(), String> {
+    let root = state.root()?;
+    write_note_file(&root, &file, &content)
+}
+
 /// 重命名 .md 笔记 + 扫描所有 .atlx 更新 text 节点 file 引用 + 扫描所有 .md 更新内部链接（链接维护）。
 /// 预扫描 → 改名 → 统一写回：任一写回失败时回滚重命名（避免「已改名但引用未更新、
 /// 重试报源文件不存在」的半完成态）。

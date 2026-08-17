@@ -6,18 +6,23 @@
  * - applyBatch：每帧合并后的增量写回调
  * - onError：请求失败写 [错误] 占位（保留已产出内容）
  * - onDone：流结束（含超时/中止），调用方用 decideCleanup 做最终清理
- * - executeTools：工具执行（画布 = 搜索 + 建产物节点；面板 = 仅搜索回填），返回 tool 消息由引擎回填下一轮
+ * - executeTools：工具执行（走公共执行器 runAgentTools，产物节点差异由调用方 hooks 消化），返回 tool 消息由引擎回填下一轮
+ *
+ * 类型全部用中性词汇（LlmMessage/ToolSchema），工具执行走 services/ai/tools 注册表（runAgentTools）。
  */
-import {
-  streamChat,
-  STREAM_IDLE_TIMEOUT_MS,
-  type ChatParams,
-  type ToolCall,
-} from "@/services/ai/client";
+import { streamChat, STREAM_IDLE_TIMEOUT_MS } from "@/services/ai/client";
 import { autoTitle, AUTO_NAMING_DELAY_MS } from "@/services/ai/autoTitle";
-import { summarizeToolArgs } from "@/constants/tools";
+import { summarizeAgentTool } from "@/services/ai/tools";
 import { useSettingsStore } from "./settingsStore";
-import type { ProviderConfig, Role, ToolDef, ToolRun } from "@/types";
+import type {
+  ProviderConfig,
+  Role,
+  ToolSchema,
+  LlmMessage,
+  LlmToolCall,
+  LlmFinishReason,
+  ToolRun,
+} from "@/types";
 
 export interface StreamBatch {
   content: string;
@@ -34,9 +39,9 @@ export interface ToolExecResult {
 export interface RunStreamExchangeOptions {
   provider: ProviderConfig;
   model: string;
-  apiMessages: ChatParams["messages"];
+  apiMessages: LlmMessage[];
   /** 传入 = 启用工具循环（最多 maxToolRounds 轮 + 1 次强制纯文本）；不传 = 单轮。 */
-  tools?: ToolDef[];
+  tools?: ToolSchema[];
   /** 工具执行轮数上限（防死循环），默认 3。 */
   maxToolRounds?: number;
   signal: AbortSignal;
@@ -48,12 +53,12 @@ export interface RunStreamExchangeOptions {
     timedOut: boolean;
   }) => void;
   /**
-   * 工具执行（画布/面板均走 toolRunner 公共执行器，产物节点差异由调用方 hooks 消化），
+   * 工具执行（画布/面板均走 services/ai/tools 的 runAgentTools，产物节点差异由调用方 hooks 消化），
    * 返回 tool 消息由引擎回填下一轮，results 为各 tool call 的执行结果摘要（可视化用）。
    */
   executeTools: (
-    calls: ToolCall[],
-  ) => Promise<{ messages: ChatParams["messages"]; results: ToolExecResult[] }>;
+    calls: LlmToolCall[],
+  ) => Promise<{ messages: LlmMessage[]; results: ToolExecResult[] }>;
   /** 工具调用过程通知（可视化）：执行前发 running，执行后发 done/error。 */
   onToolRuns?: (runs: ToolRun[]) => void;
 }
@@ -127,8 +132,8 @@ export async function runStreamExchange(
 
   try {
     for (let round = 0; round <= maxRounds; round++) {
-      let toolCalls: ToolCall[] = [];
-      let stopReason: string | undefined;
+      let toolCalls: LlmToolCall[] = [];
+      let stopReason: LlmFinishReason | undefined;
       let roundError: Error | null = null;
       // 最后一轮不带 tools：强制纯文本回复，保证占位消息有内容（否则连续工具调用会「只出工具产物、无 AI 回复」）
       const toolsForRound =
@@ -183,9 +188,9 @@ export async function runStreamExchange(
 
       if (toolCalls.length === 0) break; // 纯文本轮：流式内容已写入占位
 
-      // 回复被截断（finish_reason=length）：tool call 参数可能残缺，不执行工具
+      // 回复被截断（finish_reason=length → 中性 max-tokens）：tool call 参数可能残缺，不执行工具
       // （防残缺参数执行产生误导产物），如实报错由调用方写 [错误] 占位
-      if (stopReason === "length") {
+      if (stopReason === "max-tokens") {
         cancelRaf();
         clearIdle();
         options.onError(
@@ -194,13 +199,13 @@ export async function runStreamExchange(
         return;
       }
 
-      // 执行工具调用（走公共执行器 runToolCalls，画布/面板差异由 executeTools 回调消化）：
+      // 执行工具调用（走公共执行器 runAgentTools，画布/面板差异由 executeTools 回调消化）：
       // 用户点停止后，已发出的请求结果回来时被下方 aborted 检查丢弃（不建产物），
       // 下一轮携已 abort 的 signal 立即收敛
       const runningRuns: ToolRun[] = toolCalls.map((tc) => ({
         id: tc.id,
-        name: tc.function.name,
-        argsSummary: summarizeToolArgs(tc.function.name, tc.function.arguments),
+        name: tc.name,
+        argsSummary: summarizeAgentTool(tc.name, tc.arguments),
         status: "running",
       }));
       options.onToolRuns?.(runningRuns);
@@ -229,11 +234,12 @@ export async function runStreamExchange(
         }),
       );
       // 已达工具上限：本轮工具已执行（结果已沉淀），不再回填继续请求
-      // （末轮 toolsForRound 恒为空、toolCalls 恒为空，178 行已 break——此处无需守卫）
+      // （末轮 toolsForRound 恒为空、toolCalls 恒为空，上面已 break——此处无需守卫）
       apiMessages = [
         ...apiMessages,
-        // OpenAI 规范：assistant 带 tool_calls 时 content 为 null（部分兼容网关对空串返回 500）
-        { role: "assistant", content: null, tool_calls: toolCalls },
+        // 中性语义：assistant 带 toolCalls 时 text 为 null（适配器转 OpenAI 线时 content 为 null，
+        // 部分兼容网关对空串返回 500）
+        { role: "assistant", text: null, toolCalls },
         ...toolMessages,
       ];
     }

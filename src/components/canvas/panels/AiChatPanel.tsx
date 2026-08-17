@@ -71,7 +71,7 @@ function appendMentionTags(prev: string, tags: string[]): string {
  * 划词 → 面板输入框指令文本（中性化描述）：笔记路径 + 划词原文 + 用户要求。
  * 不预设「改写」意图——用户划词提出要求，AI 自行判断用工具修改、解释还是其他；
  * 工具可用性由 Agent 模式开关决定。注入仓库路径帮助 AI 精确匹配目标笔记
- * （edit_note 的 note 参数支持路径匹配，同名笔记不混淆）。
+ * （edit_file 的 path 参数支持路径匹配，同名笔记不混淆）。
  */
 function buildRewritePrompt(r: {
   noteFile: string;

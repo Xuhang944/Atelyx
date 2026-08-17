@@ -32,7 +32,7 @@ export interface MessageRef {
 export interface ToolRun {
   /** tool call id（流式累积的 id） */
   id: string;
-  /** 工具名（web_search / write_note / append_table_row / edit_note） */
+  /** 工具名（web_search / web_fetch / read_file / edit_file / write_file） */
   name: string;
   /** 参数摘要展示文本（如「搜索「xxx」」/「修改《x》2 处」） */
   argsSummary: string;

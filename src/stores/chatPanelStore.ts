@@ -8,16 +8,19 @@ import {
   deleteChatMessages,
   readNote,
 } from "@/services/vault";
-import { toApiMessages } from "@/services/ai/client";
+import { toLlmMessages } from "@/services/ai/client";
 import { abortAutoTitle } from "@/services/ai/autoTitle";
-import { AGENT_TOOLS, DEFAULT_AGENT_TOOLS } from "@/constants/tools";
+import { DEFAULT_AGENT_TOOLS } from "@/constants/tools";
 import { ERROR_PREFIX, TIMEOUT_ERROR_TEXT } from "@/constants/chat";
 import {
   runStreamExchange,
   decideCleanup,
   runAutoNaming,
 } from "./streaming";
-import { runToolCalls } from "./toolRunner";
+import { runAgentTools, buildAgentTools } from "@/services/ai/tools";
+import { runSearch } from "@/services/search";
+import { readVaultFile, writeVaultFile, editVaultFile } from "@/services/vault/aiFiles";
+import { fetchWeb } from "@/services/web";
 import { prefix, scanMentionHits } from "@/utils/text";
 import { baseName } from "@/utils/filename";
 import { createPersistController } from "@/utils/persist";
@@ -37,7 +40,7 @@ import type {
   EditorChatsFile,
   NoteRewriteRequest,
   ProviderConfig,
-  ToolDef,
+  ToolSchema,
   ToolRun,
 } from "@/types";
 
@@ -506,19 +509,16 @@ async function runExchange(
   // （缺省全部）；web_search 依赖搜索源配置——勾选了但未配置时剔除并提示，其余工具不受影响
   const settings = useSettingsStore.getState();
   const searchReady = settings.isSearchConfigured();
-  const tools: ToolDef[] = [];
+  let tools: ToolSchema[] = [];
   if (useChatPanelStore.getState().agentMode) {
     // 面板 agentTools 初始 = DEFAULT_AGENT_TOOLS，全取消 = 空数组（明确全关，不做缺省回退）
     const enabled = useChatPanelStore.getState().agentTools;
-    for (const meta of AGENT_TOOLS) {
-      if (!enabled.includes(meta.id)) continue;
-      if (meta.id === "web_search" && !searchReady) {
-        useChatPanelStore.setState({
-          error: "未配置搜索源（设置 → 联网搜索），本次对话未启用联网搜索",
-        });
-        continue;
-      }
-      tools.push(meta.def);
+    const assembly = buildAgentTools(enabled, searchReady);
+    tools = assembly.tools;
+    if (assembly.skippedWebSearch) {
+      useChatPanelStore.setState({
+        error: "未配置搜索源（设置 → 联网搜索），本次对话未启用联网搜索",
+      });
     }
   }
 
@@ -531,8 +531,8 @@ async function runExchange(
     provider,
     model,
     apiMessages: [
-      ...(systemPrompt ? [{ role: "system" as const, content: systemPrompt }] : []),
-      ...toApiMessages(apiHistory),
+      ...(systemPrompt ? [{ role: "system" as const, text: systemPrompt }] : []),
+      ...toLlmMessages(apiHistory),
     ],
     ...(tools.length ? { tools } : {}),
     signal: controller.signal,
@@ -623,7 +623,16 @@ async function runExchange(
     },
     executeTools: (calls) =>
       // 公共工具执行器（画布/面板共用）；面板无画布上下文，不建产物节点
-      runToolCalls(calls, controller.signal),
+      runAgentTools(calls, {
+        signal: controller.signal,
+        capabilities: {
+          search: (query) => runSearch(useSettingsStore.getState().searchConfig, query),
+          readFile: readVaultFile,
+          writeFile: (path, content) => writeVaultFile(path, content).then(() => ({ ok: true, summary: `已写入「${path}」` })),
+          editFile: editVaultFile,
+          fetchUrl: fetchWeb,
+        },
+      }),
   });
 }
 

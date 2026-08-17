@@ -6,7 +6,7 @@
 import { Check } from "lucide-react";
 import type { RefObject } from "react";
 import { PopupLayer, type PopupAnchor } from "@/components/common/PopupLayer";
-import { AGENT_TOOLS } from "@/constants/tools";
+import { AGENT_TOOLS_META } from "@/constants/tools";
 
 interface AgentToolsMenuProps {
   anchor: PopupAnchor | null;
@@ -26,7 +26,7 @@ export function AgentToolsMenu({
   triggerRef,
 }: AgentToolsMenuProps) {
   if (!anchor) return null;
-  const active = enabled ?? AGENT_TOOLS.map((t) => t.id);
+  const active = enabled ?? AGENT_TOOLS_META.map((t) => t.id);
   return (
     <PopupLayer
       anchor={anchor}
@@ -36,7 +36,7 @@ export function AgentToolsMenu({
       widthClass="w-44"
       contentClassName="p-1"
     >
-      {AGENT_TOOLS.map((t) => {
+      {AGENT_TOOLS_META.map((t) => {
         const on = active.includes(t.id);
         return (
           <button

@@ -365,20 +365,6 @@ interface VaultFileState {
    */
   createNote: (title: string, dir?: string) => Promise<string>;
   /**
-   * 建笔记并写入正文（AI 写笔记工具通道）：文件名 = title 净化 + 同目录去重；
-   * 正文写失败回滚已建空文件（防根目录残留孤儿 .md）。返回相对路径。
-   */
-  createNoteWithContent: (title: string, content: string) => Promise<string>;
-  /**
-   * AI 行级修改笔记（edit_note 工具通道）：按路径/标题匹配 .md，edits 各块 oldText
-   * 在原文中**精确且唯一**匹配（不唯一请 AI 扩充上下文），全部校验通过后统一替换
-   * （先校验后应用，防部分应用）；写盘失败报错。返回结果摘要（工具可视化块展示）。
-   */
-  applyNoteEdits: (
-    note: string,
-    edits: Array<{ oldText: string; newText: string }>,
-  ) => Promise<{ ok: boolean; summary: string }>;
-  /**
    * 重命名 `.md`：新路径 = 同目录 `<sanitized-newTitle>.md`（同名自动加序号，排除自身）。
    * 返回实际落盘的文件名（被去重时 ≠ 期望名，调用方据此提示）。
    * 服务端 `rename_note` 会同步更新所有 .atlx 的 text 节点 file 引用。
@@ -561,74 +547,6 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     await writeNote(file, "");
     await get().loadFiles();
     return file;
-  },
-
-  createNoteWithContent: async (title, content) => {
-    // 与 saveTextNodeAsNote 同款「建空文件 → 写正文 → 失败回滚」模式
-    const file = await get().createNote(title);
-    try {
-      await writeNote(file, content);
-    } catch (e) {
-      console.error("AI 写笔记失败", e);
-      await deleteNote(file).catch(() => {});
-      throw e;
-    }
-    return file;
-  },
-
-  applyNoteEdits: async (note, edits) => {
-    // 按路径/标题匹配（文件名 = 标题；大小写不敏感兜底），复用 noteList
-    const notes = get().noteList;
-    const target =
-      notes.find((n) => n.file === note) ??
-      notes.find((n) => n.name === `${note}.md`) ??
-      notes.find((n) => n.name.toLowerCase() === `${note.toLowerCase()}.md`);
-    if (!target) {
-      const available = notes.map((n) => n.name.replace(/\.md$/i, "")).join("、");
-      return {
-        ok: false,
-        summary: `未找到笔记「${note}」（可用笔记：${available.slice(0, 200) || "无"}）`,
-      };
-    }
-    const original = await readNote(target.file).catch(() => null);
-    if (original === null) return { ok: false, summary: `读取笔记「${target.name}」失败` };
-    // 全块在原文上校验（唯一性 + 不重叠），全部通过才应用——防部分应用后文件处于半改状态
-    const matches: Array<{ edit: { oldText: string; newText: string }; index: number }> = [];
-    for (const edit of edits) {
-      const preview = edit.oldText.length > 30 ? `${edit.oldText.slice(0, 30)}…` : edit.oldText;
-      const index = original.indexOf(edit.oldText);
-      if (index < 0) return { ok: false, summary: `原文片段未找到：「${preview}」` };
-      if (original.indexOf(edit.oldText, index + 1) >= 0) {
-        return { ok: false, summary: `原文片段不唯一：「${preview}」——请扩充上下文使其唯一` };
-      }
-      matches.push({ edit, index });
-    }
-    matches.sort((a, b) => a.index - b.index);
-    for (let i = 1; i < matches.length; i++) {
-      const prev = matches[i - 1];
-      if (matches[i].index < prev.index + prev.edit.oldText.length) {
-        return { ok: false, summary: "替换片段重叠，请合并为一块" };
-      }
-    }
-    // 从后往前替换防位置漂移（每块在原始文本中的位置已记录）
-    let result = original;
-    for (let i = matches.length - 1; i >= 0; i--) {
-      const { edit, index } = matches[i];
-      result =
-        result.slice(0, index) + edit.newText + result.slice(index + edit.oldText.length);
-    }
-    try {
-      await writeNote(target.file, result);
-      // 登记磁盘基线：应用自写（AI 行级修改）须被 isKnownNoteDiskContent 识别，
-      // 否则 watcher 回波会被 NoteEditor 误判为外部修改弹假冲突
-      recordNoteDiskContentSvc(target.file, result);
-    } catch (e) {
-      return { ok: false, summary: `写入笔记失败：${e instanceof Error ? e.message : String(e)}` };
-    }
-    return {
-      ok: true,
-      summary: `修改《${target.name.replace(/\.md$/i, "")}》${edits.length} 处`,
-    };
   },
 
   renameNote: async (oldFile, newTitle) => {

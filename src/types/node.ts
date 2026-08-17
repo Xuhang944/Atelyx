@@ -36,7 +36,7 @@ export interface ConversationData {
   title?: string;
   /** 启用 AI Agent 模式（缺省关 = 普通对话，不带任何工具）：开启后 AI 可自主调用工具（见 agentTools）。 */
   agentMode?: boolean;
-  /** Agent 模式启用的工具名列表（constants/tools.ts 的 AGENT_TOOLS id；缺省 = 全部工具）。 */
+  /** Agent 模式启用的工具名列表（constants/tools.ts 的 AGENT_TOOLS_META id；缺省 = 全部工具）。 */
   agentTools?: string[];
 }
 

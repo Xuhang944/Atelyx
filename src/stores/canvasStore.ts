@@ -24,9 +24,12 @@ import {
 } from "@/services/vault";
 import { readTableVault } from "@/services/table";
 import { tableToSnapshotText } from "@/utils/table";
-import { toApiMessages, type ChatParams } from "@/services/ai/client";
+import { toLlmMessages } from "@/services/ai/client";
 import { abortAutoTitle } from "@/services/ai/autoTitle";
 import { runSearch, resultsToText } from "@/services/search";
+import { runAgentTools, buildAgentTools } from "@/services/ai/tools";
+import { readVaultFile, writeVaultFile, editVaultFile } from "@/services/vault/aiFiles";
+import { fetchWeb } from "@/services/web";
 import {
   findFreeSpot,
   pickEdgeHandles,
@@ -47,14 +50,13 @@ import {
   DEFAULT_GROUP_WIDTH,
   DEFAULT_GROUP_HEIGHT,
 } from "@/constants/canvas";
-import { AGENT_TOOLS, DEFAULT_AGENT_TOOLS } from "@/constants/tools";
+import { DEFAULT_AGENT_TOOLS } from "@/constants/tools";
 import { ERROR_PREFIX, TIMEOUT_ERROR_TEXT } from "@/constants/chat";
 import {
   runStreamExchange,
   decideCleanup,
   runAutoNaming,
 } from "./streaming";
-import { runToolCalls } from "./toolRunner";
 import { isAssetConsumed } from "@/utils/consumed";
 import { prefix, scanMentionHits } from "@/utils/text";
 import { sanitizeFilename, siblingPath } from "@/utils/filename";
@@ -71,7 +73,8 @@ import type {
   Message,
   PendingAttachment,
   SearchResultData,
-  ToolDef,
+  ToolSchema,
+  LlmMessage,
 } from "@/types";
 
 /** Undo/Redo 快照（含 messagesByConv，否则分支撤销时消息状态会撕裂） */
@@ -705,29 +708,25 @@ async function runStream(conversationId: string): Promise<void> {
     // （缺省全部）；web_search 依赖搜索源配置——勾选了但未配置时剔除并提示，其余工具不受影响
     const settings = useSettingsStore.getState();
     const searchReady = settings.isSearchConfigured();
-    const tools: ToolDef[] = [];
+    let tools: ToolSchema[] = [];
     if (nodeData?.agentMode) {
       const enabled = nodeData.agentTools ?? DEFAULT_AGENT_TOOLS;
-      for (const meta of AGENT_TOOLS) {
-        if (!enabled.includes(meta.id)) continue;
-        if (meta.id === "web_search" && !searchReady) {
-          store.setState({
-            error: "未配置搜索源（设置 → 联网搜索），本次对话未启用联网搜索",
-          });
-          continue;
-        }
-        tools.push(meta.def);
+      const assembly = buildAgentTools(enabled, searchReady);
+      tools = assembly.tools;
+      if (assembly.skippedWebSearch) {
+        store.setState({
+          error: "未配置搜索源（设置 → 联网搜索），本次对话未启用联网搜索",
+        });
       }
     }
     // 5.4：引用已在 send 时固化进 user 消息 content（一次性注入），此处不再动态拼接
-    const apiMessages: ChatParams["messages"] = toApiMessages(history);
+    const apiMessages: LlmMessage[] = toLlmMessages(history);
     // 系统提示词：从引用的笔记实时读正文，注入为首条 system 消息（外部编辑即时生效）。
     // 读失败（笔记被删/改名）静默降级为不带系统提示词，不阻塞对话。
     if (nodeData?.systemPromptFile) {
       try {
         const sysContent = await readNote(nodeData.systemPromptFile);
-        if (sysContent.trim())
-          apiMessages.unshift({ role: "system", content: sysContent });
+        if (sysContent.trim()) apiMessages.unshift({ role: "system", text: sysContent });
       } catch {
         // 笔记缺失：跳过注入
       }
@@ -869,13 +868,34 @@ async function runStream(conversationId: string): Promise<void> {
         });
       },
       executeTools: (calls) =>
-        // 公共工具执行器（画布/面板共用）；差异仅产物节点：画布建搜索/笔记节点，面板不建
-        runToolCalls(calls, controller.signal, {
-          onSearchResult: (query, data) =>
-            createSearchNode(conversationId, query, data),
-          onNoteCreated: (file, title) =>
-            createWriteNoteNode(conversationId, file, title),
-        }),
+        // 公共工具执行器（画布/面板共用）；差异仅产物节点：画布建搜索/写笔记节点，面板不建
+        runAgentTools(
+          calls,
+          {
+            signal: controller.signal,
+            capabilities: {
+              search: (query) => runSearch(useSettingsStore.getState().searchConfig, query),
+              readFile: readVaultFile,
+              writeFile: (path, content) => writeVaultFile(path, content).then(() => ({ ok: true, summary: `已写入「${path}」` })),
+              editFile: editVaultFile,
+              fetchUrl: fetchWeb,
+            },
+          },
+          {
+            onToolResult: (name, result) => {
+              if (name === "web_search" && result.ok && result.data) {
+                const d = result.data as SearchResultData;
+                createSearchNode(conversationId, d.query, d);
+              } else if (name === "write_file" && result.ok && result.data) {
+                const { path } = result.data as { path: string };
+                if (/\.md$/i.test(path)) {
+                  const title = (path.split("/").pop() ?? path).replace(/\.md$/i, "");
+                  createWriteNoteNode(conversationId, path, title);
+                }
+              }
+            },
+          },
+        ),
     });
   } catch (e) {
     console.error("流式请求失败", e);
@@ -1038,7 +1058,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
             if (!searchWanted && !writeWanted) return n;
             const tools: string[] = [];
             if (searchWanted) tools.push("web_search");
-            if (writeWanted) tools.push("write_note", "append_table_row");
+            if (writeWanted) tools.push("write_file");
             const { toolsEnabled: _t, writeToolsEnabled: _w, ...rest } = d;
             migrated = true;
             return { ...n, data: { ...rest, agentMode: true, agentTools: tools } };

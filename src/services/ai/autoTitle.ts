@@ -75,9 +75,9 @@ export async function autoTitle(
   const messages: ChatParams["messages"] = [
     {
       role: "system",
-      content: `你负责为对话生成标题。只输出标题本身（不超过 ${TITLE_MAX_LEN} 字），不要引号、解释、标点或编号。`,
+      text: `你负责为对话生成标题。只输出标题本身（不超过 ${TITLE_MAX_LEN} 字），不要引号、解释、标点或编号。`,
     },
-    { role: "user", content: `为下面的对话起一个简洁的标题：\n\n${excerpt}` },
+    { role: "user", text: `为下面的对话起一个简洁的标题：\n\n${excerpt}` },
   ];
   const controller = new AbortController();
   const key = opts?.key;

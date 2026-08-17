@@ -110,4 +110,24 @@ export type {
   CollabHello,
 } from "./collab";
 
-export type { ToolDef } from "./tool";
+export {
+  UNKNOWN_TOOL_MSG_PREFIX,
+  ToolArgsError,
+  type ToolSchema,
+  type ToolResult,
+  type ToolCapabilities,
+  type ToolExecContext,
+  type ToolDefinition,
+  type ToolExecResult,
+} from "./tool";
+
+export type {
+  LlmRole,
+  LlmToolCall,
+  TokenUsage,
+  LlmMessage,
+  LlmFinishReason,
+  LlmErrorCode,
+  LlmStreamEvent,
+  LlmRequest,
+} from "./llm";

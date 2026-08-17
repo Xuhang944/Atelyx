@@ -38,7 +38,7 @@ export interface EditorChatMessageRef {
 
 /**
  * 笔记划词 AI 改写请求（NoteEditor 划词右键确认 → 面板输入框插入指令文本）。
- * 不改动 Agent 开关：agent 开着（勾了 edit_note）AI 直接改文件，没开则输出修改建议。
+ * 不改动 Agent 开关：agent 开着（勾了 edit_file）AI 直接改文件，没开则输出修改建议。
  */
 export interface NoteRewriteRequest {
   /** 被划词笔记的相对仓库根路径 */
