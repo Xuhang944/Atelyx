@@ -441,8 +441,7 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
                   refKeyOf={refKeyOfPanelRef}
                   onRefChipClick={handleRefChipClick}
                   content={m.content}
-                  reasoningContent={m.reasoningContent}
-                  toolRuns={m.toolRuns}
+                  steps={m.steps}
                   isStreaming={isStreamingMsg}
                   markdownComponents={chatMarkdownComponents}
                   streamingPlaceholder={

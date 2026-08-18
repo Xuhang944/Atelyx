@@ -86,4 +86,6 @@ export interface ToolExecResult {
   id: string;
   ok: boolean;
   summary: string;
+  /** 完整结果文本（展开详情用；缺省 = summary）。 */
+  detail?: string;
 }

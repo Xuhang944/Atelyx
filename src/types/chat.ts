@@ -12,7 +12,7 @@ import {
   CHAT_HISTORY_DIR,
   CHAT_MESSAGE_EXT,
 } from "@/constants/editorChats";
-import type { ToolRun } from "./message";
+import type { AgentStep, ToolRun } from "./message";
 
 export {
   EDITOR_CHATS_SCHEMA,
@@ -56,8 +56,13 @@ export interface EditorChatMessage {
   role: EditorChatRole;
   content: string;
   /**
+   * Agent 步进（assistant 消息展示用，思考与工具交错，每步思考可见）。
+   * 工具步随消息 .md `## tool` 段持久化，重开会话恢复展示；思考步不落盘（与 reasoningContent 一致）。
+   */
+  steps?: AgentStep[];
+  /**
    * 模型思考过程（`delta.reasoning_content` 流式累积）。
-   * 仅作气泡折叠展示，不进 API 历史上下文；消息 .md 转写不落盘，重开后不恢复。
+   * 仅作气泡折叠展示，不进 API 历史上下文；消息 .md 转写不落盘，重开后不恢复。遗留：见 `steps`。
    */
   reasoningContent?: string;
   /**
@@ -68,7 +73,7 @@ export interface EditorChatMessage {
   displayContent?: string;
   /** 该 user 消息发送时拖入的笔记引用（气泡显示只读 @chip，点击打开笔记；仅会话运行期有效）。 */
   refs?: EditorChatMessageRef[];
-  /** Agent 模式工具调用过程（消息 .md 转写为 `## tool` 段持久化，重开会话恢复展示）。 */
+  /** Agent 模式工具调用过程。遗留：见 `steps`（工具步随 .md `## tool` 段持久化）。 */
   toolRuns?: ToolRun[];
   createdAt: number;
 }

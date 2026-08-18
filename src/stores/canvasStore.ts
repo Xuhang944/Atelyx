@@ -58,6 +58,7 @@ import {
   runAutoNaming,
 } from "./streaming";
 import { isAssetConsumed } from "@/utils/consumed";
+import { appendNarration, appendReasoning, mergeToolRuns, promoteLastNarration } from "@/utils/agentSteps";
 import { prefix, scanMentionHits } from "@/utils/text";
 import { sanitizeFilename, siblingPath } from "@/utils/filename";
 import { useSettingsStore } from "./settingsStore";
@@ -661,7 +662,7 @@ async function runStream(conversationId: string): Promise<void> {
     store.setState({ error: resolved.error });
     return;
   }
-  const { provider, model } = resolved;
+  const { provider, model, reasoningEffort } = resolved;
 
   // 预创建 assistant 消息（流式追加内容）
   const { id: asstId, ts: asstTs } = nowId();
@@ -734,6 +735,7 @@ async function runStream(conversationId: string): Promise<void> {
     await runStreamExchange({
       provider,
       model,
+      ...(reasoningEffort ? { reasoningEffort } : {}),
       apiMessages,
       ...(tools.length ? { tools } : {}),
       signal: controller.signal,
@@ -751,11 +753,9 @@ async function runStream(conversationId: string): Promise<void> {
                   ? {
                       ...m,
                       ...(content ? { content: m.content + content } : {}),
+                      // 思考增量流入 steps（最后思考步拼接 / 工具轮之间自然分隔）
                       ...(reasoning
-                        ? {
-                            reasoningContent:
-                              (m.reasoningContent ?? "") + reasoning,
-                          }
+                        ? { steps: appendReasoning(m.steps ?? [], reasoning) }
                         : {}),
                     }
                   : m,
@@ -802,8 +802,17 @@ async function runStream(conversationId: string): Promise<void> {
         }
         // 流式结果落盘属业务数据变更：作废 redo（undo 后流式回复不得被 Ctrl+Y 抹除）
         touchRedo();
-        // 空回复移除占位；超时且回答未产出写超时降级（保留思考）；否则正常复位
-        const decision = decideCleanup(content, reasoning, timedOut);
+        // 空回复移除占位；超时且回答未产出写超时降级（保留思考）；否则正常复位。
+        // 用占位消息的实际 content/steps 判定（叙述提升/工具步骤已在其内），而非引擎 totals
+        const m = store
+          .getState()
+          .messagesByConv[conversationId]?.find((mm) => mm.id === asstId);
+        const decision = decideCleanup(
+          m?.content ?? content,
+          reasoning,
+          timedOut,
+          !!m?.steps?.length,
+        );
         if (decision.kind === "remove") {
           store.setState((state) => {
             const l = state.messagesByConv[conversationId] ?? [];
@@ -851,7 +860,7 @@ async function runStream(conversationId: string): Promise<void> {
         schedulePersist();
         abortControllers.delete(conversationId);
       },
-      // 工具调用过程可视化：running/done 更新进占位消息 toolRuns（随消息落 .atlx）
+      // 工具调用过程可视化：全量累积 runs 合并进占位消息 steps（思考→工具交错，随消息落 .atlx）
       onToolRuns: (runs) => {
         // 节点已删除：工具过程块不再更新（消息键已清理）
         if (!findConversationNode(conversationId)) return;
@@ -861,7 +870,43 @@ async function runStream(conversationId: string): Promise<void> {
             messagesByConv: {
               ...state.messagesByConv,
               [conversationId]: l.map((m) =>
-                m.id === asstId ? { ...m, toolRuns: runs } : m,
+                m.id === asstId
+                  ? { ...m, steps: mergeToolRuns(m.steps ?? [], runs) }
+                  : m,
+              ),
+            },
+          };
+        });
+      },
+      // 工具轮叙述正文进 steps（渲染为该步的「思考行」）
+      onNarration: (text) => {
+        if (!findConversationNode(conversationId)) return;
+        store.setState((state) => {
+          const l = state.messagesByConv[conversationId] ?? [];
+          return {
+            messagesByConv: {
+              ...state.messagesByConv,
+              [conversationId]: l.map((m) =>
+                m.id === asstId
+                  ? { ...m, steps: appendNarration(m.steps ?? [], text) }
+                  : m,
+              ),
+            },
+          };
+        });
+      },
+      // 收束：最后一段叙述提升为最终回复 content（该轮只出正文、未调工具时）
+      onNarrationFinalize: () => {
+        if (!findConversationNode(conversationId)) return;
+        store.setState((state) => {
+          const l = state.messagesByConv[conversationId] ?? [];
+          return {
+            messagesByConv: {
+              ...state.messagesByConv,
+              [conversationId]: l.map((m) =>
+                m.id === asstId
+                  ? { ...m, ...promoteLastNarration(m) }
+                  : m,
               ),
             },
           };

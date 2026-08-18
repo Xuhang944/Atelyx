@@ -432,7 +432,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
           error: "未配置默认模型：请在设置 → 模型服务中配置默认模型，或在本节点选择模型",
         };
       }
-      return { ok: true, provider: def.provider, model: def.model };
+      return {
+        ok: true,
+        provider: def.provider,
+        model: def.model,
+        reasoningEffort: def.provider.models.find((m) => m.id === def.model)?.reasoningEffort,
+      };
     }
     const model = selection?.model ?? selected.models[0]?.id ?? "";
     if (!model) {
@@ -442,7 +447,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         error: "未指定模型：请选择模型，或在设置中设置默认模型",
       };
     }
-    return { ok: true, provider: selected, model };
+    return {
+      ok: true,
+      provider: selected,
+      model,
+      reasoningEffort: selected.models.find((m) => m.id === model)?.reasoningEffort,
+    };
   },
 
   addProvider: async (preset) => {

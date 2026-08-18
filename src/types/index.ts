@@ -18,6 +18,7 @@ export type {
   PendingAttachment,
   MessageRef,
   ToolRun,
+  AgentStep,
   Message,
 } from "./message";
 
@@ -40,6 +41,7 @@ export {
 export type {
   ProviderConfig,
   ProviderModel,
+  ReasoningEffort,
   AiConfig,
   GlobalProvider,
   ChatTargetResult,

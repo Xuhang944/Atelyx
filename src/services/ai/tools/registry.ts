@@ -79,7 +79,7 @@ export function createToolRegistry(defs: ToolDefinition[]): ToolRegistry {
       if (!def) {
         const msg = `${UNKNOWN_TOOL_MSG_PREFIX}${call.name}`;
         messages.push({ role: "tool", text: msg, toolCallId: call.id });
-        results.push({ id: call.id, ok: false, summary: msg });
+        results.push({ id: call.id, ok: false, summary: msg, detail: msg });
         continue;
       }
       // 参数校验（失败给错误 tool 消息，不执行）
@@ -89,7 +89,7 @@ export function createToolRegistry(defs: ToolDefinition[]): ToolRegistry {
       } catch (e) {
         const msg = `工具参数错误：${errorText(e)}`;
         messages.push({ role: "tool", text: msg, toolCallId: call.id });
-        results.push({ id: call.id, ok: false, summary: msg });
+        results.push({ id: call.id, ok: false, summary: msg, detail: msg });
         continue;
       }
       // 执行（边界捕获：执行器异常降级为失败结果，不抛断整轮）
@@ -106,7 +106,12 @@ export function createToolRegistry(defs: ToolDefinition[]): ToolRegistry {
         text: (def.renderResult ?? ((r) => r.content ?? r.summary))(result),
         toolCallId: call.id,
       });
-      results.push({ id: call.id, ok: result.ok, summary: result.summary });
+      results.push({
+        id: call.id,
+        ok: result.ok,
+        summary: result.summary,
+        detail: result.content ?? result.summary,
+      });
       outcomes.push({ name: call.name, id: call.id, result });
     }
     return { messages, results, outcomes };

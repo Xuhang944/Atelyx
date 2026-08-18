@@ -81,7 +81,13 @@ export async function runAgentTools(
 ): Promise<{ messages: LlmMessage[]; results: ToolExecResult[] }> {
   const { messages, results, outcomes } = await registry.dispatch(calls, exec);
   if (hooks?.onToolResult) {
-    for (const o of outcomes) hooks.onToolResult(o.name, o.result);
+    for (const o of outcomes) {
+      try {
+        hooks.onToolResult(o.name, o.result);
+      } catch {
+        // 产物节点创建失败只跳过该产物，不回断整轮结果回填（否则 done 不回调、工具行永久转圈）
+      }
+    }
   }
   return { messages, results };
 }

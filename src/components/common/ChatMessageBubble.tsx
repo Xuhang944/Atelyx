@@ -14,6 +14,8 @@ import { memo, useMemo, useState, type CSSProperties, type ReactNode } from "rea
 import {
   AlertCircle,
   Check,
+  ChevronDown,
+  ChevronRight,
   Copy,
   FileText,
   FilePlus,
@@ -31,7 +33,8 @@ import type { Components } from "react-markdown";
 import { ThinkingBlock } from "@/components/common/ThinkingBlock";
 import { MARKDOWN_PLUGINS, REHYPE_PLUGINS } from "@/utils/markdown";
 import { splitMentions } from "@/utils/text";
-import type { Attachment, ToolRun } from "@/types";
+import { groupAgentSteps } from "@/utils/agentSteps";
+import type { AgentStep, Attachment, ToolRun } from "@/types";
 
 interface ChatMessageBubbleProps {
   /** 消息归属：user = 右对齐 + 用户底色；assistant = 左对齐。 */
@@ -50,10 +53,8 @@ interface ChatMessageBubbleProps {
   onRefChipClick?: (refKey: string, label: string) => void;
   /** assistant 气泡 Markdown 原文（空时显示占位/思考块）。 */
   content?: string;
-  /** 模型思考过程（折叠展示）。 */
-  reasoningContent?: string;
-  /** Agent 模式工具调用过程（assistant 消息：调用了什么工具、结果摘要）。 */
-  toolRuns?: ToolRun[];
+  /** Agent 步进（assistant 消息：思考与工具按序交错，每步上的思考可见；工具步可点开看详情）。 */
+  steps?: AgentStep[];
   /** 是否进行中的流式消息（思考块折叠态显示等待动画）。 */
   isStreaming: boolean;
   /** 流式且无内容时的占位（调用方不传时 = "..."）。 */
@@ -91,8 +92,7 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
   refKeyOf,
   onRefChipClick,
   content,
-  reasoningContent,
-  toolRuns,
+  steps,
   isStreaming,
   streamingPlaceholder,
   attachments,
@@ -110,6 +110,11 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
   stopPropagation,
 }: ChatMessageBubbleProps) {
   const isUser = role === "user";
+  // 步骤流 → 步骤组（思考与背后的工具归组，最终纯思考自成一组的 thinking）；steps 引用变化才重算
+  const stepGroups = useMemo(
+    () => (steps ? groupAgentSteps(steps) : []),
+    [steps],
+  );
   // 复制反馈 1.5s 后复原（复制内容 = 气泡所见原文）
   const [copied, setCopied] = useState(false);
   const copyMessage = () => {
@@ -216,26 +221,44 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
           </div>
         ) : (
           <div className="markdown-body max-w-none break-words">
-            {toolRuns && toolRuns.length > 0 && (
-              <div className="mb-1.5 flex flex-col gap-1">
-                {toolRuns.map((run) => (
-                  <ToolRunRow key={run.id} run={run} />
+            {stepGroups.length > 0 && (
+              <div className="mb-1.5 flex flex-col gap-1.5">
+                {stepGroups.map((g, idx) => (
+                  <div key={idx} className="flex flex-col gap-1">
+                    {g.thinkings.map((tk, ti) =>
+                      tk.kind === "reasoning" ? (
+                        <ThinkingBlock
+                          key={ti}
+                          text={tk.text}
+                          streaming={isStreaming && idx === stepGroups.length - 1}
+                        />
+                      ) : (
+                        <NarrationLine key={ti} text={tk.text} />
+                      ),
+                    )}
+                    {g.tools.map((run) => (
+                      <ToolRunRow key={run.id} run={run} />
+                    ))}
+                  </div>
                 ))}
               </div>
             )}
-            {reasoningContent ? (
-              <ThinkingBlock text={reasoningContent} streaming={isStreaming} />
-            ) : null}
-            {isStreaming && !content && !reasoningContent && streamingPlaceholder != null ? (
+            {isStreaming && !content && stepGroups.length === 0 && streamingPlaceholder != null ? (
               streamingPlaceholder
             ) : (
-              <ReactMarkdown
-                remarkPlugins={MARKDOWN_PLUGINS}
-                rehypePlugins={REHYPE_PLUGINS}
-                components={markdownComponents}
-              >
-                {content || (reasoningContent ? "" : "...")}
-              </ReactMarkdown>
+              <>
+                {/* 步骤流与最终回复的分隔（有工具步骤且已产出回复时才显示，避免悬空分隔线） */}
+                {stepGroups.length > 0 && content ? (
+                  <div className="my-1.5 border-t" style={{ borderColor: "var(--border)" }} />
+                ) : null}
+                <ReactMarkdown
+                  remarkPlugins={MARKDOWN_PLUGINS}
+                  rehypePlugins={REHYPE_PLUGINS}
+                  components={markdownComponents}
+                >
+                  {content || (stepGroups.length === 0 ? "..." : "")}
+                </ReactMarkdown>
+              </>
             )}
           </div>
         )}
@@ -314,8 +337,21 @@ function toolIcon(name: string, size: number) {
   }
 }
 
-/** 工具调用行：图标 + 参数摘要 + 状态（进行中/完成/失败）+ 结果摘要——AI 做了什么、改了哪里可见。 */
+/** 工具轮叙述行：模型在工具轮里说的正文，作为该步的「思考行」展示（不进最终回复）。 */
+function NarrationLine({ text }: { text: string }) {
+  return (
+    <div
+      className="rounded px-1.5 py-1 text-[12.5px] leading-relaxed whitespace-pre-wrap break-words"
+      style={{ color: "var(--text-secondary)" }}
+    >
+      {text}
+    </div>
+  );
+}
+
+/** 工具调用行：可点开详情。折叠 = 图标 + 参数摘要 + 状态 + 结果摘要；展开 = 完整参数与结果。 */
 function ToolRunRow({ run }: { run: ToolRun }) {
+  const [expanded, setExpanded] = useState(false);
   const statusColor =
     run.status === "error"
       ? "#f87171"
@@ -324,30 +360,94 @@ function ToolRunRow({ run }: { run: ToolRun }) {
         : "var(--text-muted)";
   return (
     <div
-      className="flex items-center gap-1.5 text-[11px] leading-snug rounded px-1.5 py-1"
+      className="rounded overflow-hidden"
       style={{
         background: "color-mix(in srgb, var(--accent) 8%, transparent)",
         border: "1px solid color-mix(in srgb, var(--accent) 22%, transparent)",
       }}
     >
-      <span style={{ color: statusColor }}>{toolIcon(run.name, 12)}</span>
-      <span className="min-w-0 flex-1 truncate" style={{ color: "var(--text-secondary)" }}>
-        {run.argsSummary}
-        {run.status !== "running" && run.resultSummary ? (
-          <span className="ml-1" style={{ color: statusColor }}>
-            · {run.resultSummary}
-          </span>
-        ) : null}
-      </span>
-      {run.status === "running" ? (
-        <Loader2 size={11} className="animate-spin flex-shrink-0" style={{ color: "var(--text-muted)" }} />
-      ) : run.status === "error" ? (
-        <AlertCircle size={11} className="flex-shrink-0" style={{ color: "#f87171" }} />
-      ) : (
-        <Check size={11} className="flex-shrink-0" style={{ color: "var(--accent)" }} />
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center gap-1.5 text-[11px] leading-snug rounded px-1.5 py-1 text-left"
+        style={{ cursor: "pointer" }}
+        title={expanded ? "收起详情" : "展开详情"}
+      >
+        <span
+          style={{ color: statusColor, display: "inline-flex" }}
+        >
+          {expanded ? (
+            <ChevronDown size={12} className="flex-shrink-0" />
+          ) : (
+            <ChevronRight size={12} className="flex-shrink-0" />
+          )}
+        </span>
+        <span style={{ color: statusColor, display: "inline-flex" }}>{toolIcon(run.name, 12)}</span>
+        <span className="min-w-0 flex-1 truncate" style={{ color: "var(--text-secondary)" }}>
+          {run.argsSummary}
+          {run.status !== "running" && run.resultSummary ? (
+            <span className="ml-1" style={{ color: statusColor }}>
+              · {run.resultSummary}
+            </span>
+          ) : null}
+        </span>
+        {run.status === "running" ? (
+          <Loader2 size={11} className="animate-spin flex-shrink-0" style={{ color: "var(--text-muted)" }} />
+        ) : run.status === "error" ? (
+          <AlertCircle size={11} className="flex-shrink-0" style={{ color: "#f87171" }} />
+        ) : (
+          <Check size={11} className="flex-shrink-0" style={{ color: "var(--accent)" }} />
+        )}
+      </button>
+      {expanded && (
+        <div className="flex flex-col gap-1 px-1.5 pb-1.5 text-[11px] leading-snug">
+          {run.args != null && (
+            <DetailSection label="参数">
+              <pre>{prettyJson(run.args)}</pre>
+            </DetailSection>
+          )}
+          {run.status === "running" ? (
+            <DetailSection label="结果">
+              <div className="opacity-70">进行中…</div>
+            </DetailSection>
+          ) : run.result != null ? (
+            <DetailSection label="结果">
+              <pre>{run.result}</pre>
+            </DetailSection>
+          ) : null}
+        </div>
       )}
     </div>
   );
+}
+
+/** 展开详情小节：左竖条 + 标签 + 内容（超高滚动，防撑爆气泡）。 */
+function DetailSection({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div
+      className="rounded px-1.5 py-1"
+      style={{ background: "color-mix(in srgb, var(--text-primary) 6%, transparent)" }}
+    >
+      <div className="mb-0.5 font-medium" style={{ color: "var(--text-muted)" }}>
+        {label}
+      </div>
+      <div
+        className="max-h-48 overflow-auto whitespace-pre-wrap break-words"
+        style={{ color: "var(--text-secondary)", cursor: "text", userSelect: "text" }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** 参数原始 JSON → 美化（非法 JSON 原文兜底）。 */
+function prettyJson(json: string): string {
+  try {
+    return JSON.stringify(JSON.parse(json), null, 2);
+  } catch {
+    return json;
+  }
 }
 
 /** user 气泡内嵌 @引用 胶囊（与输入框标签同位置渲染，点击行为由调用方绑定：画布 = 定位节点，面板 = 打开笔记）。 */

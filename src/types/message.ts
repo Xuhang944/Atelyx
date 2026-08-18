@@ -30,7 +30,7 @@ export interface MessageRef {
  * 仅展示性元数据：不进 API 历史（工具轮消息不落历史，重发仍无状态）。
  */
 export interface ToolRun {
-  /** tool call id（流式累积的 id） */
+  /** tool call id（流式累积的 id，跨工具轮唯一） */
   id: string;
   /** 工具名（web_search / web_fetch / read_file / edit_file / write_file） */
   name: string;
@@ -39,7 +39,23 @@ export interface ToolRun {
   status: "running" | "done" | "error";
   /** 结果摘要（如「修改《X》2 处」/ 错误信息；running 无） */
   resultSummary?: string;
+  /** 完整调用参数（模型原始 JSON 字符串，展开详情展示；旧数据缺字段则展开仅显示可用部分）。 */
+  args?: string;
+  /** 完整结果文本（展开详情展示；旧数据缺字段则展开仅显示可用部分）。 */
+  result?: string;
 }
+
+/**
+ * Agent 步进的一个步骤（思考与工具调用按序交错，每步工具上方的思考可见）。
+ * - `reasoning`：某一轮工具的思考（`reasoning_content` 流式累积，渲染为可折叠思考行）
+ * - `text`：某一轮工具的叙述正文（模型在工具轮里说的普通文本，也作为该步的「思考行」展示）
+ * - `tool`：一次工具调用（含结果详情，可展开）
+ * 仅展示性元数据，不进 API 历史（工具轮消息不落历史）。
+ */
+export type AgentStep =
+  | { kind: "reasoning"; text: string }
+  | { kind: "text"; text: string }
+  | { kind: "tool"; run: ToolRun };
 
 /**
  * 对话输入框的待发送附件（临时附件通道）。
@@ -64,8 +80,14 @@ export interface Message {
   role: Role;
   content: string;
   /**
-   * 模型思考过程（`delta.reasoning_content` 流式累积，思考型模型的推理阶段内容）。
-   * 仅作气泡折叠展示，不进 API 历史上下文。
+   * Agent 步进（assistant 消息展示用，思考与工具交错，每步思考可见）。
+   * 画布随消息落 `.atlx`；旧数据退化为下方的 reasoningContent/toolRuns 遗留字段，
+   * 经 `normalizeAgentSteps` 迁移后统一消费 `steps`（新写入不再写遗留字段）。
+   */
+  steps?: AgentStep[];
+  /**
+   * 思考过程（`delta.reasoning_content` 流式累积，思考型模型的推理阶段内容）。
+   * 遗留：新数据思考并入 `steps`；仅旧数据读取用。仅作气泡展示，不进 API 历史上下文。
    */
   reasoningContent?: string;
   /**
@@ -80,7 +102,7 @@ export interface Message {
    * 用于消息气泡显示只读 @chip + 点击定位到源节点。
    */
   refs?: MessageRef[];
-  /** Agent 模式工具调用过程（assistant 消息展示用：调用了什么工具、结果摘要）。 */
+  /** Agent 步进工具调用过程（assistant 消息展示用：调用了什么工具、结果摘要）。遗留：见 `steps`。 */
   toolRuns?: ToolRun[];
   createdAt: number;
 }

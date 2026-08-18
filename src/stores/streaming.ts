@@ -16,6 +16,7 @@ import { summarizeAgentTool } from "@/services/ai/tools";
 import { useSettingsStore } from "./settingsStore";
 import type {
   ProviderConfig,
+  ReasoningEffort,
   Role,
   ToolSchema,
   LlmMessage,
@@ -34,15 +35,26 @@ export interface ToolExecResult {
   id: string;
   ok: boolean;
   summary: string;
+  /** 完整结果文本（展开详情用；缺省 = summary）。 */
+  detail?: string;
 }
+
+/**
+ * 工具调用轮数安全上限（默认）：只要模型还在调用工具就继续往下走，
+ * 不让固定的小轮数把多步任务中途掐断；此值仅作防死循环的安全阀，模型自会在输出不带工具
+ * 的正文时收束。到顶后引擎会进行一次强制纯文本轮给最终回答机会。
+ */
+export const DEFAULT_MAX_TOOL_ROUNDS = 20;
 
 export interface RunStreamExchangeOptions {
   provider: ProviderConfig;
   model: string;
   apiMessages: LlmMessage[];
+  /** 思考档位：下发 `reasoning_effort` 以开启模型思考（仅对支持思考的模型生效）；缺省 = 不指定。 */
+  reasoningEffort?: ReasoningEffort;
   /** 传入 = 启用工具循环（最多 maxToolRounds 轮 + 1 次强制纯文本）；不传 = 单轮。 */
   tools?: ToolSchema[];
-  /** 工具执行轮数上限（防死循环），默认 3。 */
+  /** 工具执行轮数上限（防死循环），默认 `DEFAULT_MAX_TOOL_ROUNDS`（20）。到顶会有一轮强制纯文本收束。 */
   maxToolRounds?: number;
   signal: AbortSignal;
   applyBatch: (batch: StreamBatch) => void;
@@ -59,14 +71,24 @@ export interface RunStreamExchangeOptions {
   executeTools: (
     calls: LlmToolCall[],
   ) => Promise<{ messages: LlmMessage[]; results: ToolExecResult[] }>;
-  /** 工具调用过程通知（可视化）：执行前发 running，执行后发 done/error。 */
+  /** 工具调用过程通知（可视化）：跨轮**全量**累积列表，执行前发 running、执行后发 done/error（调用方 mergeToolRuns 交错进 steps）。 */
   onToolRuns?: (runs: ToolRun[]) => void;
+  /**
+   * 工具轮的叙述正文增量通知：每轮在调用工具前说的普通文本**边生成边**追加为一个「思考行」text 步
+   * （不是缓冲到轮末，从而保留流式打字效果），不进 content。
+   */
+  onNarration?: (text: string) => void;
+  /**
+   * 收束通知：某工具可用轮只出正文、未调工具（即该轮文本就是最终回复）时，把刚流式生成的
+   * 最后一个 text 步提升为 `content`（最终回复正文），供落盘/最终展示复用。
+   */
+  onNarrationFinalize?: () => void;
 }
 
 export async function runStreamExchange(
   options: RunStreamExchangeOptions,
 ): Promise<void> {
-  const maxRounds = options.maxToolRounds ?? 3;
+  const maxRounds = options.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
   let apiMessages = options.apiMessages;
 
   // 引擎内部 controller：空闲超时用内部 abort；外部 signal（停止按钮/切画布）变化时转发中止。
@@ -83,7 +105,13 @@ export async function runStreamExchange(
   let totalReasoning = "";
   let pendingDelta = "";
   let pendingReasoning = "";
+  // 工具轮叙述正文增量（rAF 合并，避免每 token 一次 setState；与 content/reasoning 同一条 merge 通道）
+  let pendingNarration = "";
   let rafId: number | null = null;
+  // 工具调用过程跨轮累积：每轮 onToolRuns 发全量，供调用方 mergeToolRuns 交错进 steps——
+  // 否则多轮工具循环只显示最后一轮（调用方整体替换）。
+  // **随结算重写为 `let`**：done/中止时回写 allRuns，finally 兜底只能命中「真未回填」的工具，不误标已完成
+  let allRuns: ToolRun[] = [];
 
   const applyBatch = (content: string, reasoning: string) => {
     totalContent += content;
@@ -93,10 +121,12 @@ export async function runStreamExchange(
   const flushPending = () => {
     const d = pendingDelta;
     const r = pendingReasoning;
-    if (!d && !r) return;
+    const n = pendingNarration;
     pendingDelta = "";
     pendingReasoning = "";
-    applyBatch(d, r);
+    pendingNarration = "";
+    if (n) options.onNarration?.(n);
+    if (d || r) applyBatch(d, r);
   };
   const scheduleApply = () => {
     if (rafId === null)
@@ -145,6 +175,7 @@ export async function runStreamExchange(
           baseUrl: options.provider.baseUrl,
           apiKey: options.provider.apiKey,
           model: options.model,
+          ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
           messages: apiMessages,
           signal,
           ...(toolsForRound.length ? { tools: toolsForRound } : {}),
@@ -153,9 +184,12 @@ export async function runStreamExchange(
         },
         {
           onDelta: (delta) => {
-            pendingDelta += delta;
-            resetIdle();
+            // 工具可用轮（含可能调用工具的轮次）里正文是「叙述」，缓冲后 rAF 合并进 text 步（保留流式打字）；
+            // 仅末轮（强制纯文本）的正文实时进 content（最终回复）
+            if (toolsForRound.length) pendingNarration += delta;
+            else pendingDelta += delta;
             scheduleApply();
+            resetIdle();
           },
           onReasoningDelta: (text) => {
             pendingReasoning += text;
@@ -186,7 +220,16 @@ export async function runStreamExchange(
         return;
       }
 
-      if (toolCalls.length === 0) break; // 纯文本轮：流式内容已写入占位
+      if (toolCalls.length === 0) {
+        // 纯文本轮：强制末轮正文已实时进 content；工具可用轮里模型直接回答（未调工具）时，
+        // 其正文在 pendingNarration——先 flush 成 text 步，再收束提升为该轮的最终回复 content
+        if (toolsForRound.length) {
+          cancelRaf();
+          flushPending();
+          options.onNarrationFinalize?.();
+        }
+        break;
+      }
 
       // 回复被截断（finish_reason=length → 中性 max-tokens）：tool call 参数可能残缺，不执行工具
       // （防残缺参数执行产生误导产物），如实报错由调用方写 [错误] 占位
@@ -206,33 +249,41 @@ export async function runStreamExchange(
         id: tc.id,
         name: tc.name,
         argsSummary: summarizeAgentTool(tc.name, tc.arguments),
+        args: tc.arguments,
         status: "running",
       }));
-      options.onToolRuns?.(runningRuns);
+      // 先 flush 当轮思考与叙述再发工具步：思考/叙述增量经 rAF 异步落 steps，若不同步 flush，
+      // 工具步会先于其思考/叙述进入 steps（整条消息「工具一串、思考堆在后」分不清对应哪步）
+      cancelRaf();
+      flushPending();
+      // 跨轮累积后发全量：调用方合并进 steps（多轮思考→工具交错展示）
+      allRuns.push(...runningRuns);
+      options.onToolRuns?.([...allRuns]);
       const { messages: toolMessages, results } = await options.executeTools(toolCalls);
       if (signal.aborted) {
-        // 中止：工具结果不回填，但 toolRuns 归一化为终止态（否则 running 状态随消息落盘，
-        // 画布重开后工具块永久转圈；面板解析侧另有同款归一化兜底）
-        options.onToolRuns?.(
-          runningRuns.map((run) => ({
-            ...run,
-            status: "error" as const,
-            resultSummary: "（已中断）",
-          })),
+        // 中止：工具结果不回填，但 running 态归一化为「（已中断）」error（否则 running 状态随消息落盘，
+        // 画布重开后工具块永久转圈；面板解析侧另有同款归一化兜底）；已完成记录保留
+        allRuns = allRuns.map((run) =>
+          run.status === "running"
+            ? { ...run, status: "error" as const, resultSummary: "（已中断）" }
+            : run,
         );
+        options.onToolRuns?.([...allRuns]);
         break;
       }
-      // 执行完成：running → done/error + 结果摘要（可视化块实时更新）
-      options.onToolRuns?.(
-        runningRuns.map((run) => {
-          const res = results.find((r) => r.id === run.id);
-          return {
-            ...run,
-            status: res && !res.ok ? ("error" as const) : ("done" as const),
-            resultSummary: res?.summary ?? "完成",
-          };
-        }),
-      );
+      // 执行完成：running → done/error + 结果摘要（可视化块实时更新）。
+      // **回写 allRuns**（新对象，引用变化触发气泡重渲染），finally 兜底据此只处理真未回填的工具
+      allRuns = allRuns.map((run) => {
+        const res = results.find((r) => r.id === run.id);
+        if (!res) return run; // 前几轮已完成记录，原样保留
+        return {
+          ...run,
+          status: res.ok ? ("done" as const) : ("error" as const),
+          resultSummary: res.summary ?? "完成",
+          result: res.detail ?? res.summary,
+        };
+      });
+      options.onToolRuns?.([...allRuns]);
       // 已达工具上限：本轮工具已执行（结果已沉淀），不再回填继续请求
       // （末轮 toolsForRound 恒为空、toolCalls 恒为空，上面已 break——此处无需守卫）
       apiMessages = [
@@ -256,18 +307,33 @@ export async function runStreamExchange(
     cancelRaf();
     clearIdle();
     options.onError(e as Error);
+  } finally {
+    // 收尾兜底：任何原因（异常/结果缺失）下仍在 running 的工具行归一到终态，保证 UI 不会永久转圈。
+    // 仅在确有 running 残留时才发（正常路径已全部 done，不 re-emit，避免误标已完成工具）
+    if (allRuns.some((r) => r.status === "running")) {
+      options.onToolRuns?.(
+        allRuns.map((run) =>
+          run.status === "running"
+            ? { ...run, status: "error" as const, resultSummary: "（结果未回填）" }
+            : run,
+        ),
+      );
+    }
   }
 }
 
 export type CleanupDecision =
   { kind: "remove" } | { kind: "timeout-error" } | { kind: "keep" };
 
-/** 结束清理决策（画布/面板共用）：空回复移除占位；超时且回答未产出写超时错误（保留思考）；否则保留。 */
+/** 结束清理决策（画布/面板共用）：空回复移除占位；超时且回答未产出写超时错误（保留思考）；否则保留。
+ *  `hasSteps`：已产出叙述/工具步骤（steps）时即便最终正文为空也保留——agent 的过程不该被整条删掉。 */
 export function decideCleanup(
   content: string,
   reasoning: string,
   timedOut: boolean,
+  hasSteps = false,
 ): CleanupDecision {
+  if (hasSteps) return { kind: "keep" };
   if (!content.trim() && !reasoning.trim()) {
     return timedOut ? { kind: "timeout-error" } : { kind: "remove" };
   }

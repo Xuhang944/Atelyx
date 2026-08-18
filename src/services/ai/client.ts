@@ -13,6 +13,7 @@
 import type {
   Attachment,
   Role,
+  ReasoningEffort,
   TokenUsage,
   ToolSchema,
   LlmFinishReason,
@@ -47,6 +48,8 @@ export interface ChatParams {
   messages: LlmMessage[];
   /** 采样温度；不传 = 请求体不含该字段，使用各厂商 API 默认配置。 */
   temperature?: number;
+  /** 思考档位：下发 `reasoning_effort` 以开启模型思考；缺省/`off` = 请求体不含（跟随供应商/模型默认）。 */
+  reasoningEffort?: ReasoningEffort;
   /** 单次响应最大 token 数。仅短任务（如标题生成）显式传入；主对话不传（不截断回复）。 */
   maxTokens?: number;
   signal?: AbortSignal;
@@ -156,6 +159,7 @@ interface StreamRequest {
   model: string;
   messages: LlmMessage[];
   temperature?: number;
+  reasoningEffort?: ReasoningEffort;
   maxTokens?: number;
   signal?: AbortSignal;
   tools?: ToolSchema[];
@@ -174,7 +178,7 @@ interface ToolCallDelta {
 export async function* streamRequest(
   req: StreamRequest,
 ): AsyncGenerator<LlmStreamEvent> {
-  const { url, apiKey, model, messages, temperature, maxTokens, signal, tools } = req;
+  const { url, apiKey, model, messages, temperature, reasoningEffort, maxTokens, signal, tools } = req;
   // 是否产出过有效事件：供 streamChat 判断「流开始后」不再重试
   let receivedAnyEvent = false;
 
@@ -192,6 +196,9 @@ export async function* streamRequest(
         messages: messagesToWire(messages),
         // 不传 temperature = 使用各厂商 API 默认配置
         temperature,
+        ...(!reasoningEffort || reasoningEffort === "off"
+          ? {}
+          : { reasoning_effort: reasoningEffort }),
         ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
         stream: true,
         ...(tools?.length ? { tools: toolsToWire(tools) } : {}),
@@ -347,7 +354,7 @@ export async function streamChat(
   params: ChatParams,
   callbacks: ChatStreamCallbacks,
 ): Promise<void> {
-  const { baseUrl, apiKey, model, messages, temperature, maxTokens, signal, tools, retry } = params;
+  const { baseUrl, apiKey, model, messages, temperature, reasoningEffort, maxTokens, signal, tools, retry } = params;
   const url = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
   const maxRetries = retry?.maxRetries ?? 0;
 
@@ -362,6 +369,7 @@ export async function streamChat(
         model,
         messages,
         temperature,
+        reasoningEffort,
         maxTokens,
         signal,
         tools,

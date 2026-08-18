@@ -844,8 +844,7 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
                   refKeyOf={refKeyOfNodeRef}
                   onRefChipClick={handleRefChipClick}
                   content={m.content}
-                  reasoningContent={m.reasoningContent}
-                  toolRuns={m.toolRuns}
+                  steps={m.steps}
                   isStreaming={isStreamingMsg}
                   attachments={m.attachments}
                   onMediaExtract={extractToMediaNode}

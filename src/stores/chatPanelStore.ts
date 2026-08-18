@@ -22,6 +22,7 @@ import { runSearch } from "@/services/search";
 import { readVaultFile, writeVaultFile, editVaultFile } from "@/services/vault/aiFiles";
 import { fetchWeb } from "@/services/web";
 import { prefix, scanMentionHits } from "@/utils/text";
+import { appendNarration, appendReasoning, mergeToolRuns, promoteLastNarration, toolRunsOf } from "@/utils/agentSteps";
 import { baseName } from "@/utils/filename";
 import { createPersistController } from "@/utils/persist";
 import { useSettingsStore } from "./settingsStore";
@@ -40,6 +41,7 @@ import type {
   EditorChatsFile,
   NoteRewriteRequest,
   ProviderConfig,
+  ReasoningEffort,
   ToolSchema,
   ToolRun,
 } from "@/types";
@@ -189,7 +191,7 @@ function stringifyChatMessages(sessionId: string, messages: EditorChatMessage[])
   for (const m of messages) {
     const text = m.role === "user" ? (m.displayContent ?? m.content) : m.content;
     lines.push(`## ${m.role}: ${token}`, "", text, "");
-    for (const run of m.toolRuns ?? []) {
+    for (const run of toolRunsOf(m)) {
       lines.push("## tool: " + token, "", JSON.stringify(run), "");
     }
   }
@@ -200,7 +202,7 @@ function stringifyChatMessages(sessionId: string, messages: EditorChatMessage[])
  * 解析转写 .md → 消息（frontmatter sessionId 不匹配/结构异常返回空消息——降级不阻塞）。
  * 段头 token 优先（新格式，随机 token 正文无法伪造匹配）；无 token = 旧格式文件，回退宽松
  * 匹配（正文含 `## user:` 字面行的旧文件仍按旧语义解析，全量重写后自然升级新格式）。
- * `## tool:` 段解析为前一条消息的 toolRuns（进行中状态归一化为完成 + 「（中断）」备注）。
+ * `## tool:` 段解析为前一条消息的工具步（进行中状态归一化为完成 + 「（中断）」备注）。
  * 消息 id 每次恢复重新生成（.md 是转写而非协作增量源；画布消息才有稳定 id 需求）。
  */
 function parseChatMessages(md: string, sessionId: string): {
@@ -228,7 +230,7 @@ function parseChatMessages(md: string, sessionId: string): {
     const role = parts[i];
     const text = (parts[i + 1] ?? "").replace(/^\n+/, "").replace(/\n+$/, "");
     if (role === "tool") {
-      // 工具调用段：挂到前一条消息（无前消息的孤儿段忽略）
+      // 工具调用段：挂到前一条消息的工具步（无前消息的孤儿段忽略）
       if (messages.length === 0) continue;
       try {
         const run = JSON.parse(text) as ToolRun;
@@ -237,7 +239,10 @@ function parseChatMessages(md: string, sessionId: string): {
           run.status === "running"
             ? { ...run, status: "done", resultSummary: run.resultSummary ?? "（中断）" }
             : run;
-        last.toolRuns = [...(last.toolRuns ?? []), normalized];
+        last.steps = [
+          ...(last.steps ?? []),
+          { kind: "tool", run: normalized },
+        ];
       } catch {
         // 损坏 tool 段：忽略（降级不阻塞会话恢复）
       }
@@ -374,7 +379,7 @@ async function persistNow(guardVaultId?: string | null): Promise<void> {
           baseline.every((m, i) => s.messages[i] === m)
         ) {
           // 纯增长（旧消息引用逐一相同）：只追加新增段，省全量重拼与 IPC 载荷
-          // （toolRuns 随消息追加为 `## tool` 段，Rust 侧 role 自由字符串直接格式化）
+          // （工具步随消息追加为 `## tool` 段，Rust 侧 role 自由字符串直接格式化）
           const token = tokenOf(id) ?? undefined;
           await appendChatMessages(
             s.file,
@@ -384,7 +389,7 @@ async function persistNow(guardVaultId?: string | null): Promise<void> {
                 text: m.role === "user" ? (m.displayContent ?? m.content) : m.content,
                 ...(token ? { token } : {}),
               },
-              ...(m.toolRuns ?? []).map((run) => ({
+              ...toolRunsOf(m).map((run) => ({
                 role: "tool",
                 text: JSON.stringify(run),
                 ...(token ? { token } : {}),
@@ -443,7 +448,11 @@ async function persistNow(guardVaultId?: string | null): Promise<void> {
  * 覆盖供应商已删：清空失效覆盖（含持久化）并提示，本次不发送（不静默回落默认）。
  * 失败已写 error，返回 null。
  */
-function resolveProviderModel(): { provider: ProviderConfig; model: string } | null {
+function resolveProviderModel(): {
+  provider: ProviderConfig;
+  model: string;
+  reasoningEffort?: ReasoningEffort;
+} | null {
   const ov = useChatPanelStore.getState().modelOverride;
   const resolved = useSettingsStore.getState().resolveChatTarget(ov);
   if (resolved.ok) return resolved;
@@ -467,6 +476,7 @@ async function runExchange(
   userMsg: EditorChatMessage,
   provider: ProviderConfig,
   model: string,
+  reasoningEffort?: ReasoningEffort,
 ): Promise<void> {
   const now = Date.now();
   const title = active.title ?? prefix(userMsg.displayContent ?? userMsg.content, 16);
@@ -530,6 +540,7 @@ async function runExchange(
   await runStreamExchange({
     provider,
     model,
+    ...(reasoningEffort ? { reasoningEffort } : {}),
     apiMessages: [
       ...(systemPrompt ? [{ role: "system" as const, text: systemPrompt }] : []),
       ...toLlmMessages(apiHistory),
@@ -547,8 +558,9 @@ async function runExchange(
                     ? {
                         ...m,
                         ...(content ? { content: m.content + content } : {}),
+                        // 思考增量流入 steps（最后思考步拼接 / 工具轮之间自然分隔）
                         ...(reasoning
-                          ? { reasoningContent: (m.reasoningContent ?? "") + reasoning }
+                          ? { steps: appendReasoning(m.steps ?? [], reasoning) }
                           : {}),
                       }
                     : m
@@ -558,7 +570,7 @@ async function runExchange(
         ),
       }));
     },
-    // 工具调用过程可视化：running/done 更新进占位消息 toolRuns（随消息 .md 转写落盘）
+    // 工具调用过程可视化：全量累积 runs 合并进占位消息 steps（思考→工具交错，工具步随 .md 转写落盘）
     onToolRuns: (runs) => {
       useChatPanelStore.setState((state) => ({
         sessions: state.sessions.map((s) =>
@@ -566,7 +578,43 @@ async function runExchange(
             ? {
                 ...s,
                 messages: s.messages.map((m) =>
-                  m.id === asstMsg.id ? { ...m, toolRuns: runs } : m
+                  m.id === asstMsg.id
+                    ? { ...m, steps: mergeToolRuns(m.steps ?? [], runs) }
+                    : m
+                ),
+              }
+            : s
+        ),
+      }));
+    },
+    // 工具轮叙述正文进 steps（渲染为该步的「思考行」）
+    onNarration: (text) => {
+      useChatPanelStore.setState((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.id === active.id
+            ? {
+                ...s,
+                messages: s.messages.map((m) =>
+                  m.id === asstMsg.id
+                    ? { ...m, steps: appendNarration(m.steps ?? [], text) }
+                    : m
+                ),
+              }
+            : s
+        ),
+      }));
+    },
+    // 收束：最后一段叙述提升为最终回复 content（该轮只出正文、未调工具时）
+    onNarrationFinalize: () => {
+      useChatPanelStore.setState((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.id === active.id
+            ? {
+                ...s,
+                messages: s.messages.map((m) =>
+                  m.id === asstMsg.id
+                    ? { ...m, ...promoteLastNarration(m) }
+                    : m
                 ),
               }
             : s
@@ -595,8 +643,18 @@ async function runExchange(
       abortController = null;
     },
     onDone: ({ content, reasoning, timedOut }) => {
-      // 空回复移除占位；超时且回答未产出写超时降级（保留思考）；否则正常保留
-      const decision = decideCleanup(content, reasoning, timedOut);
+      // 空回复移除占位；超时且回答未产出写超时降级（保留思考）；否则正常保留。
+      // 用占位消息的实际 content/steps 判定（叙述提升/工具步骤已在其内），而非引擎 totals
+      const m = useChatPanelStore
+        .getState()
+        .sessions.find((s) => s.id === active.id)
+        ?.messages.find((mm) => mm.id === asstMsg.id);
+      const decision = decideCleanup(
+        m?.content ?? content,
+        reasoning,
+        timedOut,
+        !!m?.steps?.length,
+      );
       useChatPanelStore.setState((state) => {
         const sess = state.sessions.find((s) => s.id === active.id);
         if (!sess) return { streaming: false };
@@ -850,7 +908,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
       createdAt: Date.now(),
     };
 
-    await runExchange(active, userMsg, resolved.provider, resolved.model);
+    await runExchange(active, userMsg, resolved.provider, resolved.model, resolved.reasoningEffort);
   },
 
   regenerate: async () => {
@@ -893,7 +951,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
       });
       schedulePersist(session.id);
     }
-    await runExchange({ ...session, messages: base }, { ...userMsg, content: rebuiltContent }, resolved.provider, resolved.model);
+    await runExchange({ ...session, messages: base }, { ...userMsg, content: rebuiltContent }, resolved.provider, resolved.model, resolved.reasoningEffort);
   },
 
   renameSession: async () => {

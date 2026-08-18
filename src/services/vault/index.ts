@@ -22,6 +22,7 @@ import {
   parseWhiteboard,
 } from "@/utils/whiteboard";
 import { tableToSnapshotText } from "@/utils/table";
+import { normalizeAgentSteps } from "@/utils/agentSteps";
 import { readTableVault } from "@/services/table";
 import {
   type CanvasFile,
@@ -345,7 +346,11 @@ async function canvasFileToRuntime(file: CanvasFile): Promise<RuntimeCanvas> {
     } else if (n.type === "conversation") {
       const cd = data as unknown as ConversationFileData;
       if (cd.messages?.length) {
-        messagesByConv[n.id] = cd.messages;
+        // 旧 .atlx 消息只有 reasoningContent/toolRuns 遗留字段 → 归一化为 steps（步进展示）
+        messagesByConv[n.id] = cd.messages.map((msg) => {
+          const steps = normalizeAgentSteps(msg);
+          return steps ? { ...msg, steps } : { ...msg };
+        });
       }
       delete data.messages;
     } else if (n.type === "table") {
