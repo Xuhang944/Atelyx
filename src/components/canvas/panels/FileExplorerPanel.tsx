@@ -26,8 +26,10 @@ import {
   Folder,
   FolderPlus,
   LayoutDashboard,
+  Palette,
   Paperclip,
   Pencil,
+  RotateCcw,
   StickyNote,
   Table,
   Trash2,
@@ -45,6 +47,7 @@ import { FileContextMenu } from "@/components/canvas/panels/FileContextMenu";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { Menu, MenuDivider, MenuItem } from "@/components/common/Menu";
 import { baseName, noteTitleFromFile, stripExt, tableTitleFromFile } from "@/utils/filename";
+import { foregroundFor } from "@/utils/color";
 import type { CanvasFileRow, FileExplorerSortKey, FileTreeNode } from "@/types";
 
 /** 拖拽负载 MIME，工作区 onDrop 据此识别面板拖来的文件。 */
@@ -86,6 +89,18 @@ const SORT_OPTIONS: { key: FileExplorerSortKey; label: string }[] = [
 
 /** 默认排序（与仓库级配置缺省一致）。 */
 const DEFAULT_SORT_KEY: FileExplorerSortKey = "mtime-desc";
+
+/** 文件夹图标颜色预设色板（右键「图标颜色」选择；独立落盘 .atelyx/folder-colors.json）。 */
+const FOLDER_COLOR_PRESETS = [
+  "#e05252",
+  "#e07b39",
+  "#e0b436",
+  "#4fae6a",
+  "#2f9e8f",
+  "#4f8fd0",
+  "#7a6fd0",
+  "#c05fa8",
+];
 
 /** 仓库级配置可能被外部手改，非法值回退默认。 */
 function isSortKey(v: FileExplorerSortKey | undefined): v is FileExplorerSortKey {
@@ -212,6 +227,9 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
   // 系统提示词标记（独立落盘 .atelyx/prompt-notes.json）：右键菜单显示注册/注销状态
   const promptFiles = useSettingsStore((s) => s.promptNotes);
   const togglePromptNote = useSettingsStore((s) => s.togglePromptNote);
+  // 文件夹图标颜色（独立落盘 .atelyx/folder-colors.json）：右键色板设置/还原
+  const folderColors = useSettingsStore((s) => s.folderColors);
+  const setFolderColor = useSettingsStore((s) => s.setFolderColor);
 
   const canvases = useAppStore((s) => s.canvases);
   const currentCanvasFile = useAppStore((s) => s.currentCanvasFile);
@@ -506,6 +524,8 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
 
   // 右键菜单
   const [menu, setMenu] = useState<{ x: number; y: number; target: MenuTarget } | null>(null);
+  // 文件夹颜色色板弹层（图标颜色 popup：文件夹路径 + 触发坐标）
+  const [colorMenu, setColorMenu] = useState<{ x: number; y: number; dir: string } | null>(null);
   // inline 输入（行内重命名 / 新建草稿）
   const [editing, setEditing] = useState<Editing | null>(null);
 
@@ -640,7 +660,7 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
                     }}
                   >
                     <span className="flex items-center">{isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
-                    <Folder size={14} style={{ color: "var(--text-muted)" }} />
+                    <Folder size={14} style={{ color: folderColors?.[node.path] ?? "var(--text-muted)" }} />
                     <span className="flex-1 truncate text-xs" style={{ color: "var(--text-primary)" }}>{node.name}</span>
                   </div>
                 )}
@@ -860,9 +880,15 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
             x={menu!.x}
             y={menu!.y}
             canManage={folderTarget.dir !== ""}
+            currentColor={folderColors?.[folderTarget.dir]}
             onCreate={(type) => {
               setEditing({ kind: "creating", dir: folderTarget.dir, type, value: "" });
               setMenu(null);
+            }}
+            onColor={() => {
+              const { x, y } = menu!;
+              setMenu(null);
+              setColorMenu({ x, y, dir: folderTarget.dir });
             }}
             onRename={() => {
               setEditing({
@@ -884,6 +910,19 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
           />
         );
       })()}
+
+      {/* 文件夹图标颜色色板（右键「图标颜色」打开；预设/自定义/默认，选后即时应用） */}
+      {colorMenu && (
+        <FolderColorMenu
+          x={colorMenu.x}
+          y={colorMenu.y}
+          currentColor={folderColors?.[colorMenu.dir]}
+          onChange={(c) => {
+            void setFolderColor(colorMenu.dir, c);
+          }}
+          onClose={() => setColorMenu(null)}
+        />
+      )}
 
       {/* 文件行右键菜单：重命名 / 删除（菜单内确认） */}
       {menu && menu.target.kind !== "folder" && (() => {
@@ -940,12 +979,14 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
   );
 }
 
-/** 文件夹右键菜单：新建画布 / 新建笔记 / 新建表格 / 新建文件夹 + 创建副本 + 重命名 / 删除（根目录仅新建）。 */
+/** 文件夹右键菜单：新建画布 / 新建笔记 / 新建表格 / 新建文件夹 + 图标颜色 + 创建副本 + 重命名 / 删除（根目录仅新建）。 */
 function FolderCreateMenu({
   x,
   y,
   canManage,
+  currentColor,
   onCreate,
+  onColor,
   onDuplicate,
   onRename,
   onDelete,
@@ -955,7 +996,10 @@ function FolderCreateMenu({
   y: number;
   /** 非根目录才有创建副本/重命名/删除；树空白处右键 = 根目录，仅新建。 */
   canManage: boolean;
+  /** 当前文件夹图标颜色（hex；未设置 = undefined）。 */
+  currentColor?: string;
   onCreate: (type: "canvas" | "note" | "table" | "folder") => void;
+  onColor: () => void;
   onDuplicate: () => void;
   onRename: () => void;
   onDelete: () => void;
@@ -978,6 +1022,18 @@ function FolderCreateMenu({
       {canManage && (
         <>
           <MenuDivider />
+          <MenuItem onClick={onColor} title="设置该文件夹的图标颜色（仓库级持久化）">
+            <Palette size={14} />
+            <span className="flex-1">图标颜色</span>
+            {currentColor && (
+              <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: currentColor }} />
+            )}
+          </MenuItem>
+        </>
+      )}
+      {canManage && (
+        <>
+          <MenuDivider />
           <MenuItem onClick={onDuplicate}>
             <Copy size={14} /> 创建副本
           </MenuItem>
@@ -990,6 +1046,78 @@ function FolderCreateMenu({
           </MenuItem>
         </>
       )}
+    </Menu>
+  );
+}
+
+/** 文件夹图标颜色色板：预设色块 + 自定义取色 + 默认（清除）。预设/默认点击即应用并关闭；
+ * 自定义取色器持续调节（原生颜色框 onChange 高频触发，仅应用不关闭，避免选取被中断）。 */
+function FolderColorMenu({
+  x,
+  y,
+  currentColor,
+  onChange,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  currentColor?: string;
+  /** 应用颜色（undefined = 清除还原默认）；不负责关闭，由本组件选择时机调 onClose。 */
+  onChange: (color: string | undefined) => void;
+  onClose: () => void;
+}) {
+  const [custom, setCustom] = useState(currentColor ?? "#4f8fd0");
+  const pick = (c: string | undefined) => {
+    onChange(c);
+    onClose();
+  };
+  return (
+    <Menu
+      x={x}
+      y={y}
+      onClose={onClose}
+      widthClass="w-44"
+      repositionDeps={[custom, currentColor]}
+      stopPointerDown
+    >
+      <div className="px-3 pt-2 pb-1 flex flex-wrap gap-1.5">
+        {FOLDER_COLOR_PRESETS.map((c) => {
+          const active = c.toLowerCase() === currentColor?.toLowerCase();
+          return (
+            <button
+              key={c}
+              onClick={() => pick(c)}
+              title={c}
+              className="w-5 h-5 rounded-full flex items-center justify-center transition hover:scale-110 flex-shrink-0"
+              style={{ background: c }}
+            >
+              {active && <Check size={11} style={{ color: foregroundFor(c) }} />}
+            </button>
+          );
+        })}
+      </div>
+      <div className="px-3 py-1 flex items-center gap-1.5">
+        <input
+          type="color"
+          value={custom}
+          onChange={(e) => {
+            setCustom(e.target.value);
+            onChange(e.target.value);
+          }}
+          title="自定义颜色"
+          className="w-5 h-5 rounded cursor-pointer bg-transparent p-0 border-0 flex-shrink-0"
+        />
+        <span className="text-[10px] truncate" style={{ color: "var(--text-muted)" }}>
+          自定义
+        </span>
+      </div>
+      <MenuDivider />
+      <MenuItem onClick={() => pick(undefined)} title="清除该文件夹图标颜色，还原默认">
+        <span className="inline-flex items-center gap-1.5">
+          <RotateCcw size={14} />
+          默认
+        </span>
+      </MenuItem>
     </Menu>
   );
 }

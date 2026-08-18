@@ -892,6 +892,29 @@ pub fn write_prompt_notes_file(root: &Path, files: &[String]) -> Result<(), Stri
     atomic_write(&path, &json)
 }
 
+// ===== 文件夹图标颜色（.atelyx/folder-colors.json，独立于 config.json）=====
+// config.json 只保存仓库配置；文件夹颜色单独落盘，避免混入配置字段（与 prompt-notes.json 同策略）。
+
+/// 读文件夹图标颜色映射（相对仓库根路径 → hex 色；不存在/解析失败返回空——手编辑损坏不阻塞）。
+pub fn read_folder_colors_file(root: &Path) -> Result<HashMap<String, String>, String> {
+    let path = root.join(".atelyx").join("folder-colors.json");
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let json = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    Ok(serde_json::from_str::<HashMap<String, String>>(&json).unwrap_or_default())
+}
+
+/// 写文件夹图标颜色映射（原子写 .atelyx/folder-colors.json）。
+pub fn write_folder_colors_file(
+    root: &Path,
+    colors: &HashMap<String, String>,
+) -> Result<(), String> {
+    let path = root.join(".atelyx").join("folder-colors.json");
+    let json = serde_json::to_string_pretty(colors).map_err(|e| e.to_string())?;
+    atomic_write(&path, &json)
+}
+
 // ===== AI 对话面板会话（.atelyx/editor-chats.json，）=====
 // 单一全局历史：全部会话扁平存放，不按笔记归属；不含 API key（key 只进全局 keychain）。
 // 该文件不在 watcher 监听范围（watcher 只监听 画布/笔记/附件 三目录），自写无回环问题。

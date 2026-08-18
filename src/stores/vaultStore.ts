@@ -274,8 +274,9 @@ async function applyFolderFileChange(oldDir: string, newDir: string): Promise<vo
         });
       }
     }
-    // 系统提示词标记 / 展开集合 / 上次打开文件：前缀同步（防标记与恢复指向失效路径）
+    // 系统提示词标记 / 文件夹图标颜色 / 展开集合 / 上次打开文件：前缀同步（防标记与恢复指向失效路径）
     await useSettingsStore.getState().remapPromptNotesByDir(oldDir, newDir);
+    await useSettingsStore.getState().remapFolderColorsByDir(oldDir, newDir);
     useUiStateStore.getState().renameByDir(oldDir, newDir);
     await useVaultStore.getState().loadFiles();
     await useAppStore.getState().loadList();

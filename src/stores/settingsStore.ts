@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { getApiKey, setApiKey, deleteApiKey } from "@/services/keychain";
-import { readPromptNotes, readVaultConfig, writePromptNotes, writeVaultConfig } from "@/services/vault";
+import { readFolderColors, readPromptNotes, readVaultConfig, writeFolderColors, writePromptNotes, writeVaultConfig } from "@/services/vault";
 import { fetchProviderModels } from "@/services/ai/client";
 import { getHostname, readGlobalConfig, updateGlobalConfig } from "@/services/global";
 import { useAppStore } from "@/stores/appStore";
@@ -70,6 +70,8 @@ interface SettingsState {
   tavilyKey: string;
   /** 已标记为系统提示词的笔记相对路径列表（独立落盘 .atelyx/prompt-notes.json，config.json 不承载）。 */
   promptNotes: string[];
+  /** 文件面板文件夹图标颜色（相对仓库根路径 → hex 色；独立落盘 .atelyx/folder-colors.json）。 */
+  folderColors: Record<string, string>;
   loaded: boolean;
 
   /** 应用挂载时调用：读 global.json 填充应用级外观（主题/强调色/字号/字体/自动恢复），重置仓库级运行时状态。 */
@@ -144,6 +146,10 @@ interface SettingsState {
   remapPromptNote: (oldFile: string, newFile: string) => Promise<void>;
   /** 文件夹重命名后同步标记路径（`oldDir/` 前缀 → `newDir/`，写 .atelyx/prompt-notes.json）。 */
   remapPromptNotesByDir: (oldDir: string, newDir: string) => Promise<void>;
+  /** 设置文件夹图标颜色（dir = 相对仓库根路径，color = hex 色；undefined = 清除还原默认，写 .atelyx/folder-colors.json）。 */
+  setFolderColor: (dir: string, color: string | undefined) => Promise<void>;
+  /** 文件夹重命名/移动后同步颜色键（`oldDir/` 前缀 → `newDir/`，写 .atelyx/folder-colors.json）。 */
+  remapFolderColorsByDir: (oldDir: string, newDir: string) => Promise<void>;
   /** 立即落盘当前配置（关窗/切仓库前 flush，防 debounce 窗口内丢设置）。 */
   flush: () => Promise<void>;
 }
@@ -260,6 +266,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   searchConfig: { provider: "tavily", searxngUrl: "" },
   tavilyKey: "",
   promptNotes: [],
+  folderColors: {},
   loaded: false,
 
   load: async () => {
@@ -355,12 +362,20 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       } catch (e) {
         console.error("读取系统提示词标记失败", e);
       }
+      // 文件夹图标颜色独立落盘 .atelyx/folder-colors.json（config.json 只存仓库配置）
+      let folderColors: Record<string, string> = {};
+      try {
+        folderColors = await readFolderColors();
+      } catch (e) {
+        console.error("读取文件夹图标颜色失败", e);
+      }
       set({
         vaultConfig: vc,
         config,
         searchConfig,
         tavilyKey,
         promptNotes,
+        folderColors,
       });
     } catch (e) {
       console.error("读取仓库级配置失败", e);
@@ -374,6 +389,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       searchConfig: { provider: "tavily", searxngUrl: "" },
       tavilyKey: "",
       promptNotes: [],
+      folderColors: {},
     }),
 
   // 话题自动命名模型解析：设置页指定（autoNamingModel）→ 仓库默认模型（vaultConfig.model）；
@@ -637,6 +653,45 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       await writePromptNotes(next);
     } catch (e) {
       console.error("保存系统提示词标记失败", e);
+    }
+  },
+
+  /** 设文件夹图标颜色（dir = 相对仓库根路径；color = hex 色，undefined = 清除还原默认；空映射也落盘保持文件干净）。 */
+  setFolderColor: async (dir, color) => {
+    const cur = get().folderColors;
+    const next = { ...cur };
+    if (color) next[dir] = color;
+    else delete next[dir];
+    const keys = Object.keys(next);
+    const finalNext = keys.length ? next : {};
+    set({ folderColors: finalNext });
+    try {
+      await writeFolderColors(finalNext);
+    } catch (e) {
+      console.error("保存文件夹图标颜色失败", e);
+    }
+  },
+
+  /** 文件夹重命名/移动后同步颜色键（`oldDir/` 前缀命中才更新）。 */
+  remapFolderColorsByDir: async (oldDir, newDir) => {
+    const cur = get().folderColors;
+    const keys = Object.keys(cur);
+    const next: Record<string, string> = {};
+    let changed = false;
+    for (const k of keys) {
+      if (k === oldDir || k.startsWith(`${oldDir}/`)) {
+        next[remapDirPrefix(k, oldDir, newDir)] = cur[k];
+        changed = true;
+      } else {
+        next[k] = cur[k];
+      }
+    }
+    if (!changed) return;
+    set({ folderColors: next });
+    try {
+      await writeFolderColors(next);
+    } catch (e) {
+      console.error("保存文件夹图标颜色失败", e);
     }
   },
 

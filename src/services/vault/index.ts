@@ -198,6 +198,16 @@ export async function writePromptNotes(files: string[]): Promise<void> {
   await invoke("write_prompt_notes", { files });
 }
 
+/** 读文件夹图标颜色映射（.atelyx/folder-colors.json，相对仓库根路径 → hex 色；不存在/损坏返回空）。 */
+export async function readFolderColors(): Promise<Record<string, string>> {
+  return invoke<Record<string, string>>("read_folder_colors");
+}
+
+/** 写文件夹图标颜色映射（原子写 .atelyx/folder-colors.json，独立于 config.json）。 */
+export async function writeFolderColors(colors: Record<string, string>): Promise<void> {
+  await invoke("write_folder_colors", { colors });
+}
+
 /** 读 AI 对话面板会话索引（.atelyx/editor-chats.json，不存在/损坏返回默认；v1 存量 sessions 可能内嵌 messages，由 store load 迁移）。 */
 export async function readEditorChats(): Promise<EditorChatsFileOnDisk> {
   return invoke<EditorChatsFileOnDisk>("read_editor_chats");

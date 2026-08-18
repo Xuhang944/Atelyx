@@ -10,7 +10,7 @@
 //! - 同名自动加序号（-2、-3）保证唯一性（`sanitize_filename` + 递增循环，见 `vault.rs`）；
 //! - rename_canvas 时同时重命名文件；重命名/删除后所有引用它的画布内引用同步更新。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
@@ -31,6 +31,7 @@ use crate::vault::{
     resolve_link_target, rewrite_internal_links, safe_join, same_physical_file,
     sanitize_filename, walk_md_in, write_canvas_file, write_note as write_note_file, write_vault_config as write_vault_config_file,
     read_editor_chats_file, read_prompt_notes_file, write_prompt_notes_file,
+    read_folder_colors_file, write_folder_colors_file,
     write_editor_chats_file, read_chat_messages_file, write_chat_messages_file,
     delete_chat_messages_file, read_dir_filtered, regenerate_file_id, cache_evict_canvas,
     BacklinkRow, CanvasFile, CanvasFileRow, CanvasPatch,
@@ -708,6 +709,25 @@ pub fn write_prompt_notes(
 ) -> Result<(), String> {
     let root = state.root()?;
     write_prompt_notes_file(&root, &files)
+}
+
+/// 读文件夹图标颜色映射（.atelyx/folder-colors.json，不存在/损坏返回空）。
+#[tauri::command]
+pub fn read_folder_colors(
+    state: State<'_, VaultState>,
+) -> Result<HashMap<String, String>, String> {
+    let root = state.root()?;
+    read_folder_colors_file(&root)
+}
+
+/// 写文件夹图标颜色映射（原子写 .atelyx/folder-colors.json，独立于 config.json）。
+#[tauri::command]
+pub fn write_folder_colors(
+    colors: HashMap<String, String>,
+    state: State<'_, VaultState>,
+) -> Result<(), String> {
+    let root = state.root()?;
+    write_folder_colors_file(&root, &colors)
 }
 
 /// 读 AI 对话面板会话（.atelyx/editor-chats.json，不存在/损坏返回默认）。
