@@ -45,6 +45,9 @@ import { markdown, markdownKeymap } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { tags } from "@lezer/highlight";
+import type { Text as YText } from "yjs";
+import type { Awareness } from "y-protocols/awareness";
+import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import { useAppStore } from "@/stores/appStore";
 import { useVaultStore } from "@/stores/vaultStore";
 
@@ -557,9 +560,12 @@ interface Props {
   syncSeq: number;
   /** 用户编辑回调：输出编辑器当前全文 markdown 正文。 */
   onBodyChange: (markdown: string) => void;
+  /** 协作绑定：提供时进入 Yjs 协同编辑（y-codemirror 绑 Y.Text + y-undo 替 CM history + 远端光标）；
+   *  缺省 = 现有本地单写者纯文本编辑。 */
+  collab?: { ytext: YText; awareness: Awareness };
 }
 
-export function MarkdownEditor({ body, syncSeq, onBodyChange }: Props) {
+export function MarkdownEditor({ body, syncSeq, onBodyChange, collab }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   /** 装饰 widget 的 dispatch 转发：StateField 闭包捕获 ref 而非函数，view 创建后赋值才有效。 */
@@ -609,13 +615,26 @@ export function MarkdownEditor({ body, syncSeq, onBodyChange }: Props) {
     const view = new EditorView({
       parent: host,
       state: EditorState.create({
-        doc: bodyRef.current.replace(/\r\n/g, "\n"),
+        // 协作模式以收敛态 ytext 为编辑模型源（body 可能因预览期远端改动而滞后），
+        // 非协作退回原逻辑用 body 初始化。
+        doc: collab
+          ? collab.ytext.toString()
+          : bodyRef.current.replace(/\r\n/g, "\n"),
         extensions: [
           // addKeymap: false——Enter/Backspace 绑定统一由下方 keymap.of 组合提供
           markdown({ codeLanguages: languages, addKeymap: false }),
           EditorView.lineWrapping,
-          history(),
-          keymap.of([...markdownKeymap, ...defaultKeymap, ...historyKeymap]),
+          // 协作模式：y-codemirror 绑 Y.Text（远端实时合并 + 远端光标/选中渲染），
+          // 撤销走 y-undo（各自只回滚自己的操作），不再用 CM history
+          ...(collab
+            ? [
+                yCollab(collab.ytext, collab.awareness),
+                keymap.of([...markdownKeymap, ...defaultKeymap, ...yUndoManagerKeymap]),
+              ]
+            : [
+                history(),
+                keymap.of([...markdownKeymap, ...defaultKeymap, ...historyKeymap]),
+              ]),
           syntaxHighlighting(highlightStyle),
           editorTheme,
           livePreview(opts, dispatchRef),
@@ -629,8 +648,16 @@ export function MarkdownEditor({ body, syncSeq, onBodyChange }: Props) {
     });
     viewRef.current = view;
     dispatchRef.current = (spec) => view.dispatch(spec);
-    // 初始注入（挂载时的 body）
-    applyBody(bodyRef.current);
+    if (collab) {
+      // 协作：ytext 已作编辑模型源，不再用 body 覆盖。若 ytext 与 body 相悖
+      // （预览期远端已改写本端未感知）→ 回传一次同步 NoteEditor.content（预览/保存反映收敛态）
+      if (collab.ytext.toString() !== bodyRef.current.replace(/\r\n/g, "\n")) {
+        onBodyChangeRef.current(collab.ytext.toString());
+      }
+    } else {
+      // 非协作：初始注入挂载时的 body（原行为）
+      applyBody(bodyRef.current);
+    }
     return () => {
       // 卸载 flush：更新监听同步触发、正常编辑已实时上报，此处兜底取最新 doc
       // （复用回放抑制：内容 === 上次注入目标则不报，防注入回放误上报）
@@ -646,9 +673,11 @@ export function MarkdownEditor({ body, syncSeq, onBodyChange }: Props) {
       dispatchRef.current = () => {};
       view.destroy();
     };
-  }, [applyBody]);
+    // collab 切换（重建视图）依赖其引用；applyBody 为稳定回调
+  }, [applyBody, collab]);
 
-  // 外部同步：非用户编辑的 content 更新（watcher 外部修改 / 冲突重载 / 加载完成）
+  // 外部同步：非用户编辑的 content 更新（watcher 外部修改 / 冲突重载 / 加载完成）。
+  // 协作模式下不禁用：远端合入经 ytext 进视图（updateListener 上报），此处仅处理非协作场景。
   useEffect(() => {
     if (syncSeq === 0 || syncSeq === syncSeqRef.current) return;
     syncSeqRef.current = syncSeq;

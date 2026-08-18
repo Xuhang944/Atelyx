@@ -13,8 +13,16 @@ import {
   type CollabRelayHandle,
   type RelayTestResult,
 } from "@/services/collab/relay";
+import {
+  receiveAwareness,
+  receiveSyncMessage,
+  resyncAllNoteDocs,
+  setNoteCollabBroadcast,
+} from "@/services/noteCollab/noteDoc";
+import { base64ToBytes, bytesToBase64 } from "@/utils/base64";
 import { useAppStore } from "@/stores/appStore";
 import { useTableStore } from "@/stores/tableStore";
+import { useNoteCollabStore } from "@/stores/noteCollabStore";
 import type { CollabPeer, CollabPresence } from "@/types";
 
 export { normalizeRelayUrl, type RelayTestResult } from "@/services/collab/relay";
@@ -42,6 +50,11 @@ interface CollabStoreState {
   applyConfig: (patch: Partial<Omit<CollabInitConfig, "deviceName">>) => void;
   /** 检查中转连通性（设置页「检查连接」）：按输入地址一次性探测 relay，不影响常驻连接。 */
   testConnection: (rawUrl: string) => Promise<RelayTestResult>;
+  /**
+   * 上报当前打开的笔记（协作 presence，view=note）：对端据此在笔记头显示「正在编辑」协作者列表。
+   * 传 null = 离开笔记（清远端高亮），与表格 presence 共用节流通道（后上报者生效）。
+   */
+  notePresence: (file: string | null) => void;
   /** 断开连接并停止广播（应用退出）。 */
   dispose: () => void;
 }
@@ -103,6 +116,21 @@ function establishConnection(): void {
       if (peerId === myPeerId) return;
       useTableStore.getState().applyRemotePatch(file, patch);
     },
+    // 笔记 Yjs 同步 / awareness 接收：解码后只合入本端已打开（注册表存在）的笔记（noteDoc 内部守卫）
+    onNoteSync: (_peerId, file, payload) => {
+      try {
+        receiveSyncMessage(file, base64ToBytes(payload));
+      } catch {
+        console.warn("笔记协作同步消息解码失败", file);
+      }
+    },
+    onNoteAware: (_peerId, file, payload) => {
+      try {
+        receiveAwareness(file, base64ToBytes(payload));
+      } catch {
+        console.warn("笔记协作 awareness 解码失败", file);
+      }
+    },
     // 服务端 error 帧（协议异常/房间拒绝）：协作是尽力而为的辅助能力，仅记录不打断使用
     onServerError: (message) => console.warn("协作中转错误：", message),
     onStatusChange: (connected) => {
@@ -112,6 +140,8 @@ function establishConnection(): void {
       if (connected) {
         const ts = useTableStore.getState();
         schedulePresenceBroadcast({ file: ts.tableFile, selection: ts.selection, view: ts.view });
+        // 重连后重新握手已打开的协作文档（上次连接断开的对端需重新拿全量状态）
+        resyncAllNoteDocs();
       }
     },
   });
@@ -157,6 +187,11 @@ export const useCollabStore = create<CollabStoreState>((set) => ({
     // 注入表格补丁广播钩子（tableStore 在 schedulePersist 计算补丁后回调；handle 为模块级，
     // establishConnection 重建连接后闭包自动指向新连接，无需重注入）
     useTableStore.getState().setCollabBroadcast((file, patch) => handle?.sendTablePatch(file, patch));
+    // 注入笔记协作广播钩子（Yjs 二进制约经 base64 走 relay 同通道）
+    setNoteCollabBroadcast({
+      sendSyncMessage: (file, payload) => handle?.sendNoteSync(file, bytesToBase64(payload)),
+      sendAwareness: (file, payload) => handle?.sendNoteAware(file, bytesToBase64(payload)),
+    });
     establishConnection();
   },
 
@@ -177,12 +212,18 @@ export const useCollabStore = create<CollabStoreState>((set) => ({
     return testRelayConnection(url);
   },
 
+  notePresence: (file) =>
+    schedulePresenceBroadcast({ file, selection: null, view: file ? "note" : null }),
+
   dispose: () => {
     handle?.sendBye();
     handle?.disconnect();
     handle = null;
     // 解除广播钩子：协作关闭后表格编辑不再走 relay（回落 watcher/磁盘通道）
     useTableStore.getState().setCollabBroadcast(null);
+    setNoteCollabBroadcast(null);
+    // 释放全部协作文档（Y.Doc/awareness 随销毁释放观察者与定时器）
+    useNoteCollabStore.getState().clear();
     runtimeCfg = null;
     myPeerId = null;
     if (broadcastTimer !== null) {

@@ -82,6 +82,9 @@ struct ClientMsg {
     /// 表格增量补丁（`table-patch` 消息；不透明透传，relay 不解析内容）。
     #[serde(default)]
     patch: Option<serde_json::Value>,
+    /// 笔记协作同步/awareness（`note-sync`/`note-aware` 消息；Yjs 二进制经 base64 包装，不透明透传）。
+    #[serde(default)]
+    payload: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -118,6 +121,8 @@ struct ServerMsg {
     file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     patch: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload: Option<String>,
 }
 
 fn server_msg(
@@ -127,9 +132,18 @@ fn server_msg(
     presence: Option<Presence>,
     file: Option<String>,
     patch: Option<serde_json::Value>,
+    payload: Option<String>,
 ) -> Arc<String> {
-    let json =
-        serde_json::to_string(&ServerMsg { kind, peer_id, peers, presence, file, patch }).unwrap();
+    let json = serde_json::to_string(&ServerMsg {
+        kind,
+        peer_id,
+        peers,
+        presence,
+        file,
+        patch,
+        payload,
+    })
+    .unwrap();
     Arc::new(json)
 }
 
@@ -152,7 +166,7 @@ fn broadcast_peers(rooms: &Rooms, vault_id: &str) {
             presence: p.presence.clone(),
         })
         .collect();
-    let payload = server_msg("peers", None, Some(peers), None, None, None);
+    let payload = server_msg("peers", None, Some(peers), None, None, None, None);
     for p in room.values() {
         let _ = p.tx.send(payload.clone());
     }
@@ -213,7 +227,7 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
     });
     // 先告知本连接自己的 peerId（客户端据此把自己过滤出 peers），再广播全量快照——
     // 顺序颠倒会让客户端收到含自己的 peers 帧时还无法识别自己（一帧闪现）
-    let _ = btx.send(server_msg("hello-ack", Some(peer_id), None, None, None, None));
+    let _ = btx.send(server_msg("hello-ack", Some(peer_id), None, None, None, None, None));
     {
         let mut rooms = hub.0.lock().unwrap();
         let room = rooms.entry(hello.vault_id.clone()).or_default();
@@ -254,7 +268,7 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
                                 peer.presence = Some(presence.clone());
                             }
                             let payload =
-                                server_msg("presence", Some(peer_id), None, Some(presence), None, None);
+                                server_msg("presence", Some(peer_id), None, Some(presence), None, None, None);
                             for (id, peer) in room.iter() {
                                 if *id != peer_id {
                                     let _ = peer.tx.send(payload.clone());
@@ -274,10 +288,36 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
                                     None,
                                     Some(file),
                                     Some(patch),
+                                    None,
                                 );
                                 for (id, peer) in room.iter() {
                                     if *id != peer_id {
                                         let _ = peer.tx.send(payload.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // 笔记协作同步 / awareness：不透明透传（base64 载荷），原样转发房间内其他成员
+                    // （客户端按 file 匹配只合入当前打开的笔记）；保持 relay 无状态纯转发
+                    "note-sync" | "note-aware" => {
+                        if let (Some(file), Some(payload)) = (msg.file, msg.payload) {
+                            let kind: &'static str =
+                                if msg.kind.as_str() == "note-sync" { "note-sync" } else { "note-aware" };
+                            let mut rooms = hub.0.lock().unwrap();
+                            if let Some(room) = rooms.get_mut(&hello.vault_id) {
+                                let relayed = server_msg(
+                                    kind,
+                                    Some(peer_id),
+                                    None,
+                                    None,
+                                    Some(file),
+                                    None,
+                                    Some(payload),
+                                );
+                                for (id, peer) in room.iter() {
+                                    if *id != peer_id {
+                                        let _ = peer.tx.send(relayed.clone());
                                     }
                                 }
                             }

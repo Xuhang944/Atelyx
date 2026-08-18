@@ -14,8 +14,10 @@ import { useVaultStore, lastFolderRenameTarget, lastNoteRenameTarget, isKnownNot
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
 import { useChatPanelStore } from "@/stores/chatPanelStore";
+import { useCollabStore } from "@/stores/collabStore";
+import { useNoteCollabStore } from "@/stores/noteCollabStore";
 import { Menu, MenuItem } from "@/components/common/Menu";
-import type { BacklinkRow } from "@/types";
+import type { BacklinkRow, CollabPeer } from "@/types";
 import {
   MARKDOWN_PLUGINS,
   REHYPE_PLUGINS,
@@ -25,12 +27,16 @@ import { parseFrontmatter, stringifyFrontmatter } from "@/utils/frontmatter";
 import { noteTitleFromFile } from "@/utils/filename";
 import { NotePropertiesView } from "@/components/editor/NotePropertiesView";
 import { MarkdownEditor } from "@/components/editor/MarkdownEditor";
+import { NoteHistoryModal } from "@/components/editor/NoteHistoryModal";
 import { useMarkdownComponents } from "@/hooks/useMarkdownComponents";
 import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
 import { usePopupAnchor } from "@/hooks/usePopupAnchor";
 import { PopupLayer } from "@/components/common/PopupLayer";
 
 type SaveState = NoteSaveStatus["state"];
+
+/** 模块级空数组：notePeers 缺省引用（避免每次渲染新数组导致无限重渲染，见 AGENTS 8.4）。 */
+const EMPTY_PEERS: CollabPeer[] = [];
 
 export function NoteEditor({ file }: { file: string }) {
   const readNoteContent = useVaultStore((s) => s.readNoteContent);
@@ -40,6 +46,15 @@ export function NoteEditor({ file }: { file: string }) {
   // 保存状态存 vaultStore（面积 header 展示；本组件只写不持）
   const noteSaveStatus = useVaultStore((s) => s.noteSaveStates[file]);
   const loadError = noteSaveStatus?.loadError ?? false;
+  /** 协作态判定与应用身份：中转开关已开且已连接时，当前笔记进入 Yjs 协同编辑。 */
+  const collabEnabled = useSettingsStore((s) => s.collabEnabled);
+  const collabConnected = useCollabStore((s) => s.connected);
+  const collabNickname = useSettingsStore((s) => s.collabNickname);
+  const collabColor = useSettingsStore((s) => s.collabColor);
+  const collabDevice = useSettingsStore((s) => s.deviceName);
+  const isCollab = collabEnabled && collabConnected;
+  /** 当前笔记的协作文档绑定（后台 noteCollabStore 编排；下发给 MarkdownEditor 做 y-codemirror 绑定）。 */
+  const collabBinding = useNoteCollabStore((s) => s.bindings[file]);
   const [content, setContent] = useState("");
   /** 编辑 / 预览切换（默认预览：打开即渲染；双击预览内容切回编辑；标题栏已显示文件名故顶部条不再重复）。 */
   const [preview, setPreview] = useState(true);
@@ -58,6 +73,8 @@ export function NoteEditor({ file }: { file: string }) {
   const [rewriteOpen, setRewriteOpen] = useState(false);
   /** 划词改写评论草稿。 */
   const [rewriteComment, setRewriteComment] = useState("");
+  /** 历史记录面板开关（「···」更多选项入口）。 */
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   /** 内容区右键：有划词选区（且落在编辑器内容区内）→ 弹「AI 改写」菜单（三模式共用 DOM 选区）。 */
   const handleContentContextMenu = (e: React.MouseEvent) => {
@@ -113,6 +130,14 @@ export function NoteEditor({ file }: { file: string }) {
       mountedRef.current = false;
     };
   }, []);
+
+  /** 历史记录作者身份登记（进入仓库/编辑器时；身份随设置变化 pass 进本组件）。 */
+  useEffect(() => {
+    useVaultStore.getState().noteHistorySetAuthor(
+      collabNickname || collabDevice || "用户",
+      collabDevice || "",
+    );
+  }, [collabNickname, collabDevice]);
 
   /** 编辑器根节点引用：点击编辑器外部 → 取消编辑模式（回渲染预览）。 */
   const editorRootRef = useRef<HTMLDivElement>(null);
@@ -199,6 +224,29 @@ export function NoteEditor({ file }: { file: string }) {
     void readNoteContent(file)
       .then((disk) => {
         if (cancelled || !mountedRef.current || disk === lastSavedRef.current) return;
+        if (isCollab) {
+          // 多写者协作：对端/本端正收敛写盘是常态，不走单写者冲突模型。
+          // 磁盘 = 本地收敛内容 → 对端写盘与本地一致：静默推进基准（后续增量跳过）不弹冲突；
+          // 本地有未落盘编辑且磁盘不同 → 对端尚未收敛的写盘：保留本地，等 debounce 覆盖收敛；
+          // 无本地编辑且磁盘不同 → 对端/外部刚落盘一版：收敛到磁盘（回退/合并），不弹冲突、
+          // 不静默覆盖——内容随下次保存以「编辑」历史记录，外部内容不丢失。
+          if (disk === contentRef.current) {
+            lastSavedRef.current = disk;
+            return;
+          }
+          if (dirtyRef.current) return;
+          if (timerRef.current) {
+            clearTimeout(timerRef.current);
+            timerRef.current = null;
+          }
+          setContent(disk);
+          contentRef.current = disk;
+          lastSavedRef.current = disk;
+          setSaveStatus("idle");
+          // 编辑模式：以磁盘为基底重建 ytext（applyBody）并向房间重新收敛
+          setEditorSyncSeq((s) => s + 1);
+          return;
+        }
         if (dirtyRef.current) {
           // 应用内其他编辑面写入（画布文本节点/AI 改笔记/保存为笔记）：静默保留本地输入，不弹「外部修改冲突」
           // （磁盘 = 应用最近已知内容，见 isKnownNoteDiskContent）；
@@ -230,7 +278,7 @@ export function NoteEditor({ file }: { file: string }) {
     return () => {
       cancelled = true;
     };
-  }, [externalEditSeq, file, readNoteContent, setSaveStatus, setConflictState]);
+  }, [externalEditSeq, file, readNoteContent, setSaveStatus, setConflictState, isCollab]);
 
   /** 冲突「重新加载」：丢弃本地改动，恢复磁盘最新内容并解除冲突。 */
   const reloadFromDisk = useCallback(() => {
@@ -249,11 +297,25 @@ export function NoteEditor({ file }: { file: string }) {
       .catch(() => {});
   }, [file, readNoteContent, setConflictState, setSaveStatus]);
 
-  /** 冲突「保留本地并保存」：用户明确选择用本地内容覆盖外部修改。 */
+  /** 历史回滚完成：把编辑器拨到回滚后内容（记入磁盘基准，编辑器/预览/属性区刷新）。 */
+  const handleNoteRollback = useCallback(
+    (content: string) => {
+      setContent(content);
+      contentRef.current = content;
+      lastSavedRef.current = content;
+      dirtyRef.current = false;
+      setConflictState(false);
+      setSaveStatus("saved");
+      // 编辑模式：回滚同步编辑器（协作态经 applyBody 重建 ytext）
+      setEditorSyncSeq((s) => s + 1);
+    },
+    [setSaveStatus, setConflictState],
+  );
   const saveLocalOverExternal = useCallback(() => {
     const v = contentRef.current;
     setConflictState(false);
     const seq = ++saveSeqRef.current;
+    setSaveStatus("saving");
     void saveNoteContent(file, v)
       .then(() => {
         lastSavedRef.current = v;
@@ -288,10 +350,34 @@ export function NoteEditor({ file }: { file: string }) {
     setContent(v);
     // 冲突中：仅更新本地内容，暂停自动保存（等用户选「重新加载」或「保留本地并保存」，防静默覆盖外部修改）
     if (conflictRef.current) return;
-    setSaveStatus("saving");
+    // 输入即有未落盘改动：显示「未保存」；真正写盘时才切「保存中…」
+    setSaveStatus("edited");
     if (timerRef.current) clearTimeout(timerRef.current);
     const seq = ++saveSeqRef.current;
     timerRef.current = setTimeout(() => {
+      // 协作态：多写者落盘内容收敛一致，远端/对端正收敛写盘不应走「磁盘≠基准=外部修改」冲突预检
+      // （会误报），只做增量跳过 + 直接保存收敛全文；真实外部整文件写入由外部感知 effect 兜底
+      // （见其 collab 分支：不静默覆盖）。
+      if (isCollab) {
+        if (v === lastSavedRef.current) {
+          dirtyRef.current = false;
+          if (mountedRef.current && seq === saveSeqRef.current) setSaveStatus("saved");
+          return;
+        }
+        setSaveStatus("saving");
+        void saveNoteContent(file, v)
+          .then(() => {
+            lastSavedRef.current = v;
+            if (seq === saveSeqRef.current) dirtyRef.current = false;
+            if (mountedRef.current && seq === saveSeqRef.current) setSaveStatus("saved");
+            // 记录编辑存档点（60s 内连续编辑合并为一版，不逐键）
+            void useVaultStore.getState().noteHistoryRecord(file, v, "edit");
+          })
+          .catch(() => {
+            if (mountedRef.current) setSaveStatus("error");
+          });
+        return;
+      }
       // 写盘前校验磁盘基准：期间磁盘已被外部改动（disk ≠ lastSavedRef）则放弃本次写盘并转冲突提示，
       // 防 debounce 到点把外部修改覆盖掉（自写回放磁盘 = lastSavedRef，不受影响）
       void readNoteContent(file)
@@ -301,6 +387,14 @@ export function NoteEditor({ file }: { file: string }) {
             setConflictState(true);
             return;
           }
+          // 增量跳过：磁盘已包含与当前输入完全相同的内容（如输入后撤销回已保存状态），
+          // 写盘纯属无操作——省去一次全量 fsync 写盘与随之而来的 watcher 回波
+          if (v === lastSavedRef.current) {
+            dirtyRef.current = false;
+            if (mountedRef.current && seq === saveSeqRef.current) setSaveStatus("saved");
+            return;
+          }
+          setSaveStatus("saving");
           void saveNoteContent(file, v)
             .then(() => {
               lastSavedRef.current = v;
@@ -308,6 +402,8 @@ export function NoteEditor({ file }: { file: string }) {
               if (seq === saveSeqRef.current) dirtyRef.current = false;
               // 期间又有新输入（新定时器已接管）→ 不显示「已自动保存」；组件已卸载不再写状态
               if (mountedRef.current && seq === saveSeqRef.current) setSaveStatus("saved");
+              // 记录编辑存档点（60s 内连续编辑合并为一版，不逐键）
+              void useVaultStore.getState().noteHistoryRecord(file, v, "edit");
             })
             .catch(() => {
               if (mountedRef.current) setSaveStatus("error");
@@ -322,6 +418,47 @@ export function NoteEditor({ file }: { file: string }) {
 
   /** Frontmatter 解析：content 变（输入/外部刷新）→ 面板数据即时重解析，形成「编辑/外部修改即刷新」闭环。 */
   const parsed = useMemo(() => parseFrontmatter(content), [content]);
+
+  /** 协作文档绑定：进入协作态且内容已加载时，以正文（body，LF）为基线绑定 Y.Doc；
+   * 绑定幂等——已绑定（collabBinding 非空）不重复建 doc，多面积共享同一实例。
+   * 身份（昵称/用户色）随设置变化可重设（bind 内部幂等更新 awareness）。 */
+  useEffect(() => {
+    if (!isCollab || collabBinding || !content) return;
+    useNoteCollabStore.getState().bind(
+      file,
+      parsed.body.replace(/\r\n/g, "\n"),
+      {
+        name: collabNickname || collabDevice || "用户",
+        color: collabColor || "#30bced",
+      },
+    );
+  }, [isCollab, collabBinding, file, content, parsed.body, collabNickname, collabColor, collabDevice]);
+
+  /** 解绑协作文档：切笔记/卸载时释放一个引用（多面积各释放一次）。 */
+  useEffect(() => {
+    return () => {
+      if (useNoteCollabStore.getState().bindings[file]) {
+        useNoteCollabStore.getState().unbind(file);
+      }
+    };
+  }, [file]);
+
+  /** 笔记协作 presence：打开/关闭/切笔记时上报「正在看这篇笔记」，对端据此展示协作者。 */
+  useEffect(() => {
+    if (isCollab) useCollabStore.getState().notePresence(file);
+    else useCollabStore.getState().notePresence(null);
+    return () => useCollabStore.getState().notePresence(null);
+  }, [isCollab, file]);
+
+  /** 同看这篇笔记的在线协作者（presence.file 命中；卷标含用户色）。 */
+  const collabPeers = useCollabStore((s) => s.peers);
+  const notePeers = useMemo(
+    () =>
+      isCollab
+        ? collabPeers.filter((p) => p.presence?.file === file && p.presence?.view === "note")
+        : EMPTY_PEERS,
+    [isCollab, collabPeers, file],
+  );
 
   /** 宽松换行（仓库级设置，缺省开启）：开启时预览注入软换行→<br> 插件。
    * useMemo 稳定数组引用，避免无关渲染触发 ReactMarkdown 重建 processor。 */
@@ -394,6 +531,34 @@ export function NoteEditor({ file }: { file: string }) {
         style={{ borderBottom: "1px solid var(--border)", color: "var(--text-muted)" }}
       >
         <span className="ml-auto flex items-center gap-2 flex-shrink-0">
+          {/* 协作协作者：同看这篇笔记的在线用户（用户色卷标，点击定位到其选中位——暂只展示） */}
+          {notePeers.length > 0 && (
+            <span className="flex items-center gap-1 flex-shrink-0">
+              {notePeers.slice(0, 4).map((p) => (
+                <span
+                  key={p.peerId}
+                  className="flex items-center gap-1 rounded px-1 py-0.5 text-[11px]"
+                  style={{
+                    color: p.color,
+                    background: `${p.color}1f`,
+                    border: `1px solid ${p.color}55`,
+                  }}
+                  title={`${p.nickname}${p.deviceName ? `（${p.deviceName}）` : ""} 正在编辑本笔记`}
+                >
+                  <span
+                    className="inline-block w-1.5 h-1.5 rounded-full"
+                    style={{ background: p.color }}
+                  />
+                  {p.nickname}
+                </span>
+              ))}
+              {notePeers.length > 4 && (
+                <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                  +{notePeers.length - 4}
+                </span>
+              )}
+            </span>
+          )}
           {/* 预览模式提示：显示在切换按钮左侧 */}
           {preview && (
             <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
@@ -452,6 +617,18 @@ export function NoteEditor({ file }: { file: string }) {
                   {sourceMode && <Check size={12} style={{ color: "var(--accent)" }} />}
                 </span>
                 源码模式
+              </button>
+              <button
+                className="w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:opacity-80"
+                style={{ color: "var(--text-primary)" }}
+                onClick={() => {
+                  menu.close();
+                  setHistoryOpen(true);
+                }}
+                title="查看本笔记的历史版本并回滚"
+              >
+                <span className="w-3.5 flex-shrink-0" />
+                历史记录
               </button>
             </PopupLayer>
           </span>
@@ -536,6 +713,7 @@ export function NoteEditor({ file }: { file: string }) {
           <MarkdownEditor
             body={parsed.body}
             syncSeq={editorSyncSeq}
+            collab={collabBinding}
             onBodyChange={(md) => {
               // CRLF 文件：编辑器统一输出 LF，拼回前转回文件原有换行，防 frontmatter/正文混用
               const body = parsed.body.includes("\r\n") ? md.replace(/\n/g, "\r\n") : md;
@@ -663,6 +841,14 @@ export function NoteEditor({ file }: { file: string }) {
           )}
         </Menu>
       )}
+
+      {/* 笔记历史面板（「···」→ 历史记录） */}
+      <NoteHistoryModal
+        file={file}
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        onRollback={handleNoteRollback}
+      />
     </div>
   );
 }

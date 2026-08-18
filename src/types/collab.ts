@@ -11,11 +11,11 @@ export type CollabSelection =
   | { kind: "all" }
   | null;
 
-/** 远端用户 presence：打开的文件 + 选中 + 编辑器视图（null = 未在看表格）。 */
+/** 远端用户 presence：打开的文件 + 选中 + 编辑器视图（null = 未在看表格/笔记）。 */
 export interface CollabPresence {
   file: string | null;
   selection: CollabSelection;
-  view: "table" | "timeline" | null;
+  view: "table" | "timeline" | "note" | null;
 }
 
 /** 房间（同仓库 vaultId）内一个在线用户。 */

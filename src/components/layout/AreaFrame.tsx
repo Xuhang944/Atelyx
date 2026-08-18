@@ -210,9 +210,11 @@ function NoteStatusIndicator() {
       ? "保存中…"
       : status.state === "error"
         ? "保存失败"
-        : status.state === "saved"
-          ? "已自动保存"
-          : null;
+        : status.state === "edited"
+          ? "未保存"
+          : status.state === "saved"
+            ? "已自动保存"
+            : null;
   if (!text) return null;
   return (
     <span

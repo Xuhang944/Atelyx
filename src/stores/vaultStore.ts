@@ -31,6 +31,13 @@ import {
   writeNote,
 } from "@/services/vault";
 import {
+  loadHistory as loadNoteHistory,
+  recordHistoryVersion,
+  setHistoryAuthor,
+  versionContentAt,
+  type NoteHistoryVersion,
+} from "@/services/noteHistory";
+import {
   createTableVault,
   deleteTableVault,
   moveTableVault,
@@ -346,9 +353,12 @@ async function applyFileDuplicate(file: string): Promise<string> {
 
 /** 笔记编辑器保存状态（面积 header 展示用；仅挂载中的编辑器写入、卸载清除）。 */
 export type NoteSaveStatus = {
-  state: "idle" | "saving" | "saved" | "error";
+  state: "idle" | "edited" | "saving" | "saved" | "error";
   loadError: boolean;
 };
+
+/** 笔记历史版本（组件不直连 service，经本 store 读历史）。 */
+export type { NoteHistoryVersion } from "@/services/noteHistory";
 
 interface VaultFileState {
   /** 全仓库文件树（递归，跳过隐藏/排除目录与 `.tmp`）。 */
@@ -457,6 +467,14 @@ interface VaultFileState {
   readAttachmentDataUrl: (file: string) => Promise<string>;
   /** 写回笔记正文并刷新文件树（mtime 变化即时反映到面板）。 */
   saveNoteContent: (file: string, content: string) => Promise<void>;
+  /** 设置历史记录作者（进入仓库/身份变化时调用；组件不直连 service，走本 store）。 */
+  noteHistorySetAuthor: (name: string, device: string) => void;
+  /** 记录一条笔记历史版本（版本边界；连续编辑自动节流合并，不逐键记录）。 */
+  noteHistoryRecord: (file: string, content: string, action: "edit" | "restore" | "external", note?: string) => Promise<void>;
+  /** 读取笔记历史版本列表（缺失/损坏 → 空数组，尽力而为）。 */
+  noteHistoryLoad: (file: string) => Promise<NoteHistoryVersion[]>;
+  /** 回滚笔记到指定版本：写回磁盘 + 记一条 restore 版本；返回回滚后的全文（供编辑器重载），失败返回 null。 */
+  noteHistoryRollback: (file: string, seq: number) => Promise<string | null>;
   /** 外部修改的笔记（file → 递增序号）。NoteEditor 订阅感知外部变更：无本地改动时实时刷新，有改动时提示冲突。 */
   externalNoteEdits: Record<string, number>;
   /** watcher 收到 `.md` 外部变化事件时 bump 序号（软件内重命名旧路径事件由调用方跳过）。 */
@@ -744,7 +762,32 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     await writeNote(file, content);
     // 登记磁盘基线（同 applyNoteEdits/saveTextNodeAsNote）：应用自写须被外部修改感知识别
     recordNoteDiskContentSvc(file, content);
-    await get().loadFiles();
+    // 标记路径级自写回波：watcher 收到同路径事件后跳过无关的全树重扫（内容编辑不改文件树）
+    markSelfSave(file);
+  },
+
+  noteHistorySetAuthor: (name, device) =>
+    setHistoryAuthor({ id: device || name, name: name || device || "用户", device: device || "" }),
+
+  noteHistoryRecord: (file, content, action, note) =>
+    recordHistoryVersion(file, {
+      content,
+      action,
+      ...(note ? { note } : {}),
+      // 连续编辑节流：60s 内合并为一个存档点（版本粒度，不逐键），显式边界（外部/回滚）不受限
+      coalesceEditMs: action === "edit" ? 60_000 : 0,
+    }),
+
+  noteHistoryLoad: (file) => loadNoteHistory(file),
+
+  noteHistoryRollback: async (file, seq) => {
+    const versions = await loadNoteHistory(file);
+    const content = versionContentAt(versions, seq);
+    if (content == null) return null;
+    await get().saveNoteContent(file, content);
+    // 回滚记一条 restore 版本（滚动恢复点 + 审计「何时回滚到哪」）
+    await recordHistoryVersion(file, { content, action: "restore" });
+    return content;
   },
 
   externalNoteEdits: {},
@@ -847,9 +890,12 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
           if (!isPendingRenameOldPath(c.path) && !isPendingFolderRenameOldPath(c.path)) {
             void useCanvasStore.getState().refreshTextContent(c.path);
             // NoteEditor 感知外部修改：无本地改动实时刷新、有改动提示冲突
+            // （markNoteExternallyEdited 始终保留：跨编辑面同步 + 冲突检测必经，不受自写回波影响）
             get().markNoteExternallyEdited(c.path);
           }
-          void get().loadFiles();
+          // 纯内容自写回波（本端写盘，markSelfSave 已标记）不改文件树：跳过全仓库重扫；
+          // 外部新建/删除/改名 .md 非自写回波，仍重扫（与 canvas/table 分支同语义）
+          if (!isSelfSaveEcho(c.path)) void get().loadFiles();
           return;
         }
 

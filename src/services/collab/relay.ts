@@ -102,6 +102,8 @@ export type CollabClientMessage =
   | ({ type: "hello" } & CollabHello)
   | ({ type: "presence" } & CollabPresence)
   | { type: "table-patch"; file: string; patch: TablePatch }
+  | { type: "note-sync"; file: string; payload: string }
+  | { type: "note-aware"; file: string; payload: string }
   | { type: "ping" }
   | { type: "bye" };
 
@@ -110,6 +112,8 @@ export type CollabServerMessage =
   | { type: "hello-ack"; peerId: number }
   | { type: "presence"; peerId: number; presence: CollabPresence }
   | { type: "table-patch"; peerId: number; file: string; patch: TablePatch }
+  | { type: "note-sync"; peerId: number; file: string; payload: string }
+  | { type: "note-aware"; peerId: number; file: string; payload: string }
   | { type: "error"; message: string };
 
 export interface CollabRelayHandle {
@@ -117,6 +121,10 @@ export interface CollabRelayHandle {
   sendPresence(presence: CollabPresence): void;
   /** 广播表格增量补丁（relay 转发给房间内其他成员；未连接时静默丢弃）。 */
   sendTablePatch(file: string, patch: TablePatch): void;
+  /** 广播笔记 Yjs 同步消息（base64，relay 不透明转发；未连接时静默丢弃）。 */
+  sendNoteSync(file: string, payload: string): void;
+  /** 广播笔记 awareness 更新（base64，relay 不透明转发；未连接时静默丢弃）。 */
+  sendNoteAware(file: string, payload: string): void;
   /** 主动离开房间（切仓库/关闭应用）。 */
   sendBye(): void;
   /** 断开连接且不再重连。 */
@@ -132,6 +140,10 @@ export interface CollabRelayOptions {
   onPeerPresence: (peerId: number, presence: CollabPresence) => void;
   /** 收到他人表格补丁（文件匹配由调用方判定——只应用当前打开的表格）。 */
   onTablePatch: (peerId: number, file: string, patch: TablePatch) => void;
+  /** 收到他人笔记 Yjs 同步消息（base64 → 调用方解码合入；文件匹配由调用方判定）。 */
+  onNoteSync: (peerId: number, file: string, payload: string) => void;
+  /** 收到他人笔记 awareness 更新（base64 → 调用方解码应用）。 */
+  onNoteAware: (peerId: number, file: string, payload: string) => void;
   /** 收到服务端 error 帧（协议异常/房间拒绝等）——调用方决定日志或 UI 反馈。 */
   onServerError: (message: string) => void;
   onStatusChange: (connected: boolean) => void;
@@ -176,6 +188,10 @@ export function connectCollabRelay(opts: CollabRelayOptions): CollabRelayHandle 
       else if (msg.type === "presence") opts.onPeerPresence(msg.peerId, msg.presence);
       else if (msg.type === "table-patch")
         opts.onTablePatch(msg.peerId, msg.file, msg.patch);
+      else if (msg.type === "note-sync")
+        opts.onNoteSync(msg.peerId, msg.file, msg.payload);
+      else if (msg.type === "note-aware")
+        opts.onNoteAware(msg.peerId, msg.file, msg.payload);
       else if (msg.type === "error") opts.onServerError(msg.message);
     };
     ws.onerror = () => ws?.close(); // 收尾统一走 onclose
@@ -213,6 +229,14 @@ export function connectCollabRelay(opts: CollabRelayOptions): CollabRelayHandle 
     sendTablePatch: (file, patch) => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       ws.send(JSON.stringify({ type: "table-patch", file, patch }));
+    },
+    sendNoteSync: (file, payload) => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: "note-sync", file, payload }));
+    },
+    sendNoteAware: (file, payload) => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: "note-aware", file, payload }));
     },
     sendBye: () => {
       if (ws && ws.readyState === WebSocket.OPEN) {

@@ -37,6 +37,7 @@
     "hast-util-sanitize": "^5.0.2",
     "highlight.js": "^11.0.0",
     "katex": "^0.16.11",
+    "lib0": "^0.2.117",
     "lucide-react": "^1.28.0",
     "mdast-util-from-markdown": "^2.0.3",
     "micromark-util-character": "^2.1.1",
@@ -53,6 +54,9 @@
     "remark-math": "^6.0.0",
     "unified": "^11.0.5",
     "unist-util-visit": "^5.1.0",
+    "y-codemirror.next": "^0.3.6",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.32",
     "zustand": "^5.0.0"
   },
   "devDependencies": {
