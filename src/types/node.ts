@@ -1,4 +1,5 @@
 import type { Edge, Node } from "@xyflow/react";
+import type { ReasoningEffort } from "./provider";
 
 /** 单条搜索结果（AI 自主搜索产物）。 */
 export interface SearchResultItem {
@@ -38,6 +39,8 @@ export interface ConversationData {
   agentMode?: boolean;
   /** Agent 模式启用的工具名列表（constants/tools.ts 的 AGENT_TOOLS_META id；缺省 = 全部工具）。 */
   agentTools?: string[];
+  /** 推理等级（本节点独立，随 .atlx 持久化；下发 `reasoning_effort`。缺省 = 不指定/跟随默认 与 providerId/model 正交独立）。 */
+  reasoningEffort?: ReasoningEffort;
 }
 
 export interface TextData {

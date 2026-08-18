@@ -960,6 +960,9 @@ pub struct EditorChatsFile {
     pub active_session_id: Option<String>,
     #[serde(default)]
     pub model_override: Option<EditorChatModelOverride>,
+    /// 面板级推理等级覆盖（off/low/medium/high；null = 不指定/跟随默认；与模型覆盖正交）。
+    #[serde(default)]
+    pub effort_override: Option<String>,
 }
 
 /// 读 AI 对话面板会话文件（不存在/解析失败返回默认——手编辑损坏不阻塞面板）。

@@ -2,8 +2,6 @@
 export interface ProviderModel {
   id: string;
   nickname?: string;
-  /** 思考档位（下发 `reasoning_effort`）；缺省 = 不指定（跟随供应商/模型默认），"off" = 显式关闭。 */
-  reasoningEffort?: ReasoningEffort;
 }
 
 /** 模型思考档位（dsh 风格：思考必须显式开启并在线上指名档位）。 */
@@ -21,9 +19,10 @@ export interface AiConfig {
   providers: ProviderConfig[];
 }
 
-/** 对话请求的目标解析结果（画布对话节点 / AI 对话面板共用，settingsStore.resolveChatTarget 产出）。 */
+/** 对话请求的目标解析结果（画布对话节点 / AI 对话面板共用，settingsStore.resolveChatTarget 产出）。
+ * reasoningEffort 不在解析结果内——为调用方各自的会话级覆盖（节点 data / 面板 effortOverride），解析只负责 provider/model。 */
 export type ChatTargetResult =
-  | { ok: true; provider: ProviderConfig; model: string; reasoningEffort?: ReasoningEffort }
+  | { ok: true; provider: ProviderConfig; model: string }
   | {
       ok: false;
       /** 失败原因：所选供应商已删 / 未配置默认模型 */

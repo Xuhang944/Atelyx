@@ -6,7 +6,7 @@
  * 所有 node/edge/message 有稳定 id，为未来协作增量合并预留。
  */
 import type { Message } from "./message";
-import type { GlobalProvider } from "./provider";
+import type { GlobalProvider, ReasoningEffort } from "./provider";
 import type { LinkMode, SearchResultData } from "./node";
 import type { CANVAS_SCHEMA } from "@/constants/canvas";
 
@@ -59,6 +59,8 @@ export interface ConversationFileData {
   agentMode?: boolean;
   /** Agent 模式启用的工具名列表（缺省 = 全部工具；旧文件无此字段兼容读取）。 */
   agentTools?: string[];
+  /** 节点级推理等级（缺省 = 不指定/跟随默认；旧文件无此字段兼容读取）。 */
+  reasoningEffort?: ReasoningEffort;
   /** conversationId 字段冗余保留以复用 Message 类型，读取时可忽略。 */
   messages: Message[];
 }

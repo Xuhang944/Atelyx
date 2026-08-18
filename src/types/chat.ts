@@ -13,6 +13,7 @@ import {
   CHAT_MESSAGE_EXT,
 } from "@/constants/editorChats";
 import type { AgentStep, ToolRun } from "./message";
+import type { ReasoningEffort } from "./provider";
 
 export {
   EDITOR_CHATS_SCHEMA,
@@ -109,6 +110,8 @@ export interface EditorChatsFile {
   /** 当前激活会话 id（新对话态 = null，load 不恢复）。 */
   activeSessionId: string | null;
   modelOverride: EditorChatModelOverride | null;
+  /** 面板级推理等级覆盖（null = 不指定/跟随默认；与模型覆盖正交，跟随仓库默认时也可单独设置）。 */
+  effortOverride: ReasoningEffort | null;
 }
 
 /** Rust 侧读回形状：v1 存量会话可能内嵌 messages（load 迁移用）。schema 允许 v1/v2，供迁移分支判断。 */
@@ -117,4 +120,6 @@ export interface EditorChatsFileOnDisk {
   sessions: (EditorChatIndexEntry & { messages?: EditorChatMessage[] })[];
   activeSessionId: string | null;
   modelOverride: EditorChatModelOverride | null;
+  /** 旧 v2 文件无此字段兼容读取（缺省 = null）。 */
+  effortOverride?: ReasoningEffort | null;
 }

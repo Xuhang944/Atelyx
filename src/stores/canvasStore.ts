@@ -662,7 +662,9 @@ async function runStream(conversationId: string): Promise<void> {
     store.setState({ error: resolved.error });
     return;
   }
-  const { provider, model, reasoningEffort } = resolved;
+  const { provider, model } = resolved;
+  // 推理等级为节点级独立覆盖（与 provider/model 正交，resolveChatTarget 不产 effort）；缺省 = 不指定（跟随默认，不下发 reasoning_effort）
+  const reasoningEffort = nodeData?.reasoningEffort;
 
   // 预创建 assistant 消息（流式追加内容）
   const { id: asstId, ts: asstTs } = nowId();
@@ -2150,6 +2152,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         model: parentData.model ?? "",
         // 分支继承系统提示词（子节点独立演化，改动不影响父节点）
         systemPromptFile: parentData.systemPromptFile,
+        // 分支继承节点级推理等级（与模型同语义；子节点可独立改，不影响父节点）
+        reasoningEffort: parentData.reasoningEffort,
       },
     };
     // 父→子有向边仅表分支血缘：对话→对话边不进 getReferencedInputs、不生成 @chip，故无数据交互

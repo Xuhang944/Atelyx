@@ -36,7 +36,6 @@ import { useVaultStore } from "@/stores/vaultStore";
 import { useAutoScrollFollow } from "@/hooks/useAutoScrollFollow";
 import { useMarkdownComponents } from "@/hooks/useMarkdownComponents";
 import {
-  modelDisplayName,
   modelNameAcrossProviders,
   mentionRemoveRange,
   scanMentionHits,
@@ -48,6 +47,7 @@ import { MentionTextarea } from "@/components/common/MentionTextarea";
 import { JumpToBottomButton } from "@/components/common/JumpToBottomButton";
 import { AgentModeToggle } from "@/components/common/AgentModeToggle";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
+import { ModelSelect } from "@/components/common/ModelSelect";
 import { PopupLayer } from "@/components/common/PopupLayer";
 import { ERROR_PREFIX } from "@/constants/chat";
 import { usePopupAnchor } from "@/hooks/usePopupAnchor";
@@ -94,6 +94,7 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
   const activeSessionId = useChatPanelStore((s) => s.activeSessionId);
   const streaming = useChatPanelStore((s) => s.streaming);
   const modelOverride = useChatPanelStore((s) => s.modelOverride);
+  const effortOverride = useChatPanelStore((s) => s.effortOverride);
   const error = useChatPanelStore((s) => s.error);
   const send = useChatPanelStore((s) => s.send);
   const stop = useChatPanelStore((s) => s.stop);
@@ -105,6 +106,7 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
   const deleteSession = useChatPanelStore((s) => s.deleteSession);
   const setSystemPromptFile = useChatPanelStore((s) => s.setSystemPromptFile);
   const setModelOverride = useChatPanelStore((s) => s.setModelOverride);
+  const setEffortOverride = useChatPanelStore((s) => s.setEffortOverride);
   const agentMode = useChatPanelStore((s) => s.agentMode);
   const agentTools = useChatPanelStore((s) => s.agentTools);
   const setAgentMode = useChatPanelStore((s) => s.setAgentMode);
@@ -493,31 +495,21 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
             style={{ color: "var(--text-secondary)" }}
           />
 
-          {/* 模型选择：DropdownSelect（供应商分组；未覆盖 = 跟随仓库默认） */}
-          <DropdownSelect
-            value={modelOverride ? `${modelOverride.providerId}::${modelOverride.model}` : ""}
-            onChange={(v) => {
-              if (!v) {
-                setModelOverride(null);
-                return;
-              }
-              const [providerId, model] = v.split("::");
-              if (providerId && model) setModelOverride({ providerId, model });
-            }}
-            options={[
-              { value: "", label: "跟随仓库默认" },
-              ...providers.flatMap((p) =>
-                p.models.map((m) => ({
-                  value: `${p.id}::${m.id}`,
-                  label: modelDisplayName(p, m.id),
-                  group: p.name,
-                })),
-              ),
-            ]}
-            emptyText="暂无已配置模型（请在设置中添加供应商）"
+          {/* 模型选择：两级菜单（模型 / 推理等级子面板，PopupLayer 统一弹层壳） */}
+          <ModelSelect
+            providers={providers}
+            providerId={modelOverride?.providerId}
+            model={modelOverride?.model}
+            effort={effortOverride ?? undefined}
+            onSelectModel={(sel) =>
+              sel
+                ? setModelOverride({ providerId: sel.providerId, model: sel.model })
+                : setModelOverride(null)
+            }
+            onSelectEffort={(effort) => setEffortOverride(effort ?? null)}
+            defaultModelDisplay={defaultModelDisplay}
             prefixIcon={<Cpu size={13} className="flex-shrink-0" />}
-            placeholder={defaultModelDisplay ?? "默认"}
-            title={modelOverride ? `模型：${modelOverride.model}` : "模型：跟随仓库默认（点击选择）"}
+            title={modelOverride ? `模型：${modelOverride.model}` : "模型：跟随仓库默认（点击选择/设置推理等级）"}
             className="px-1.5 py-1 rounded text-xs hover:opacity-80 w-28 min-w-0"
             style={{ color: "var(--text-secondary)" }}
           />

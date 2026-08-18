@@ -264,14 +264,6 @@ function ProviderForm({
     });
   };
 
-  const setReasoningEffort = (id: string, effort: ProviderConfig["models"][number]["reasoningEffort"]) => {
-    onChange({
-      models: provider.models.map((m) =>
-        m.id === id ? { ...m, reasoningEffort: effort } : m,
-      ),
-    });
-  };
-
   const removeModel = (id: string) => {
     onChange({ models: provider.models.filter((m) => m.id !== id) });
   };
@@ -454,30 +446,6 @@ function ProviderForm({
                     }}
                     title="显示昵称，替代长模型 ID"
                   />
-                )}
-                {sel && (
-                  <select
-                    value={sel.reasoningEffort ?? ""}
-                    onChange={(e) =>
-                      setReasoningEffort(
-                        id,
-                        (e.target.value || undefined) as ProviderConfig["models"][number]["reasoningEffort"],
-                      )
-                    }
-                    className="text-xs rounded px-1.5 py-0.5 outline-none flex-shrink-0 focus:ring-1 focus:ring-[var(--accent)]"
-                    style={{
-                      color: "var(--text-secondary)",
-                      background: "var(--input-bg)",
-                      border: "1px solid var(--input-border)",
-                    }}
-                    title="思考档位：开启模型思考（下发 reasoning_effort）；仅对支持思考的模型生效"
-                  >
-                    <option value="">思考：默认</option>
-                    <option value="off">思考：关闭（off）</option>
-                    <option value="low">思考：低（low）</option>
-                    <option value="medium">思考：中（medium）</option>
-                    <option value="high">思考：高（high）</option>
-                  </select>
                 )}
                 {sel && (
                   <button

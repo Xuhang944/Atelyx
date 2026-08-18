@@ -436,7 +436,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         ok: true,
         provider: def.provider,
         model: def.model,
-        reasoningEffort: def.provider.models.find((m) => m.id === def.model)?.reasoningEffort,
       };
     }
     const model = selection?.model ?? selected.models[0]?.id ?? "";
@@ -451,7 +450,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       ok: true,
       provider: selected,
       model,
-      reasoningEffort: selected.models.find((m) => m.id === model)?.reasoningEffort,
     };
   },
 

@@ -68,6 +68,8 @@ interface ChatPanelState {
   streaming: boolean;
   /** 面板级模型覆盖（优先于仓库默认模型；null = 跟随仓库默认）。 */
   modelOverride: EditorChatModelOverride | null;
+  /** 面板级推理等级覆盖（null = 不指定/跟随默认；与模型覆盖正交，跟随仓库默认时也可单独设置；持久化 editor-chats.json）。 */
+  effortOverride: ReasoningEffort | null;
   /** 拖入输入框的笔记引用队列（文件面板拖拽笔记到 AI 对话输入框，组件消费后清空）。 */
   pendingMentions: EditorChatMessageRef[];
   /** 新对话态（无激活会话）的待用系统提示词：发送首条消息创建会话时固化进会话；新建会话/切仓库时清空，不落盘。 */
@@ -118,6 +120,8 @@ interface ChatPanelState {
   setAgentTool: (name: string, enabled: boolean) => void;
   /** 设置面板级模型覆盖（null = 跟随仓库默认）。 */
   setModelOverride: (ov: EditorChatModelOverride | null) => void;
+  /** 设置面板级推理等级覆盖（null = 不指定/跟随默认）。 */
+  setEffortOverride: (effort: ReasoningEffort | null) => void;
   /** 清除面板内联错误。 */
   clearError: () => void;
   /** 立即落盘并返回写盘 Promise（可等待——切换仓库前必须先等旧会话写完，防写进新仓库）。
@@ -357,7 +361,7 @@ async function persistNow(guardVaultId?: string | null): Promise<void> {
   ) {
     return;
   }
-  const { sessions, activeSessionId, modelOverride } = useChatPanelStore.getState();
+  const { sessions, activeSessionId, modelOverride, effortOverride } = useChatPanelStore.getState();
   // 1) 写脏会话的消息 .md（转写）。写成功才移除——失败保留待下次 debounce/flush 重试（防消息只存在于内存而 .md 丢失）；
   //    写盘期间并发 schedulePersist 新标记的会话不在本次快照，保留由下一轮再写（防误清）。
   //    追加式：纯增长只追加新增段（基线引用逐一相同）；流式中途落盘/截断/基线缺失 → 全量重写（幂等）。
@@ -431,6 +435,7 @@ async function persistNow(guardVaultId?: string | null): Promise<void> {
     })),
     activeSessionId,
     modelOverride,
+    effortOverride,
   };
   try {
     await writeEditorChats(index);
@@ -455,15 +460,22 @@ function resolveProviderModel(): {
 } | null {
   const ov = useChatPanelStore.getState().modelOverride;
   const resolved = useSettingsStore.getState().resolveChatTarget(ov);
-  if (resolved.ok) return resolved;
-  if (resolved.reason === "provider-missing") {
-    // provider-missing 只可能在 ov 非空时返回（见 resolveChatTarget）；清空失效覆盖并说明已恢复跟随默认
-    useChatPanelStore.getState().setModelOverride(null);
-    useChatPanelStore.setState({ error: `${resolved.error}（已恢复跟随默认）` });
+  if (!resolved.ok) {
+    if (resolved.reason === "provider-missing") {
+      // provider-missing 只可能在 ov 非空时返回（见 resolveChatTarget）；清空失效覆盖并说明已恢复跟随默认
+      useChatPanelStore.getState().setModelOverride(null);
+      useChatPanelStore.setState({ error: `${resolved.error}（已恢复跟随默认）` });
+      return null;
+    }
+    useChatPanelStore.setState({ error: resolved.error });
     return null;
   }
-  useChatPanelStore.setState({ error: resolved.error });
-  return null;
+  // 推理等级为面板级独立覆盖（与模型覆盖正交）；缺省 = 不指定（跟随默认，不下发 reasoning_effort）
+  return {
+    provider: resolved.provider,
+    model: resolved.model,
+    reasoningEffort: useChatPanelStore.getState().effortOverride ?? undefined,
+  };
 }
 
 /**
@@ -699,6 +711,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
   activeSessionId: null,
   streaming: false,
   modelOverride: null,
+  effortOverride: null,
   pendingMentions: [],
   draftSystemPromptFile: undefined,
   agentMode: false,
@@ -791,6 +804,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
         activeSessionId: null,
         sessionVaultId: vaultId,
         modelOverride: f.modelOverride,
+        effortOverride: f.effortOverride ?? null,
         draftSystemPromptFile: undefined,
         agentMode: false,
         agentTools: [...DEFAULT_AGENT_TOOLS],
@@ -1034,6 +1048,11 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
 
   setModelOverride: (ov) => {
     set({ modelOverride: ov });
+    schedulePersist();
+  },
+
+  setEffortOverride: (effort) => {
+    set({ effortOverride: effort });
     schedulePersist();
   },
 

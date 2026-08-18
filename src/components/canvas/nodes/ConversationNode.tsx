@@ -19,7 +19,6 @@ import { isAssetConsumed } from "@/utils/consumed";
 import { findFreeSpot } from "@/utils/layout";
 import {
   mentionTextOf,
-  modelDisplayName,
   modelNameAcrossProviders,
   prefix,
   splitMentions,
@@ -38,6 +37,7 @@ import { ConversationAtPicker } from "./ConversationAtPicker";
 import { ConversationAttachmentTray } from "./ConversationAttachmentTray";
 import { ConnectionFrame } from "./ConnectionFrame";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
+import { ModelSelect } from "@/components/common/ModelSelect";
 import { Menu, MenuItem } from "@/components/common/Menu";
 import { ChatMessageBubble } from "@/components/common/ChatMessageBubble";
 import { MentionTextarea } from "@/components/common/MentionTextarea";
@@ -134,21 +134,6 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
   const nodeData = useCanvasStore(
     (s) => s.nodes.find((n) => n.id === id)?.data,
   ) as Partial<ConversationData> | undefined;
-
-  // 供应商·模型组合选项（供节点一步选择；留空 = 跟随仓库默认）
-  const comboOptions = providers.flatMap((p) =>
-    p.models.map((m) => ({
-      key: `${p.id}::${m.id}`,
-      label: modelDisplayName(p, m.id),
-      group: p.name,
-      providerId: p.id,
-      model: m.id,
-    })),
-  );
-  const currentComboKey =
-    nodeData?.providerId && nodeData?.model
-      ? `${nodeData.providerId}::${nodeData.model}`
-      : "";
 
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
@@ -753,41 +738,33 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
             }}
             title="选择系统提示词（右键笔记注册，留空 = 不注入）"
           />
-          <DropdownSelect
-            value={
-              comboOptions.some((o) => o.key === currentComboKey)
-                ? currentComboKey
-                : ""
-            }
-            onChange={(v) => {
-              if (!v) {
+          <ModelSelect
+            providers={providers}
+            providerId={nodeData?.providerId}
+            model={nodeData?.model}
+            effort={nodeData?.reasoningEffort}
+            onSelectModel={(sel) => {
+              if (!sel) {
                 // 留空 = 全部跟随仓库默认（清空节点级指定）
                 updateNodeData(id, { providerId: "", model: "" });
                 return;
               }
-              const combo = comboOptions.find((o) => o.key === v);
-              if (combo)
-                updateNodeData(id, {
-                  providerId: combo.providerId,
-                  model: combo.model,
-                });
+              updateNodeData(id, {
+                providerId: sel.providerId,
+                model: sel.model,
+              });
             }}
-            options={[
-              { value: "", label: defaultModelDisplay ?? "模型" },
-              // 按供应商分组（组头 = 供应商名），模型显示昵称/原名
-              ...comboOptions.map((o) => ({
-                value: o.key,
-                label: o.label,
-                group: o.group,
-              })),
-            ]}
+            onSelectEffort={(effort) =>
+              updateNodeData(id, { reasoningEffort: effort })
+            }
+            defaultModelDisplay={defaultModelDisplay}
             className="nodrag text-xs rounded px-1 py-0.5 w-24"
             style={{
               color: "var(--text-secondary)",
               background: "var(--input-bg)",
               border: "1px solid var(--input-border)",
             }}
-            title="选择供应商与模型（留空 = 跟随默认）"
+            title="选择供应商与模型，或单独设置推理等级（留空 = 跟随默认）"
           />
         </div>
       </header>
