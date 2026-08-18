@@ -17,6 +17,7 @@ import { usePopupAnchor } from "@/hooks/usePopupAnchor";
 import { PopupLayer } from "@/components/common/PopupLayer";
 import { AreaPlaceholder } from "@/components/layout/AreaPlaceholder";
 import { CanvasView } from "@/components/layout/views/CanvasView";
+import { noteTitleFromFile, tableTitleFromFile } from "@/utils/filename";
 import { NoteView } from "@/components/layout/views/NoteView";
 import { TableView } from "@/components/layout/views/TableView";
 import { FilesView } from "@/components/layout/views/FilesView";
@@ -240,6 +241,31 @@ function AreaStatusIndicator({ view }: { view: ViewKind }) {
   }
 }
 
+/** 画布/笔记/表格面积 header 显示当前打开文件名（无文件或其他视图不显示）。 */
+function AreaFileTitle({ view }: { view: ViewKind }) {
+  const file = useAppStore((s) =>
+    view === "canvas"
+      ? s.currentCanvasFile
+      : view === "note"
+        ? s.currentNoteFile
+        : view === "table"
+          ? s.currentTableFile
+          : null,
+  );
+  if (view !== "canvas" && view !== "note" && view !== "table") return null;
+  if (!file) return null;
+  const title = view === "table" ? tableTitleFromFile(file) : noteTitleFromFile(file);
+  return (
+    <span
+      className="flex-shrink-0 min-w-0 text-xs truncate"
+      style={{ color: "var(--accent)", maxWidth: 200 }}
+      title={file}
+    >
+      {title}
+    </span>
+  );
+}
+
 export const AreaFrame = memo(function AreaFrame({
   node,
   onFocus,
@@ -344,6 +370,9 @@ export const AreaFrame = memo(function AreaFrame({
             })}
           </PopupLayer>
         </div>
+
+        {/* 当前打开文件名（仅画布/笔记/表格；无文件不显示） */}
+        <AreaFileTitle view={node.view} />
 
         <div className="flex-1" />
 
