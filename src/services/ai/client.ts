@@ -22,7 +22,7 @@ import type {
   LlmToolCall,
 } from "@/types";
 import { withOverflowHint, toLlmError, isRetryableError, LlmError } from "./errors";
-import { computeRetryDelay, shouldRetry, sleep } from "./retry";
+import { computeRetryDelay, GIVE_UP_RETRY_MS, shouldRetry, sleep } from "./retry";
 
 /** 流式空闲超时：SSE 长时间无新 token 视为挂起（调用方据此自动中止降级，见 streaming.ts）。 */
 export const STREAM_IDLE_TIMEOUT_MS = 60_000;
@@ -210,7 +210,7 @@ export async function* streamRequest(
       const bodyText = await res.text().catch(() => "");
       const err = toLlmError(`HTTP ${res.status} (${url} | model: ${model}): ${bodyText}`, {
         status: res.status,
-        retryAfterMs: computeRetryDelay(0, res) ?? undefined,
+        retryAfterMs: computeRetryDelay(0, res),
       });
       throw err;
     }
@@ -411,7 +411,12 @@ export async function streamChat(
         const delayMs =
           e instanceof LlmError && e.retryAfterMs !== undefined
             ? e.retryAfterMs
-            : (computeRetryDelay(attempt, undefined) ?? 0);
+            : computeRetryDelay(attempt, undefined);
+        // 服务端要求等待超限（哨兵）→ 放弃重试直接判负，避免 <8s 退避连打长冷却服务器
+        if (delayMs === GIVE_UP_RETRY_MS) {
+          callbacks.onError(withOverflowHint(e));
+          return;
+        }
         retry?.onRetry?.(attempt + 1, delayMs);
         const waited = await sleep(delayMs, signal);
         if (!waited) {

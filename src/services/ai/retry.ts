@@ -9,6 +9,12 @@
 /** 服务端要求的重试延迟超过此值即放弃重试（服务器都觉得自己要挂 60s+ 不值得等）。 */
 const MAX_RETRY_DELAY_MS = 60_000;
 
+/**
+ * 放弃重试的哨兵值：`computeRetryDelay` 在服务端要求等待超限时返回；调用方遇之直接判负不再重试，
+ * 避免把「服务器要求等 120s」错当短退避连打（此前 null 放弃信号会被 `??` 吞掉）。
+ */
+export const GIVE_UP_RETRY_MS = -1;
+
 /** 重试上限初始退避基准（指数步长）。 */
 const BACKOFF_BASE_MS = 500;
 
@@ -39,9 +45,9 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<boolean> {
 
 /**
  * 重试延迟：优先服务端 retry-after 头（秒或 HTTP 日期），否则指数退避 0.5*2^n 秒 + 25% 抖动。
- * 延迟超出 MAX_RETRY_DELAY_MS 返回 null（调用方放弃本次重试）。
+ * 延迟超出 MAX_RETRY_DELAY_MS 返回 GIVE_UP_RETRY_MS（调用方放弃本次重试）。
  */
-export function computeRetryDelay(attempt: number, res?: Response): number | null {
+export function computeRetryDelay(attempt: number, res?: Response): number {
   if (res) {
     const raw = res.headers.get("retry-after");
     if (raw) {
@@ -51,7 +57,7 @@ export function computeRetryDelay(attempt: number, res?: Response): number | nul
         : Number.isFinite(Date.parse(raw))
           ? Math.max(0, Date.parse(raw) - Date.now())
           : NaN;
-      if (Number.isFinite(ms)) return ms > MAX_RETRY_DELAY_MS ? null : ms;
+      if (Number.isFinite(ms)) return ms > MAX_RETRY_DELAY_MS ? GIVE_UP_RETRY_MS : ms;
     }
   }
   const base = Math.min(BACKOFF_BASE_MS * 2 ** attempt, 8000);
