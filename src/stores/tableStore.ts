@@ -281,6 +281,8 @@ async function retryMergePersist(
   useTableStore.setState({ fields: mergedFieldsFinal, rows: mergedRowsFinal });
   lastSavedFields = disk.fields;
   lastSavedRows = disk.rows;
+  // 合并产物（远端磁盘内容 + 本端已广播增量）对房间已知：推进广播基线防其被重发全房
+  syncBroadcastBaseline();
   const result = await patchTableVault({
     file,
     tableId: disk.id,
@@ -409,14 +411,15 @@ const persistCtl = createPersistController<boolean>({
 function schedulePersist(): void {
   const st = useTableStore.getState();
   if (!st.tableFile) return;
-  // 协作实时广播：编辑即达（不等防抖落盘）。补丁 = 与落盘基线的引用 diff（幂等 LWW，
-  // 与磁盘合并语义一致，顺序变化经 order 携带）；applyRemotePatch 路径不调本函数 → 无广播回环。
+  // 协作实时广播：编辑即达（不等防抖落盘）。补丁 = 与广播基线的引用 diff（幂等 LWW，
+  // 与磁盘合并语义一致，顺序变化经 order 携带）。广播基线独立于落盘基线：远端已应用内容
+  // 推进广播基线后不再被重发全房；applyRemotePatch 路径不调本函数 → 无广播回环。
   if (collabBroadcast) {
     const patch = computeTablePatch({
       tableId: st.id,
       fields: st.fields,
       rows: st.rows,
-      lastSaved: { fields: lastSavedFields, rows: lastSavedRows },
+      lastSaved: { fields: broadcastBaselineFields, rows: broadcastBaselineRows },
     });
     if (patch) collabBroadcast(st.tableFile, patch);
   }
@@ -432,6 +435,12 @@ function schedulePersist(): void {
 let lastSavedFields: TableField[] = [];
 let lastSavedRows: TableRow[] = [];
 
+/** 协作广播基线：房间已看到的最新状态（本端已广播 + 已从远端应用）。
+ * 与落盘基线分离——远端已应用内容对房间是已知的，不得随本地增量重发（否则广播补丁持续膨胀）；
+ * 无远端补丁时恒等于落盘基线（无回归）。 */
+let broadcastBaselineFields: TableField[] = [];
+let broadcastBaselineRows: TableRow[] = [];
+
 /** 协作实时广播钩子（collabStore.init 注入，dispose 清空；null = 协作未启用）。 */
 let collabBroadcast: ((file: string, patch: TablePatch) => void) | null = null;
 
@@ -440,11 +449,21 @@ function reorderByIds<T extends { id: string }>(items: T[], order: string[]): T[
   return reorderByRank(items, new Map(order.map((id, i) => [id, i] as const)));
 }
 
-/** 把当前运行时 fields/rows 引用记为「已落盘基线」。 */
+/** 把当前运行时 fields/rows 引用记为「已落盘基线」；同时按同一内存态推进广播基线
+ * （加载/清空/保存成功三处收敛点共用，保证无远端补丁时广播基线恒等于落盘基线）。 */
 function syncLastSaved(): void {
   const s = useTableStore.getState();
   lastSavedFields = s.fields;
   lastSavedRows = s.rows;
+  syncBroadcastBaseline();
+}
+
+/** 把当前运行时 fields/rows 引用记为「协作广播基线」。应用远端补丁/冲突合并改写内存态后调用，
+ * 使该内容不再被当作本地增量重发全房（远端内容对房间是已知的）。 */
+function syncBroadcastBaseline(): void {
+  const s = useTableStore.getState();
+  broadcastBaselineFields = s.fields;
+  broadcastBaselineRows = s.rows;
 }
 
 /** 协作对端是否同表在线：其内存/撤销栈可能仍引用附件文件（共享盘文件多人共用），
@@ -948,5 +967,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
           st.selectedRowId && removedRowIds.has(st.selectedRowId) ? null : st.selectedRowId,
       };
     });
+    // 核心：远端已应用内容对房间已知，推进广播基线，避免被当作本地增量重发全房
+    syncBroadcastBaseline();
   },
 }));
