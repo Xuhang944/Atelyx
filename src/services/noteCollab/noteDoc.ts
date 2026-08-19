@@ -82,6 +82,8 @@ export function setNoteCollabBroadcast(b: NoteCollabBroadcast | null): void {
 interface Entry {
   doc: NoteDoc;
   viewCount: number;
+  /** 销毁/重建 doc 前清理其挂起定时器与 awareness（防切仓库/重建后旧 timer 把残留 awareness 发进新房间）。 */
+  cleanup: () => void;
 }
 
 const entries = new Map<string, Entry>();
@@ -97,7 +99,7 @@ export function setNoteCollabIdentity(file: string, user: { name: string; color:
   });
 }
 
-function createDoc(file: string, text: string): NoteDoc {
+function createDoc(file: string, text: string): { doc: NoteDoc; cleanup: () => void } {
   const ydoc = new Y.Doc();
   const ytext = ydoc.getText("text");
   // 以确定性 seed 客户端重建磁盘基线（而非本端随机 clientID 直接 insert）——
@@ -144,7 +146,16 @@ function createDoc(file: string, text: string): NoteDoc {
     ytext,
     awareness,
   };
-  return doc;
+  // 销毁时清理：awareness 定时器/待发状态 + awareness 本身（其 'update' 监听随之释放）
+  const cleanup = () => {
+    if (awareTimer !== null) {
+      clearTimeout(awareTimer);
+      awareTimer = null;
+    }
+    awarePending = null;
+    awareness.destroy();
+  };
+  return { doc, cleanup };
 }
 
 /** y-protocols sync 的 `update` 消息编码 = 消息类型头 + update bytes。 */
@@ -166,11 +177,12 @@ export function bindNoteDoc(file: string, text: string): NoteDoc {
     existing.viewCount += 1;
     return existing.doc;
   }
-  // 无激活编辑器：销毁旧 doc（其内部观察者随之释放），以磁盘基线重建
+  // 无激活编辑器：清理旧 doc（其挂起定时器/awareness/观察者随之释放），以磁盘基线重建
+  existing?.cleanup();
   existing?.doc.ydoc.destroy();
   entries.delete(file);
-  const doc = createDoc(file, text);
-  entries.set(file, { doc, viewCount: 1 });
+  const { doc, cleanup } = createDoc(file, text);
+  entries.set(file, { doc, viewCount: 1, cleanup });
   // 新 doc 首帧本地状态：广播 syncStep1（加入房间握手，索取对端全量状态）
   const encoder = encoding.createEncoder();
   writeSyncStep1(encoder, doc.ydoc);
@@ -219,6 +231,7 @@ export function receiveAwareness(file: string, payload: Uint8Array): void {
 /** 全部销毁（应用退出/切仓库清空协作上下文）。 */
 export function destroyAllNoteDocs(): void {
   for (const e of entries.values()) {
+    e.cleanup();
     e.doc.ydoc.destroy();
   }
   entries.clear();
