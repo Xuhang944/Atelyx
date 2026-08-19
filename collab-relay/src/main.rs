@@ -324,7 +324,11 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
                         }
                     }
                     "bye" => break,
-                    "ping" => continue,
+                    // 心跳回执：回 pong 广播（健康连接每 ≤25s 有人 ping，全员 lastMessageAt 刷新，
+                    // 前端据此 75s 静默即判半开假死主动重连；单人房间亦收到自己的 pong，无空转误判）
+                    "ping" => {
+                        let _ = btx.send(server_msg("pong", None, None, None, None, None, None));
+                    }
                     _ => continue,
                 }
             }

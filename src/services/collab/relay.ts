@@ -16,6 +16,8 @@ import type { CollabHello, CollabPeer, CollabPresence, TablePatch } from "@/type
 
 /** 心跳间隔：relay 侧 30s 无消息超时踢出，25s 发 ping 保活。 */
 const HEARTBEAT_MS = 25_000;
+/** 脱线阈值：连续 3 个心跳周期（75s）无任何服务端帧，判为半开假死连接，强制断开重连。 */
+const STALL_TIMEOUT_MS = HEARTBEAT_MS * 3;
 /** 断线重连退避：1s 起，翻倍，封顶 15s。 */
 const MAX_RETRY_MS = 15_000;
 /** 连通性测试（检查连接）等待 hello-ack 的超时。 */
@@ -114,6 +116,7 @@ export type CollabServerMessage =
   | { type: "table-patch"; peerId: number; file: string; patch: TablePatch }
   | { type: "note-sync"; peerId: number; file: string; payload: string }
   | { type: "note-aware"; peerId: number; file: string; payload: string }
+  | { type: "pong" }
   | { type: "error"; message: string };
 
 export interface CollabRelayHandle {
@@ -157,6 +160,7 @@ export function connectCollabRelay(opts: CollabRelayOptions): CollabRelayHandle 
   let retryDelay = 1000;
   let retryTimer: number | null = null;
   let heartbeatTimer: number | null = null;
+  let lastMessageAt = Date.now(); // 最近一次收到服务端帧的时间（含 pong/peers/presence 等）
 
   function open(): void {
     try {
@@ -173,10 +177,17 @@ export function connectCollabRelay(opts: CollabRelayOptions): CollabRelayHandle 
       heartbeatTimer = window.setInterval(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "ping" }));
+          // 半开连接检测：无任何服务端帧超阈值（服务端假死但 TCP 未断）→ 主动断开触发重连，
+          // 否则 onStatusChange 永远停在已连接、presence 陈旧。ping 后服务端必回 pong，
+          // 健康连接不会误判（广播 pong 亦刷新本端 lastMessageAt）。
+          if (Date.now() - lastMessageAt > STALL_TIMEOUT_MS) {
+            ws.close();
+          }
         }
       }, HEARTBEAT_MS);
     };
     ws.onmessage = (e) => {
+      lastMessageAt = Date.now();
       let msg: CollabServerMessage;
       try {
         msg = JSON.parse(e.data);
@@ -192,7 +203,9 @@ export function connectCollabRelay(opts: CollabRelayOptions): CollabRelayHandle 
         opts.onNoteSync(msg.peerId, msg.file, msg.payload);
       else if (msg.type === "note-aware")
         opts.onNoteAware(msg.peerId, msg.file, msg.payload);
-      else if (msg.type === "error") opts.onServerError(msg.message);
+      else if (msg.type === "pong") {
+        // 保活回执：仅刷新 lastMessageAt（staleness 检测用），无其他副作用
+      } else if (msg.type === "error") opts.onServerError(msg.message);
     };
     ws.onerror = () => ws?.close(); // 收尾统一走 onclose
     ws.onclose = () => {
