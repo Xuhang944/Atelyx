@@ -10,10 +10,23 @@
  * 多面积打开同一笔记共享同一 `Y.Doc` 实例（per-file 单例引用计数），避免多 doc 分叉。
  * 本模块为纯数据/同步层：网络收发经 collabStore 注入的广播钩子完成，不直连 relay。
  *
- * 同步协议（y-protocols sync，经 JSON base64 传输）：
- * - 加入房间广播 `syncStep1`（状态向量）；对端收到回 `syncStep2`（全量状态）。
- * - 之后本地编辑产生的增量 update 直接广播；对端 `syncStep2`/`update` 合入（origin=远端，
- *   不回发——本端已知该状态，防回环）。
+ * # 磁盘基线收敛（防重开翻倍）
+ *
+ * 幂等仅在所有对端把全文放进同一个 seed 基线（固定 `clientID=1`、确定性字节）时成立。
+ * 重开对端把「已合并磁盘全文」塞进新的 seed 基线，与「在线端旧基线 + 真实 cid 编辑」的
+ * 拓扑相加即翻倍。机制：
+ * - 每 entry 记录权威 `diskBaseline` 与最近落盘 `lastFlushed`（clean = doc 文本 == lastFlushed）。
+ * - 重开（bindNoteDoc viewCount 0）：以磁盘重建 doc（client1=disk），先广播 `BASELINE_RESET(disk)`
+ *   再发 syncStep1，让房间先行收敛到磁盘权威基线后（有序广播）再握手换状态，避免翻倍。
+ * - 收到 `BASELINE_RESET(diskR)`：与本地 diskBaseline 相同 → no-op（防环）；不同 → 收敛：
+ *   clean（无未落盘编辑）→ 整体重建 doc 为 client1=diskR（destroy + 新实例，编辑器随 binding
+ *   引用变化自动重绑）；dirty（正在输入）→ 挂起 pendingBaseline，实时编辑照常，待落盘
+ *   （markNoteDiskWrite）后以「较新的磁盘文本」收敛，不丢最后协作者版本。
+ * - 收敛/重建后重发 RESET + syncStep1 与房间重新收敛；同基线 exchange 幂等（确定性 seed）。
+ *
+ * 残余说明：本机制依赖「RESET 在握手之前先到」的有序广播（relay 按发送顺序转发）。极端场景
+ * 「A 正在输入的同一瞬间 B 重开」，A 挂起期间仍以旧拓扑广播增量，B（新基线）合入可能位置失真；
+ * 该场景稀薄，且待 A 落盘后经 markNoteDiskWrite 以最新磁盘文本收敛自愈，不静默覆盖磁盘。
  */
 import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness";
@@ -42,11 +55,15 @@ const AWARE_THROTTLE_MS = 100;
  */
 const BASELINE_SEED_CLIENT_ID = 1;
 
+/** 消息 opcode：磁盘基线重置通告（文本为权威基线全文，UTF-8 varString）。 */
+const MESSAGE_BASELINE_RESET = 0x42;
+
 /**
  * 以固定 seed 客户端把磁盘正文编码成一个确定的 Yjs update：
  * 各对端对同一正文生成字节相同的基线 struct，`applyUpdate` 合并幂等，无重复。
+ * 导出仅供测试锁定幂等契约（同文本不翻倍；异文本不产生重复）。
  */
-function baselineSeedUpdate(text: string): Uint8Array {
+export function baselineSeedUpdate(text: string): Uint8Array {
   const seed = new Y.Doc();
   seed.clientID = BASELINE_SEED_CLIENT_ID;
   seed.getText("text").insert(0, text);
@@ -73,15 +90,31 @@ export interface NoteCollabBroadcast {
 
 let broadcast: NoteCollabBroadcast | null = null;
 
+/** doc 实例被整体重建后通知 store 刷新 binding（service 不 import store，靠回调反哺）。 */
+let onBindingRefresh: ((file: string, doc: NoteDoc) => void) | null = null;
+
 /** collabStore 注入/解除网络广播钩子（协作开关切换时调用）。 */
 export function setNoteCollabBroadcast(b: NoteCollabBroadcast | null): void {
   broadcast = b;
+}
+
+/** 注册 doc 重建后的 binding 刷新回调（noteCollabStore 注入，用于更新 bindings[file] 触发编辑器重绑）。 */
+export function setNoteCollabBindingRefresh(
+  fn: ((file: string, doc: NoteDoc) => void) | null,
+): void {
+  onBindingRefresh = fn;
 }
 
 /** 每文件单例注册表（Y.Doc 生命周期）。 */
 interface Entry {
   doc: NoteDoc;
   viewCount: number;
+  /** 权威磁盘基线文本（本端当前持有的 seed 基线）。 */
+  diskBaseline: string;
+  /** 最近一次落盘/seed 的文本（clean = doc 文本 == lastFlushed）。 */
+  lastFlushed: string;
+  /** 收到更新的权威基线但因 dirty 挂起，待 clean 后收敛。 */
+  pendingBaseline: string | null;
   /** 销毁/重建 doc 前清理其挂起定时器与 awareness（防切仓库/重建后旧 timer 把残留 awareness 发进新房间）。 */
   cleanup: () => void;
 }
@@ -118,7 +151,7 @@ function createDoc(file: string, text: string): { doc: NoteDoc; cleanup: () => v
   // 本端 awareness（光标/选中/身份）变更 → 节流编码广播（光标/选中高频变化合并，防刷屏 relay）；
   // 远端应用（origin=remote）不再回发
   let awarePending: { payload: Uint8Array } | null = null;
-  let awareTimer: number | null = null;
+  let awareTimer: ReturnType<typeof setTimeout> | null = null;
   awareness.on(
     "update",
     (
@@ -130,7 +163,7 @@ function createDoc(file: string, text: string): { doc: NoteDoc; cleanup: () => v
       if (changed.length === 0 || !broadcast) return;
       awarePending = { payload: encodeAwarenessUpdate(awareness, changed) };
       if (awareTimer !== null) return;
-      awareTimer = window.setTimeout(() => {
+      awareTimer = setTimeout(() => {
         awareTimer = null;
         if (awarePending && broadcast) {
           broadcast.sendAwareness(file, awarePending.payload);
@@ -166,10 +199,58 @@ function writeUpdateHeader(update: Uint8Array): Uint8Array {
   return encoding.toUint8Array(encoder);
 }
 
+/** 磁盘基线重置通告消息 = MESSAGE_BASELINE_RESET + 权威基线全文（UTF-8）。 */
+function writeBaselineResetHeader(text: string): Uint8Array {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, MESSAGE_BASELINE_RESET);
+  encoding.writeVarString(encoder, text);
+  return encoding.toUint8Array(encoder);
+}
+
+/** 整体重建 entry 的 doc 到权威基线 baselineText（调用方保证 clean 或已决定重建）。 */
+function rebuildEntryToBaseline(e: Entry, baselineText: string): void {
+  e.cleanup();
+  e.doc.ydoc.destroy();
+  const { doc, cleanup } = createDoc(e.doc.file, baselineText);
+  e.doc = doc;
+  e.cleanup = cleanup;
+  e.diskBaseline = baselineText;
+  e.lastFlushed = baselineText;
+  e.pendingBaseline = null;
+  // store 侧刷新 binding → NoteEditor 重 render → MarkdownEditor 随 collab 引用变化自动重绑
+  onBindingRefresh?.(e.doc.file, doc);
+  // 重建后与房间重新收敛（确定性 seed 幂等）
+  if (broadcast) {
+    broadcast.sendSyncMessage(e.doc.file, writeBaselineResetHeader(baselineText));
+    const encoder = encoding.createEncoder();
+    writeSyncStep1(encoder, e.doc.ydoc);
+    broadcast.sendSyncMessage(e.doc.file, encoding.toUint8Array(encoder));
+  }
+}
+
+/**
+ * 处理磁盘基线重置通告：收敛到磁盘权威基线。
+ * - 与本地相同 → no-op（幂等防环）。
+ * - clean → 整体重建到通告基线；dirty（正在输入）→ 挂起 pendingBaseline，实时编辑不受影响，
+ *   待落盘（markNoteDiskWrite）后以「较新的磁盘文本」收敛（不丢最后协作者版本）。
+ */
+function handleBaselineReset(file: string, diskText: string): void {
+  const e = entries.get(file);
+  if (!e) return;
+  if (e.diskBaseline === diskText) return;
+  if (e.doc.ytext.toString() !== e.lastFlushed) {
+    // 正在输入（未落盘差异）：挂起；若本地落盘推进了磁盘，则以更新文本收敛而非旧通告
+    e.pendingBaseline = diskText;
+    return;
+  }
+  rebuildEntryToBaseline(e, diskText);
+}
+
 /**
  * 打开并绑定笔记文档：有激活编辑器（多面积共享）时复用现有 doc；
  * 无激活时以磁盘正文 text 重置基线（快照）后返回。调用方应在编辑器挂载时调用（refCount++）。
  * 传入的 text 为 LF 规范化后的全文（调用方保证）。
+ * 重开时先广播 BASELINE_RESET 让房间收敛到磁盘权威基线，再发 syncStep1 握手。
  */
 export function bindNoteDoc(file: string, text: string): NoteDoc {
   const existing = entries.get(file);
@@ -182,8 +263,9 @@ export function bindNoteDoc(file: string, text: string): NoteDoc {
   existing?.doc.ydoc.destroy();
   entries.delete(file);
   const { doc, cleanup } = createDoc(file, text);
-  entries.set(file, { doc, viewCount: 1, cleanup });
-  // 新 doc 首帧本地状态：广播 syncStep1（加入房间握手，索取对端全量状态）
+  entries.set(file, { doc, viewCount: 1, cleanup, diskBaseline: text, lastFlushed: text, pendingBaseline: null });
+  // 先广播磁盘权威基线（对端据此收敛，防重开塞入的新 seed 基线翻倍），再握手
+  broadcast?.sendSyncMessage(file, writeBaselineResetHeader(text));
   const encoder = encoding.createEncoder();
   writeSyncStep1(encoder, doc.ydoc);
   broadcast?.sendSyncMessage(file, encoding.toUint8Array(encoder));
@@ -197,13 +279,56 @@ export function unbindNoteDoc(file: string): void {
   e.viewCount = Math.max(0, e.viewCount - 1);
 }
 
+/** 协作态本端落盘完成登记：以当前 ytext（正文）推进 lastFlushed；若既有挂起基线 → 以最新磁盘权威收敛（不丢最后协作者版本）。 */
+export function markNoteDiskWrite(file: string): void {
+  const e = entries.get(file);
+  if (!e) return;
+  // 只记正文（ytext）而非调用方全文——磁盘含 frontmatter/CRLF，ytext 仅 LF 正文，不能直接比
+  e.lastFlushed = e.doc.ytext.toString();
+  const pending = e.pendingBaseline;
+  if (!pending) return;
+  // 本地刚落盘文本若已推进（≠ 挂起旧通告），以本地更新文本为权威（保留在线端输入）；否则以挂起通告为权威
+  const target = e.lastFlushed !== pending ? e.lastFlushed : pending;
+  if (e.doc.ytext.toString() === target) {
+    e.pendingBaseline = null;
+    rebuildEntryToBaseline(e, target);
+  }
+  // 仍 dirty（落盘后又输入）：保留 pendingBaseline，下次落盘再收敛（不吞未落盘输入）
+}
+
 /**
- * 合入远端 sync 消息（y-protocols 编码：step1/step2/update）。
- * step1 要求回复 step2（全量状态）——编码输出广播给房间（幂等收敛，对端请求者应用）。
+ * 合入远端 sync 消息。
+ * - `MESSAGE_BASELINE_RESET`：解析权威基线全文，收敛到磁盘基线（见 handleBaselineReset）。
+ * - 普通 y-protocols 消息：按既有逻辑经 readSyncMessage 合入。本实现依赖「重开端在握手前先广播
+ *   BASELINE_RESET（relay 按发送顺序转发，端点先收敛再换状态）」保证不翻倍——即不在普通消息里
+ *   做 seed 基线消歧（那需要解析 update 内部 struct，脆弱）。乱序/键入期间到达的异基线内容会
+ *   在后续收敛（A 落盘后 markNoteDiskWrite 以最新磁盘收敛，B 再采纳）中自愈，见文件头残余说明。
+ * - step1 要求回复 step2（全量状态）——编码输出广播给房间（幂等收敛，对端请求者应用）。
  */
 export function receiveSyncMessage(file: string, payload: Uint8Array): void {
   const e = entries.get(file);
   if (!e) return;
+  // 先识别是否基线重置通告
+  let first = -1;
+  try {
+    const d = decoding.createDecoder(payload);
+    first = decoding.readVarUint(d);
+  } catch {
+    return;
+  }
+  if (first === MESSAGE_BASELINE_RESET) {
+    let diskText = "";
+    try {
+      const d = decoding.createDecoder(payload);
+      decoding.readVarUint(d);
+      diskText = decoding.readVarString(d);
+    } catch {
+      return;
+    }
+    handleBaselineReset(file, diskText);
+    return;
+  }
+  // 普通 y-protocols sync 消息：按标准流程合入（见函数头部说明，不在普通消息做 seed 消歧）
   const decoder = decoding.createDecoder(payload);
   const encoder = encoding.createEncoder();
   let replyNeeded = false;

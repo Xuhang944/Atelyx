@@ -368,6 +368,8 @@ export function NoteEditor({ file }: { file: string }) {
         void saveNoteContent(file, v)
           .then(() => {
             lastSavedRef.current = v;
+            // 协作态落盘完成：通知磁盘基线收敛（重建 doc 的挂起复位，见 noteDoc#markNoteDiskWrite）
+            useNoteCollabStore.getState().notifyNoteDiskWrite(file);
             if (seq === saveSeqRef.current) dirtyRef.current = false;
             if (mountedRef.current && seq === saveSeqRef.current) setSaveStatus("saved");
             // 记录编辑存档点（60s 内连续编辑合并为一版，不逐键）

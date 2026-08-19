@@ -14,6 +14,8 @@ import {
   bindNoteDoc,
   unbindNoteDoc,
   setNoteCollabIdentity,
+  markNoteDiskWrite,
+  setNoteCollabBindingRefresh,
   destroyAllNoteDocs,
 } from "@/services/noteCollab/noteDoc";
 
@@ -38,6 +40,8 @@ interface NoteCollabState {
   bind: (file: string, textLF: string, identity: NoteCollabIdentity) => NoteCollabBinding;
   /** 解绑：释放一个引用（多面积各释放一次）；协作文档仍留注册表保留远端状态。 */
   unbind: (file: string) => void;
+  /** 协作态落盘完成通知：驱动磁盘基线收敛（重建 doc 的挂起复位）。 */
+  notifyNoteDiskWrite: (file: string) => void;
   /** 应用退出/切仓库：清空全部协作文档上下文。 */
   clear: () => void;
 }
@@ -62,8 +66,19 @@ export const useNoteCollabStore = create<NoteCollabState>((set) => ({
     });
   },
 
+  notifyNoteDiskWrite: (file) => {
+    markNoteDiskWrite(file);
+  },
+
   clear: () => {
     destroyAllNoteDocs();
     set({ bindings: {} });
   },
 }));
+
+// doc 被磁盘基线收敛整体重建后刷新 binding（新 ytext/awareness），触发编辑器随 collab 引用变化重绑。
+setNoteCollabBindingRefresh((file, doc) => {
+  useNoteCollabStore.setState((s) => ({
+    bindings: { ...s.bindings, [file]: { ytext: doc.ytext, awareness: doc.awareness } },
+  }));
+});
