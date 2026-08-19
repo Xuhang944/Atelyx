@@ -6,7 +6,8 @@
  * - undo()/redo()：弹栈并 apply；副作用（中止流、撤销后落盘）由调用方包装层处理
  * - clear()：切换文件/画布时清空两栈（快照含文件内容，混用会串文件污染撤销）
  *
- * 快照/应用由各 store 传入（structuredClone 的代价由快照语义承担，同画布历史实现）。
+ * 快照/应用由各 store 传入（各 store 均为不可变更新，引用即快照、零拷贝，不做 deep clone）；
+ * clear() 在切换画布/表格时清空两栈，防快照含旧文件内容串文件污染撤销。
  */
 export interface UndoManager {
   push(): void;
