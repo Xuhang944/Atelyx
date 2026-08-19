@@ -6,6 +6,7 @@
 //! 边界捕获：非 http/https 拒绝、网络/HTTP 错误返回 Err，前端 `fetchWeb` 降级为错误文本。
 
 use reqwest::header::{ACCEPT, USER_AGENT};
+use reqwest::Url;
 use serde::Serialize;
 
 /// 抓取响应上限（字节）。防超大页面/二进制拖死请求，超出即截断。
@@ -26,6 +27,32 @@ pub struct FetchedWebPage {
 pub async fn fetch_web(url: String) -> Result<FetchedWebPage, String> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
         return Err("仅支持 http/https 网址".to_string());
+    }
+    // SSRF 防护：拒绝内网/回环/链路本地地址，防网页内嵌指令诱导 AI 抓取云元数据(169.254.169.254)、
+    // 127.0.0.*、内网服务等目标并回填 LLM 上下文外泄数据。
+    // 限制：域名 + DNS rebinding（解析后将内网 IP 返回）场景未做全量地址验证，仍封堵 IP 字面量主通路。
+    let parsed = Url::parse(&url).map_err(|e| format!("URL 解析失败：{e}"))?;
+    let host = parsed.host_str().ok_or_else(|| "无效 URL host".to_string())?;
+    if host.eq_ignore_ascii_case("localhost") {
+        return Err("拒绝访问 localhost（SSRF 防护）".to_string());
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let blocked = match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified() || v4.is_broadcast()
+            }
+            std::net::IpAddr::V6(v6) => {
+                // 封堵回环/未指定/唯一本地(ULA fc00::/7)/link-local(fe80::/10)/IPv4-mapped(可伪装内网 v4)
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_unique_local()
+                    || (v6.segments()[0] & 0xffc0) == 0xfe80
+                    || v6.to_ipv4_mapped().is_some()
+            }
+        };
+        if blocked {
+            return Err("拒绝访问内网/回环/链路本地地址（SSRF 防护）".to_string());
+        }
     }
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
