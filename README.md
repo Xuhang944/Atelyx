@@ -146,7 +146,7 @@ pnpm run tauri:build # 打包
 | 画布 | React Flow |
 | 状态 | Zustand |
 | 样式 | TailwindCSS + lucide-react |
-| Markdown | react-markdown（GFM / 代码高亮 / KaTeX 数学公式 / 防 XSS）；CodeMirror 6 实时预览编辑 |
+| Markdown | react-markdown；CodeMirror 6 实时预览编辑 |
 | 存储 | 文件化仓库（无数据库）+ `notify` 实时监听外部编辑 |
 | AI | OpenAI 兼容多供应商，前端直连 SSE 流式；API key 存 OS keychain |
 | 搜索 | Tavily API + SearXNG 自建实例 |
