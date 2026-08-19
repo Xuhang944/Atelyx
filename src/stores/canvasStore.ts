@@ -28,7 +28,7 @@ import { toLlmMessages } from "@/services/ai/client";
 import { abortAutoTitle } from "@/services/ai/autoTitle";
 import { runSearch, resultsToText } from "@/services/search";
 import { runAgentTools, buildAgentTools } from "@/services/ai/tools";
-import { readVaultFile, writeVaultFile, editVaultFile } from "@/services/vault/aiFiles";
+import { readVaultFileWindow, writeVaultFile, editVaultFile } from "@/services/vault/aiFiles";
 import { fetchWeb } from "@/services/web";
 import {
   findFreeSpot,
@@ -922,7 +922,7 @@ async function runStream(conversationId: string): Promise<void> {
             signal: controller.signal,
             capabilities: {
               search: (query) => runSearch(useSettingsStore.getState().searchConfig, query),
-              readFile: readVaultFile,
+              readFile: (path, opts) => readVaultFileWindow(path, opts),
               writeFile: (path, content) => writeVaultFile(path, content).then(() => ({ ok: true, summary: `已写入「${path}」` })),
               editFile: editVaultFile,
               fetchUrl: fetchWeb,

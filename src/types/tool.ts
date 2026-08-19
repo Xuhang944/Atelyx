@@ -28,12 +28,30 @@ export interface ToolResult {
   data?: unknown;
 }
 
+/** read_file 分页窗口的一行（number = 文件内 1-based 绝对行号）。 */
+export interface ReadWindowLine {
+  number: number;
+  text: string;
+}
+
+/** read_file 分页窗口结果（对应 Rust `read_vault_file_window`，camelCase 序列化）。 */
+export interface ReadWindowResult {
+  lines: ReadWindowLine[];
+  /** 文件精确总行数（页脚引导用，即便窗口未读全）。 */
+  totalLines: number;
+  /** 单次返回是否命中字节预算被截断（模型应继续分页/缩小窗口）。 */
+  truncated: boolean;
+}
+
 /** 工具执行所需的能力缝（由调用方注入；工具依赖此而非 store）。 */
 export interface ToolCapabilities {
   /** 联网搜索（依赖搜索源配置）。 */
   search?: (query: string) => Promise<SearchResultData>;
-  /** 读仓库内任意文本文件，返回正文。 */
-  readFile?: (path: string) => Promise<string>;
+  /** 分页读仓库内任意文本文件：返回带绝对行号的窗口（offset 1-based 默认 1；limit 默认见常量）。 */
+  readFile?: (
+    path: string,
+    opts?: { offset?: number; limit?: number },
+  ) => Promise<ReadWindowResult>;
   /** 写仓库内任意文本文件（指定相对路径，直接落盘）。 */
   writeFile?: (path: string, content: string) => Promise<{ ok: boolean; summary: string }>;
   /** 行级修改仓库内任意文本文件（oldText 唯一匹配）。 */

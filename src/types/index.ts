@@ -121,6 +121,8 @@ export {
   type ToolExecContext,
   type ToolDefinition,
   type ToolExecResult,
+  type ReadWindowLine,
+  type ReadWindowResult,
 } from "./tool";
 
 export type {

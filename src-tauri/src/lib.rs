@@ -42,6 +42,7 @@ pub fn run() {
             commands::vault::rebuild_internal_links,
             commands::vault::write_note,
             commands::vault::read_vault_file,
+            commands::vault::read_vault_file_window,
             commands::vault::write_vault_file,
             commands::vault::read_whiteboard_canvas,
             commands::vault::rename_note,

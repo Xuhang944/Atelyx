@@ -19,7 +19,7 @@ import {
 } from "./streaming";
 import { runAgentTools, buildAgentTools } from "@/services/ai/tools";
 import { runSearch } from "@/services/search";
-import { readVaultFile, writeVaultFile, editVaultFile } from "@/services/vault/aiFiles";
+import { readVaultFileWindow, writeVaultFile, editVaultFile } from "@/services/vault/aiFiles";
 import { fetchWeb } from "@/services/web";
 import { prefix, scanMentionHits } from "@/utils/text";
 import { appendNarration, appendReasoning, mergeToolRuns, promoteLastNarration, toolRunsOf } from "@/utils/agentSteps";
@@ -697,7 +697,7 @@ async function runExchange(
         signal: controller.signal,
         capabilities: {
           search: (query) => runSearch(useSettingsStore.getState().searchConfig, query),
-          readFile: readVaultFile,
+          readFile: (path, opts) => readVaultFileWindow(path, opts),
           writeFile: (path, content) => writeVaultFile(path, content).then(() => ({ ok: true, summary: `已写入「${path}」` })),
           editFile: editVaultFile,
           fetchUrl: fetchWeb,

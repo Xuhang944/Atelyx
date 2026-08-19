@@ -38,6 +38,17 @@ use crate::vault::{
     ChatSegment, DeleteFolderResult, EditorChatsFile, FileTreeNode, VaultConfig, VaultState,
     WikiIndex, CANVAS_SCHEMA, query_wiki_backlinks,
 };
+
+/// read_file 分页窗口的默认/上限参数（对齐 DSH tool-fs 口径）：
+/// - READ_WINDOW_MAX_LINE_CHARS：单行字符上限，超长截断并附后缀
+/// - READ_WINDOW_MAX_BYTES：单次返回字节预算，超限停加行并标记 truncated（不硬拒，模型可翻页）
+/// - READ_WINDOW_DEFAULT_LINES：默认/单次最大返回行数
+const READ_WINDOW_DEFAULT_LINES: usize = 2000;
+const READ_WINDOW_MAX_LINE_CHARS: usize = 2000;
+const READ_WINDOW_MAX_BYTES: usize = 200_000;
+/// edit_file 等内部「整读全文再改」路径的宽松防御上限（防对超大文件整读回填上下文拖死；
+/// 非强制拒绝，仅防病态输入）。分页工具 read_file 走 read_vault_file_window，不受此限。
+const EDIT_READ_MAX_BYTES: usize = 5_000_000;
 use crate::watcher;
 
 /// `open_vault` 返回的仓库信息。
@@ -421,16 +432,25 @@ pub fn write_note(
     write_note_file(&root, &file, &content)
 }
 
-/// 读仓库内任意文本文件（安全边界 = 仓库根，safe_join 校验；非 UTF-8 返回替换字符容错）。
-/// AI read_file 等通用文件工具的后端。
+/// 读仓库内任意文本文件全文（安全边界 = 仓库根，safe_join 校验；非 UTF-8 返回替换字符容错）。
+/// edit_file / 笔记历史等「整读全文再改」路径的后端。超过 EDIT_READ_MAX_BYTES 拒绝，
+/// 防对超大文件整读回填上下文拖死前端。分页查看走 read_vault_file_window。
 #[tauri::command]
 pub fn read_vault_file(file: String, state: State<'_, VaultState>) -> Result<String, String> {
     let root = state.root()?;
-    read_note_file(&root, &file)
+    let content = read_note_file(&root, &file)?;
+    if content.len() > EDIT_READ_MAX_BYTES {
+        return Err(format!(
+            "文件过大（>{}MB），拒绝整读回填；如需查看请用分页读取",
+            EDIT_READ_MAX_BYTES / 1_000_000
+        ));
+    }
+    Ok(content)
 }
 
 /// 写仓库内任意文本文件（指定相对路径；原子写 + 自动建父目录）。
-/// AI write_file/edit_file 等通用文件工具的后端。
+/// AI write_file/edit_file 等通用文件工具的后端。不做字节硬上限（内容受模型输出 token 天然约束；
+/// 路径安全由 safe_join 保障），对齐 DSH 语义。
 #[tauri::command]
 pub fn write_vault_file(
     file: String,
@@ -439,6 +459,104 @@ pub fn write_vault_file(
 ) -> Result<(), String> {
     let root = state.root()?;
     write_note_file(&root, &file, &content)
+}
+
+// ===== AI read_file 分页窗口 =====
+
+/// read_file 分页窗口的一行（number = 文件内 1-based 绝对行号）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadWindowLine {
+    pub number: usize,
+    pub text: String,
+}
+
+/// read_file 分页窗口结果。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadWindowResult {
+    pub lines: Vec<ReadWindowLine>,
+    /// 文件精确总行数（页脚引导翻页用，即便未读全）。
+    pub total_lines: usize,
+    /// 单次返回是否命中字节预算被截断（模型应继续分页/缩小窗口）。
+    pub truncated: bool,
+}
+
+/// 分页读取参数（offset 1-based 默认 1；limit 默认/上限 READ_WINDOW_DEFAULT_LINES）。
+struct ReadWindowRequest {
+    offset: usize,
+    limit: usize,
+}
+
+/// 读仓库内任意文本文件的分页窗口（安全边界 = 仓库根，safe_join 校验；非 UTF-8 返回替换字符容错）。
+/// AI read_file 工具后端：按 offset/limit 取带绝对行号的窗口，单行按字符上限截断、单次返回受字节
+/// 预算约束并在超限时标记 truncated；恒返回精确 totalLines 供模型翻页——不硬拒大文件。
+#[tauri::command]
+pub fn read_vault_file_window(
+    file: String,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    state: State<'_, VaultState>,
+) -> Result<ReadWindowResult, String> {
+    let root = state.root()?;
+    let content = read_note_file(&root, &file)?;
+    let request = ReadWindowRequest {
+        offset: offset.unwrap_or(1).max(1),
+        limit: limit.unwrap_or(READ_WINDOW_DEFAULT_LINES).min(READ_WINDOW_DEFAULT_LINES),
+    };
+    Ok(build_read_window(
+        &content,
+        request,
+        READ_WINDOW_MAX_LINE_CHARS,
+        READ_WINDOW_MAX_BYTES,
+    ))
+}
+
+/// 纯函数：从整文构建分页窗口（命令与单测共用）。逐行处理：剥离尾 `\r`、统计精确 totalLines、
+/// 超长单行按 line_chars 截断并附后缀、累积字节超 max_bytes 停并标 truncated。offset 越界返回空窗口。
+fn build_read_window(
+    content: &str,
+    request: ReadWindowRequest,
+    line_chars: usize,
+    max_bytes: usize,
+) -> ReadWindowResult {
+    let mut lines: Vec<ReadWindowLine> = Vec::new();
+    let mut total_lines = 0usize;
+    let mut out_bytes = 0usize;
+    let mut truncated = false;
+
+    // split_terminator：按 '\n' 切但省略尾部终止符产生的空段——'a\nb\n' 与 'a\nb' 都精确为 2 行，
+    // 空文件 0 行，杜绝把尾部换行数成幽灵行（DSH 语义一致）。
+    for raw in content.split_terminator('\n') {
+        total_lines += 1;
+        if truncated || total_lines < request.offset || lines.len() >= request.limit {
+            continue;
+        }
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        let text = if line.chars().count() > line_chars {
+            let head: String = line.chars().take(line_chars).collect();
+            format!("{head}... (line truncated to {line_chars} chars)")
+        } else {
+            line.to_string()
+        };
+        // +1 为换行符本身；文本行不含换行，页脚按行文本估算尺寸
+        let bytes = text.len() + 1;
+        if out_bytes + bytes > max_bytes {
+            truncated = true;
+            continue;
+        }
+        out_bytes += bytes;
+        lines.push(ReadWindowLine {
+            number: total_lines,
+            text,
+        });
+    }
+
+    ReadWindowResult {
+        lines,
+        total_lines,
+        truncated,
+    }
 }
 
 /// 重命名 .md 笔记 + 扫描所有 .atlx 更新 text 节点 file 引用 + 扫描所有 .md 更新内部链接（链接维护）。
@@ -1051,4 +1169,81 @@ fn remap_dir_refs_in_canvas(canvas: &mut CanvasFile, old_dir: &str, new_dir: &st
         }
     }
     changed
+}
+
+#[cfg(test)]
+mod read_window_tests {
+    use super::*;
+
+    fn req(offset: usize, limit: usize) -> ReadWindowRequest {
+        ReadWindowRequest { offset, limit }
+    }
+
+    #[test]
+    fn window_selects_offset_and_limit() {
+        let r = build_read_window("a\nb\nc\nd", req(2, 2), 2000, 200_000);
+        assert_eq!(r.total_lines, 4);
+        assert_eq!(r.lines.len(), 2);
+        assert_eq!(r.lines[0].number, 2);
+        assert_eq!(r.lines[0].text, "b");
+        assert_eq!(r.lines[1].number, 3);
+        assert_eq!(r.lines[1].text, "c");
+        assert!(!r.truncated);
+    }
+
+    #[test]
+    fn line_numbering_is_absolute_from_offset() {
+        let r = build_read_window("x\ny\nz", req(1, 10), 2000, 200_000);
+        let nums: Vec<usize> = r.lines.iter().map(|l| l.number).collect();
+        assert_eq!(nums, vec![1, 2, 3]);
+        assert_eq!(r.total_lines, 3);
+    }
+
+    #[test]
+    fn truncates_overlong_line_with_suffix() {
+        let long = "a".repeat(30);
+        let r = build_read_window(&long, req(1, 10), 10, 200_000);
+        assert_eq!(r.lines.len(), 1);
+        assert_eq!(r.lines[0].number, 1);
+        assert_eq!(r.lines[0].text, "aaaaaaaaaa... (line truncated to 10 chars)");
+        assert_eq!(r.total_lines, 1);
+        assert!(!r.truncated);
+    }
+
+    #[test]
+    fn byte_budget_marks_truncated() {
+        // 每行 11 字节（10 字符 + 换行），预算 33 仅容纳 3 行，第 4 行触发 truncated
+        let content = ["0123456789"; 6].join("\n");
+        let r = build_read_window(&content, req(1, 10), 2000, 33);
+        assert_eq!(r.lines.len(), 3);
+        assert_eq!(r.total_lines, 6);
+        assert!(r.truncated);
+        assert_eq!(r.lines[0].number, 1);
+        assert_eq!(r.lines[2].number, 3);
+    }
+
+    #[test]
+    fn strips_trailing_carriage_return() {
+        let r = build_read_window("a\r\nb\r\nc", req(1, 10), 2000, 200_000);
+        assert_eq!(r.lines[0].text, "a");
+        assert_eq!(r.lines[1].text, "b");
+        assert_eq!(r.lines[2].text, "c");
+        assert_eq!(r.total_lines, 3);
+    }
+
+    #[test]
+    fn total_lines_counts_with_and_without_trailing_newline() {
+        // 尾换行不产生幽灵空行；空文件为 0 行（与 DSH 语义一致）
+        assert_eq!(build_read_window("a\nb", req(1, 10), 2000, 200_000).total_lines, 2);
+        assert_eq!(build_read_window("a\nb\n", req(1, 10), 2000, 200_000).total_lines, 2);
+        assert_eq!(build_read_window("", req(1, 10), 2000, 200_000).total_lines, 0);
+    }
+
+    #[test]
+    fn offset_beyond_eof_returns_empty_window() {
+        let r = build_read_window("a\nb\nc", req(10, 10), 2000, 200_000);
+        assert!(r.lines.is_empty());
+        assert_eq!(r.total_lines, 3);
+        assert!(!r.truncated);
+    }
 }

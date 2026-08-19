@@ -7,11 +7,26 @@
  *   按路径定位（通用，不只 .md），复用笔记行级替换的校验语义。
  */
 import { invoke } from "@tauri-apps/api/core";
+import { READ_WINDOW_DEFAULT_LINES } from "@/constants/tools";
+import type { ReadWindowResult } from "@/types";
 import { recordNoteDiskContent } from "./index";
 
 /** 读仓库内任意文本文件（相对仓库根路径；超出仓库根/不存在抛错，由调用方降级）。 */
 export async function readVaultFile(file: string): Promise<string> {
   return invoke<string>("read_vault_file", { file });
+}
+
+/** 分页读仓库内任意文本文件：返回带绝对行号的窗口（offset 1-based 默认 1；limit 默认 2000 行）。
+ * 供 read_file 工具用——大文件可分段读完，不硬拒。 */
+export async function readVaultFileWindow(
+  file: string,
+  opts?: { offset?: number; limit?: number },
+): Promise<ReadWindowResult> {
+  return invoke<ReadWindowResult>("read_vault_file_window", {
+    file,
+    offset: opts?.offset ?? 1,
+    limit: opts?.limit ?? READ_WINDOW_DEFAULT_LINES,
+  });
 }
 
 /** 写仓库内任意文本文件（原子写 + 自动建父目录）。.md 登记磁盘基线防 watcher 回波误判为外部修改。 */
