@@ -83,18 +83,6 @@ export function normalizeAgentSteps(msg: {
   return steps;
 }
 
-/** 从消息提取工具调用记录（按序；旧数据无 steps 时回退 toolRuns 字段）。持久化 `## tool` 段用。 */
-export function toolRunsOf(
-  msg: { steps?: AgentStep[]; toolRuns?: ToolRun[] },
-): ToolRun[] {
-  if (msg.steps && msg.steps.length > 0) {
-    return msg.steps
-      .filter((s): s is Extract<AgentStep, { kind: "tool" }> => s.kind === "tool")
-      .map((s) => s.run);
-  }
-  return msg.toolRuns ?? [];
-}
-
 /** 一轮步骤组 = 该步的思考/叙述（按序，多为 reasoning 或 text）+ 其全部工具行（渲染分组用）。 */
 export interface AgentStepGroup {
   thinkings: Array<{ kind: "reasoning" | "text"; text: string }>;

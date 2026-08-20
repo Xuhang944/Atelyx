@@ -24,7 +24,6 @@ export type {
 
 export {
   EDITOR_CHATS_SCHEMA,
-  EDITOR_CHATS_SCHEMA_V1,
   CHAT_HISTORY_DIR,
   CHAT_MESSAGE_EXT,
   type EditorChatRole,
@@ -34,7 +33,6 @@ export {
   type EditorChatSession,
   type EditorChatModelOverride,
   type EditorChatsFile,
-  type EditorChatsFileOnDisk,
   type NoteRewriteRequest,
 } from "./chat";
 

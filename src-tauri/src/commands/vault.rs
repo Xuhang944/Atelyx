@@ -36,7 +36,7 @@ use crate::vault::{
     write_editor_chats_file, read_chat_messages_file, write_chat_messages_file,
     delete_chat_messages_file, read_dir_filtered, regenerate_file_id, cache_evict_canvas,
     BacklinkRow, CanvasFile, CanvasFileRow, CanvasPatch, AgentConfig,
-    ChatSegment, DeleteFolderResult, EditorChatsFile, FileTreeNode, VaultConfig, VaultState,
+    ChatMessageRecord, DeleteFolderResult, EditorChatsFile, FileTreeNode, VaultConfig, VaultState,
     WikiIndex, CANVAS_SCHEMA, query_wiki_backlinks,
 };
 
@@ -883,14 +883,14 @@ pub fn write_editor_chats(
     write_editor_chats_file(&root, &file)
 }
 
-/// 读会话消息正文 .md（.atelyx/对话历史/ 下，路径已校验；文件缺失报错由前端 catch 降级）。
+/// 读会话消息正文 .jsonl（.atelyx/对话历史/ 下，路径已校验；文件缺失报错由前端 catch 降级）。
 #[tauri::command]
 pub fn read_chat_messages(state: State<'_, VaultState>, file: String) -> Result<String, String> {
     let root = state.root()?;
     read_chat_messages_file(&root, &file)
 }
 
-/// 写会话消息正文 .md（自动建目录 + 原子写；路径已校验）。
+/// 写会话消息正文 .jsonl（自动建目录 + 原子写；路径已校验）。
 #[tauri::command]
 pub fn write_chat_messages(
     state: State<'_, VaultState>,
@@ -901,19 +901,19 @@ pub fn write_chat_messages(
     write_chat_messages_file(&root, &file, &content)
 }
 
-/// 追加式写会话消息正文 .md（消息增长场景：前端只传新增段，省全量重拼与 IPC 载荷；
+/// 追加式写会话消息正文 .jsonl（消息增长场景：前端只传新增记录，每记录一行紧凑 JSON，省全量重拼与 IPC 载荷；
 /// 文件缺失报错由前端回落全量重写；截断场景仍走 write_chat_messages 全量重写）。
 #[tauri::command]
 pub fn append_chat_messages(
     state: State<'_, VaultState>,
     file: String,
-    segments: Vec<ChatSegment>,
+    records: Vec<ChatMessageRecord>,
 ) -> Result<(), String> {
     let root = state.root()?;
-    append_chat_messages_file(&root, &file, &segments)
+    append_chat_messages_file(&root, &file, &records)
 }
 
-/// 删会话消息正文 .md（不存在视为成功——幂等）。
+/// 删会话消息正文 .jsonl（不存在视为成功——幂等）。
 #[tauri::command]
 pub fn delete_chat_messages(state: State<'_, VaultState>, file: String) -> Result<(), String> {
     let root = state.root()?;

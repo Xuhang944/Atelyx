@@ -35,8 +35,8 @@ import {
   type CanvasPatch,
   type ConversationFileData,
   type DeleteFolderResult,
+  type EditorChatMessage,
   type EditorChatsFile,
-  type EditorChatsFileOnDisk,
   type FileTreeNode,
   type Message,
   type TableData,
@@ -220,22 +220,22 @@ export async function writeFolderColors(colors: Record<string, string>): Promise
   await invoke("write_folder_colors", { colors });
 }
 
-/** 读 AI 对话面板会话索引（.atelyx/editor-chats.json，不存在/损坏返回默认；v1 存量 sessions 可能内嵌 messages，由 store load 迁移）。 */
-export async function readEditorChats(): Promise<EditorChatsFileOnDisk> {
-  return invoke<EditorChatsFileOnDisk>("read_editor_chats");
+/** 读 AI 对话面板会话索引（.atelyx/editor-chats.json，不存在/损坏返回默认空文件；消息正文在消息 .jsonl）。 */
+export async function readEditorChats(): Promise<EditorChatsFile> {
+  return invoke<EditorChatsFile>("read_editor_chats");
 }
 
-/** 写 AI 对话面板会话索引（原子写 .atelyx/editor-chats.json，单一全局历史；消息正文在消息 .md）。 */
+/** 写 AI 对话面板会话索引（原子写 .atelyx/editor-chats.json，单一全局历史；消息正文在消息 .jsonl）。 */
 export async function writeEditorChats(file: EditorChatsFile): Promise<void> {
   await invoke("write_editor_chats", { file });
 }
 
-/** 读会话消息正文 .md（.atelyx/对话历史/ 下，路径已校验；文件缺失报错由调用方降级）。 */
+/** 读会话消息正文 .jsonl（.atelyx/对话历史/ 下，路径已校验；文件缺失报错由调用方降级）。 */
 export async function readChatMessages(file: string): Promise<string> {
   return invoke<string>("read_chat_messages", { file });
 }
 
-/** 写会话消息正文 .md（自动建目录 + 原子写）。 */
+/** 写会话消息正文 .jsonl（自动建目录 + 原子写）。 */
 export async function writeChatMessages(
   file: string,
   content: string,
@@ -243,17 +243,16 @@ export async function writeChatMessages(
   await invoke("write_chat_messages", { file, content });
 }
 
-/** 追加式写会话消息正文 .md（消息增长场景：只传新增段；文件缺失报错由调用方回落全量重写）。
- * 截断场景（回到此处/重新生成）仍走 writeChatMessages 全量重写。
- * `token`（可选）= 新格式段头 token（`## role: <token>` 防正文误分段）；旧格式文件不传。 */
+/** 追加式写会话消息正文 .jsonl（消息增长场景：只传新增消息记录，每记录一行 JSON；文件缺失报错由调用方回落全量重写）。
+ * 截断场景（回到此处/重新生成）仍走 writeChatMessages 全量重写。 */
 export async function appendChatMessages(
   file: string,
-  segments: { role: string; text: string; token?: string }[],
+  records: EditorChatMessage[],
 ): Promise<void> {
-  await invoke("append_chat_messages", { file, segments });
+  await invoke("append_chat_messages", { file, records });
 }
 
-/** 删会话消息正文 .md（幂等）。 */
+/** 删会话消息正文 .jsonl（幂等）。 */
 export async function deleteChatMessages(file: string): Promise<void> {
   await invoke("delete_chat_messages", { file });
 }

@@ -23,14 +23,13 @@ import { recordAgentFileWrite } from "@/services/history";
 import { readVaultFileWindow, writeVaultFile, editVaultFile } from "@/services/vault/aiFiles";
 import { fetchWeb } from "@/services/web";
 import { prefix, scanMentionHits } from "@/utils/text";
-import { appendNarration, appendReasoning, mergeToolRuns, promoteLastNarration, toolRunsOf } from "@/utils/agentSteps";
+import { appendNarration, appendReasoning, mergeToolRuns, promoteLastNarration } from "@/utils/agentSteps";
 import { baseName } from "@/utils/filename";
 import { createPersistController } from "@/utils/persist";
 import { useSettingsStore } from "./settingsStore";
 import { useAppStore } from "./appStore";
 import {
   EDITOR_CHATS_SCHEMA,
-  EDITOR_CHATS_SCHEMA_V1,
   CHAT_HISTORY_DIR,
   CHAT_MESSAGE_EXT,
 } from "@/types";
@@ -44,21 +43,20 @@ import type {
   ProviderConfig,
   ReasoningEffort,
   ToolSchema,
-  ToolRun,
 } from "@/types";
 
 /**
  * AI 对话面板会话状态。
  *
  * 单一全局历史：会话索引扁平存放于 `.atelyx/editor-chats.json`，消息正文存
- * `.atelyx/对话历史/<会话 id>.md`（.md 可读转写；不按笔记归属），切换笔记不切换会话；
+ * `.atelyx/对话历史/<会话 id>.jsonl`（JSON Lines：一行一条消息记录，追加式写；不按笔记归属），切换笔记不切换会话；
  * 笔记上下文统一走 @引用（新会话自动 @ 当前打开笔记 / 手动拖入，发送时就地替换注入）。
  *
  * 与画布对话（canvasStore.runStream）的差异：
  * - 面板一次只流式一个会话（单输入框）；工具循环与画布共用 runStreamExchange（Agent 模式开关控制）
  * - 错误占位沿用 `[错误]` 前缀过滤约定（ERROR_PREFIX，见 constants/chat.ts）
  * - provider/model 解析：`settingsStore.resolveChatTarget(modelOverride)`（面板覆盖 → 跟随仓库默认，与画布同源）
- * - 持久化 debounce 500ms：消息变化追加式写会话 .md（纯增长只追加新增段，工具调用过程为 `## tool` 段），
+ * - 持久化 debounce 500ms：消息变化追加式写会话 .jsonl（纯增长只追加新增记录，每记录一行 JSON），
  *   元数据变化写索引（均不在 watcher 监听范围，无自写回环）
  */
 
@@ -89,7 +87,7 @@ interface ChatPanelState {
   newSession: () => void;
   /** 切换到历史会话（更新其 updatedAt 置顶排序）。 */
   openSession: (id: string) => void;
-  /** 删除会话（删的是当前激活会话时回落新对话态；同时删其消息 .md）。 */
+  /** 删除会话（删的是当前激活会话时回落新对话态；同时删其消息 .jsonl）。 */
   deleteSession: (id: string) => void;
   /** 发送消息到当前激活会话（refs = 输入框内的 @引用笔记，发送时就地替换注入笔记全文）。 */
   send: (content: string, refs?: EditorChatMessageRef[]) => Promise<void>;
@@ -129,131 +127,77 @@ let lastLoadedVaultId: string | null = null;
 /** 会话是否有本地改动（新建/切换/删除/发送/设置变化置 true；写盘成功后清）。
  * 脏门控：未改动不写盘——外部删除会话文件后切仓库，flush 不再把内存副本写回（覆盖删除）。 */
 let dirty = false;
-/** 需要重写消息 .md 的会话 id 集合（发送/流式结束时标记；persistNow 统一写盘后清空）。 */
+/** 需要重写消息 .jsonl 的会话 id 集合（发送/流式结束时标记；persistNow 统一写盘后清空）。 */
 const dirtyMessageFiles = new Set<string>();
 /**
- * 各会话消息 .md 的追加式转写基线：上次写盘时的消息数组引用。
- * 纯增长（旧消息引用逐一相同）→ 只追加新增段（省全量重拼与 IPC 载荷）；
+ * 各会话消息 .jsonl 的追加式基线：上次写盘时的消息数组引用。
+ * 纯增长（旧消息引用逐一相同）→ 只追加新增记录（省全量重拼与 IPC 载荷）；
  * 流式中途落盘（消息引用变化/截断）→ 全量重写（幂等）。基线只在写成功后推进，
- * 失败清除——下次重试全量重写，防追加重复。消息 .md 是转写而非协作增量源。
+ * 失败清除——下次重试全量重写，防追加重复。
  */
-const transcriptBaseline = new Map<string, EditorChatMessage[]>();
+const messageBaseline = new Map<string, EditorChatMessage[]>();
 
 /** 防抖持久化控制器：timer 管理 + 代数防吞统一在此；extra = flush 传入的期望仓库 ID（定时写盘不传）。 */
 const persistCtl = createPersistController<string | null>({
   persist: persistNow,
 });
 
-// ===== 会话消息正文转写（.atelyx/对话历史/<会话 id>.md）=====
+// ===== 会话消息正文（.atelyx/对话历史/<会话 id>.jsonl）=====
 
-/** 会话消息正文 .md 相对路径（文件名 = 会话 id：LLM 自动命名改标题不影响文件名，无需改名）。 */
+/** 会话消息正文 .jsonl 相对路径（文件名 = 会话 id：LLM 自动命名改标题不影响文件名，无需改名）。 */
 function chatMessageFilePath(sessionId: string): string {
   return `${CHAT_HISTORY_DIR}/${sessionId}${CHAT_MESSAGE_EXT}`;
 }
 
 /**
- * 各会话转写段头 token：新格式 `## user: <token>`——随机 token 使段头不可能与正文行混淆，
- * 防「消息正文恰好含 `## user:` 独立行」被误分段（旧格式遗留文件无 token，继续按旧格式解析）。
- * token 写进 frontmatter（会话首次全量落盘时生成），跨进程稳定；追加段沿用同一 token。
+ * 序列化会话消息 → JSONL 文本（一行一条消息记录，紧凑 JSON）。
+ * 只写持久化字段：reasoningContent 为遗留字段不落盘（见 types/chat.ts）；id/createdAt 稳定持久化，
+ * refs（@引用）/steps（含工具步）结构化持久化，重开会话完整恢复。
  */
-const transcriptTokens = new Map<string, string>();
-
-function newTranscriptToken(): string {
-  return crypto.randomUUID().replace(/-/g, "").slice(0, 8);
-}
-
-/** 会话当前 token（无 = 旧格式文件；追加沿用旧格式保持文件一致，全量重写时生成并升级）。 */
-function tokenOf(sessionId: string): string | null {
-  return transcriptTokens.get(sessionId) ?? null;
-}
-
-function ensureTranscriptToken(sessionId: string): string {
-  let t = transcriptTokens.get(sessionId);
-  if (!t) {
-    t = newTranscriptToken();
-    transcriptTokens.set(sessionId, t);
-  }
-  return t;
+function serializeChatMessages(messages: EditorChatMessage[]): string {
+  return messages
+    .map((m) =>
+      JSON.stringify({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        ...(m.displayContent ? { displayContent: m.displayContent } : {}),
+        ...(m.refs?.length ? { refs: m.refs } : {}),
+        ...(m.steps?.length ? { steps: m.steps } : {}),
+        createdAt: m.createdAt,
+      })
+    )
+    .join("\n");
 }
 
 /**
- * 转写 .md：frontmatter 存会话 id + 段头 token（外部识别归属）；`## user: <token>` /
- * `## assistant: <token>` 消息段 + `## tool: <token>` 工具调用段（单行 JSON，挂在前一条
- * 消息上；重开会话恢复展示）。user 消息写 displayContent（原始输入），注入的笔记全文不落盘
- * ——.md 可读的对话转写。
+ * 解析会话消息 .jsonl → 消息（逐行 JSON.parse，损坏行跳过——降级不阻塞会话恢复）。
+ * id/createdAt/refs/steps 直接用存储值（消息 .jsonl 是记录而非转写，恢复不重新生成 id）。
  */
-function stringifyChatMessages(sessionId: string, messages: EditorChatMessage[]): string {
-  const token = ensureTranscriptToken(sessionId);
-  const lines = ["---", `sessionId: ${sessionId}`, `token: ${token}`, "---", ""];
-  for (const m of messages) {
-    const text = m.role === "user" ? (m.displayContent ?? m.content) : m.content;
-    lines.push(`## ${m.role}: ${token}`, "", text, "");
-    for (const run of toolRunsOf(m)) {
-      lines.push("## tool: " + token, "", JSON.stringify(run), "");
-    }
-  }
-  return lines.join("\n");
-}
-
-/**
- * 解析转写 .md → 消息（frontmatter sessionId 不匹配/结构异常返回空消息——降级不阻塞）。
- * 段头 token 优先（新格式，随机 token 正文无法伪造匹配）；无 token = 旧格式文件，回退宽松
- * 匹配（正文含 `## user:` 字面行的旧文件仍按旧语义解析，全量重写后自然升级新格式）。
- * `## tool:` 段解析为前一条消息的工具步（进行中状态归一化为完成 + 「（中断）」备注）。
- * 消息 id 每次恢复重新生成（.md 是转写而非协作增量源；画布消息才有稳定 id 需求）。
- */
-function parseChatMessages(md: string, sessionId: string): {
-  messages: EditorChatMessage[];
-  token: string | null;
-} {
-  const fm = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(md);
-  if (!fm) return { messages: [], token: null };
-  const metaLines = fm[1].split("\n");
-  const sidLine = metaLines.find((l) => l.startsWith("sessionId:"));
-  if (!sidLine || sidLine.slice("sessionId:".length).trim() !== sessionId) {
-    return { messages: [], token: null };
-  }
-  const tokenLine = metaLines.find((l) => l.startsWith("token:"));
-  const token = tokenLine?.slice("token:".length).trim() || null;
-  const body = md.slice(fm[0].length);
-  // 按段头分段（token 精确匹配；冒号可选兼容早期无冒号写入的旧转写）；
-  // [pre, role, content, role, content, ...]
-  const headerRe = token
-    ? new RegExp(`^## (user|assistant|tool): ${token}$`, "m")
-    : /^## (user|assistant|tool):?$/m;
-  const parts = body.split(headerRe);
+function parseChatMessages(jsonl: string): EditorChatMessage[] {
   const messages: EditorChatMessage[] = [];
-  for (let i = 1; i + 1 < parts.length; i += 2) {
-    const role = parts[i];
-    const text = (parts[i + 1] ?? "").replace(/^\n+/, "").replace(/\n+$/, "");
-    if (role === "tool") {
-      // 工具调用段：挂到前一条消息的工具步（无前消息的孤儿段忽略）
-      if (messages.length === 0) continue;
-      try {
-        const run = JSON.parse(text) as ToolRun;
-        const last = messages[messages.length - 1];
-        const normalized: ToolRun =
-          run.status === "running"
-            ? { ...run, status: "done", resultSummary: run.resultSummary ?? "（中断）" }
-            : run;
-        last.steps = [
-          ...(last.steps ?? []),
-          { kind: "tool", run: normalized },
-        ];
-      } catch {
-        // 损坏 tool 段：忽略（降级不阻塞会话恢复）
-      }
-      continue;
+  for (const line of jsonl.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const raw = JSON.parse(trimmed) as Partial<EditorChatMessage>;
+      if (typeof raw.role !== "string" || typeof raw.content !== "string") continue;
+      messages.push({
+        id: typeof raw.id === "string" ? raw.id : crypto.randomUUID(),
+        role: raw.role as EditorChatMessage["role"],
+        content: raw.content,
+        ...(typeof raw.displayContent === "string" ? { displayContent: raw.displayContent } : {}),
+        ...(Array.isArray(raw.refs) ? { refs: raw.refs } : {}),
+        ...(Array.isArray(raw.steps) ? { steps: raw.steps } : {}),
+        ...(typeof raw.createdAt === "number"
+          ? { createdAt: raw.createdAt }
+          : { createdAt: messages.length }),
+      });
+    } catch {
+      // 损坏行：跳过（降级不阻塞会话恢复）
     }
-    if (!text) continue;
-    messages.push({
-      id: crypto.randomUUID(),
-      role: role as EditorChatMessage["role"],
-      content: text,
-      createdAt: messages.length,
-    });
   }
-  return { messages, token };
+  return messages;
 }
 
 /** 已完成 LLM 自动命名的会话 id（一次会话只命名一次；load 切仓库时清空）。 */
@@ -299,7 +243,7 @@ async function injectNoteRefs(
 function applySessionTitle(sessionId: string, title: string): void {
   const latest = useChatPanelStore.getState();
   if (!latest.sessions.some((x) => x.id === sessionId)) return;
-  // 成功才登记：失败下轮重试；成功后消息 .md 文件名 = 会话 id，不随标题变——命名只改索引 title（随既有 debounce 写盘）
+  // 成功才登记：失败下轮重试；成功后消息 .jsonl 文件名 = 会话 id，不随标题变——命名只改索引 title（随既有 debounce 写盘）
   autoNamedSessions.add(sessionId);
   useChatPanelStore.setState({
     sessions: latest.sessions.map((x) => (x.id === sessionId ? { ...x, title } : x)),
@@ -311,7 +255,7 @@ function applySessionTitle(sessionId: string, title: string): void {
  * LLM 话题自动命名：一轮对话完成后为会话生成话题标题。
  * - 统一走 streaming.ts 的公共命名管线（模型解析/延迟/超时与画布共用）
  * - 失败（含被 abortAutoTitle 中止）不登记——降级保留首条消息前缀，下轮对话完成/进入仓库时自动重试
- * - 命名只改索引 title（消息 .md 文件名 = 会话 id，不随标题变）
+ * - 命名只改索引 title（消息 .jsonl 文件名 = 会话 id，不随标题变）
  * - fire-and-forget：关闭/无可用模型/命名失败降级保留占位标题，不阻塞对话
  */
 async function autoNameSession(sessionId: string): Promise<void> {
@@ -329,7 +273,7 @@ async function autoNameSession(sessionId: string): Promise<void> {
   );
 }
 
-/** debounce 500ms 写盘（读最新 state；`messageSessionId` = 本次改动涉及的会话，其消息 .md 需重写）。 */
+/** debounce 500ms 写盘（读最新 state；`messageSessionId` = 本次改动涉及的会话，其消息 .jsonl 需重写）。 */
 function schedulePersist(messageSessionId?: string) {
   if (messageSessionId) dirtyMessageFiles.add(messageSessionId);
   dirty = true;
@@ -355,67 +299,51 @@ async function persistNow(guardVaultId?: string | null): Promise<void> {
     return;
   }
   const { sessions, activeSessionId, modelOverride, effortOverride } = useChatPanelStore.getState();
-  // 1) 写脏会话的消息 .md（转写）。写成功才移除——失败保留待下次 debounce/flush 重试（防消息只存在于内存而 .md 丢失）；
+  // 1) 写脏会话的消息 .jsonl。写成功才移除——失败保留待下次 debounce/flush 重试（防消息只存在于内存而 .jsonl 丢失）；
   //    写盘期间并发 schedulePersist 新标记的会话不在本次快照，保留由下一轮再写（防误清）。
-  //    追加式：纯增长只追加新增段（基线引用逐一相同）；流式中途落盘/截断/基线缺失 → 全量重写（幂等）。
+  //    追加式：纯增长只追加新增记录（基线引用逐一相同）；流式中途落盘/截断/基线缺失 → 全量重写（幂等）。
   const pendingIds = [...dirtyMessageFiles];
   await Promise.all(
     pendingIds.map(async (id) => {
       const s = sessions.find((x) => x.id === id);
       if (!s) {
-        // 会话已删：删除路径已处理 .md，仅清标记与基线
+        // 会话已删：删除路径已处理 .jsonl，仅清标记与基线
         dirtyMessageFiles.delete(id);
-        transcriptBaseline.delete(id);
+        messageBaseline.delete(id);
         return;
       }
-      const baseline = transcriptBaseline.get(id);
+      const baseline = messageBaseline.get(id);
       try {
         if (
           baseline !== undefined &&
           s.messages.length > baseline.length &&
           baseline.every((m, i) => s.messages[i] === m)
         ) {
-          // 纯增长（旧消息引用逐一相同）：只追加新增段，省全量重拼与 IPC 载荷
-          // （工具步随消息追加为 `## tool` 段，Rust 侧 role 自由字符串直接格式化）
-          const token = tokenOf(id) ?? undefined;
-          await appendChatMessages(
-            s.file,
-            s.messages.slice(baseline.length).flatMap((m) => [
-              {
-                role: m.role,
-                text: m.role === "user" ? (m.displayContent ?? m.content) : m.content,
-                ...(token ? { token } : {}),
-              },
-              ...toolRunsOf(m).map((run) => ({
-                role: "tool",
-                text: JSON.stringify(run),
-                ...(token ? { token } : {}),
-              })),
-            ]),
-          );
+          // 纯增长（旧消息引用逐一相同）：只追加新增消息记录（每记录一行 JSON），省全量重拼与 IPC 载荷
+          await appendChatMessages(s.file, s.messages.slice(baseline.length));
         } else {
           // 截断/流式中途落盘/基线缺失：全量重写（幂等）
-          await writeChatMessages(s.file, stringifyChatMessages(s.id, s.messages));
+          await writeChatMessages(s.file, serializeChatMessages(s.messages));
         }
         // 基线只在写成功后推进：失败时保留旧值（文件未变），下次重试仍从旧基线追加；
         // 流式中途的全量重写同样以当前数组为基线（最终内容由 onDone 保存覆盖）
-        transcriptBaseline.set(id, s.messages);
+        messageBaseline.set(id, s.messages);
         dirtyMessageFiles.delete(id);
       } catch {
         // 追加失败（含外部删文件导致文件缺失）：回落全量重写（幂等，重建历史/防追加重复）；
         // 仍失败保留脏待下次重试 + 基线清除
         try {
-          await writeChatMessages(s.file, stringifyChatMessages(s.id, s.messages));
-          transcriptBaseline.set(id, s.messages);
+          await writeChatMessages(s.file, serializeChatMessages(s.messages));
+          messageBaseline.set(id, s.messages);
           dirtyMessageFiles.delete(id);
         } catch (e2) {
-          transcriptBaseline.delete(id);
+          messageBaseline.delete(id);
           console.error("保存会话消息失败", e2);
         }
       }
     }),
   );
-  // 2) 写索引（剥离 messages：消息在 .md 转写文件）
+  // 2) 写索引（剥离 messages：消息在 .jsonl 记录文件）
   const index: EditorChatsFile = {
     schema: EDITOR_CHATS_SCHEMA,
     sessions: sessions.map(({ id, title, agentId, systemPromptFile, file, createdAt, updatedAt }) => ({
@@ -565,7 +493,7 @@ async function runExchange(
         ),
       }));
     },
-    // 工具调用过程可视化：全量累积 runs 合并进占位消息 steps（思考→工具交错，工具步随 .md 转写落盘）
+    // 工具调用过程可视化：全量累积 runs 合并进占位消息 steps（思考→工具交错，工具步随消息 .jsonl 记录落盘）
     onToolRuns: (runs) => {
       useChatPanelStore.setState((state) => ({
         sessions: state.sessions.map((s) =>
@@ -717,7 +645,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     // 清残留 debounce timer（防旧仓库 timer 写新仓库状态）+ 脏会话标记
     persistCtl.cancel();
     dirtyMessageFiles.clear();
-    transcriptBaseline.clear();
+    messageBaseline.clear();
     autoNamedSessions.clear();
     // 切仓库让路：中止旧仓库进行中的命名请求，防其后台空转/误写
     abortAutoTitle();
@@ -725,66 +653,23 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     try {
       const f = await readEditorChats();
       const sessions: EditorChatSession[] = [];
-      let migratedV1 = false;
-      // v1 迁移：消息内嵌 JSON → 导出消息 .md（空会话不迁移），写盘时落 v2 索引。
-      // 迁移写盘延后到仓库守卫之后：等待期间切走不得在旧仓库落孤儿 .md（守卫通过 = 仍在本仓库才写）
-      const pendingMigrations: Array<{
-        sessionId: string;
-        file: string;
-        content: string;
-        baseline: EditorChatMessage[];
-      }> = [];
-      if (f.schema === EDITOR_CHATS_SCHEMA_V1) {
+      // v3：读索引 + 逐个读消息 .jsonl（读失败降级空消息，不阻塞面板）；
+      // 非 v3 索引（旧版存量）开发阶段不迁移：视为空历史
+      if (f.schema === EDITOR_CHATS_SCHEMA) {
         for (const s of f.sessions) {
-          if (!s.messages || s.messages.length === 0) continue;
-          const file = chatMessageFilePath(s.id);
-          pendingMigrations.push({
-            sessionId: s.id,
-            file,
-            content: stringifyChatMessages(s.id, s.messages),
-            baseline: s.messages,
-          });
-          sessions.push({
-            id: s.id,
-            title: s.title,
-            agentId: s.agentId,
-            systemPromptFile: s.systemPromptFile,
-            file,
-            createdAt: s.createdAt,
-            updatedAt: s.updatedAt,
-            messages: s.messages,
-          });
-        }
-        migratedV1 = true;
-      } else {
-        // v2：读索引 + 逐个读消息 .md（读失败降级空消息，不阻塞面板）
-        for (const s of f.sessions) {
-          const parsed = await readChatMessages(s.file)
-            .then((md) => parseChatMessages(md, s.id))
-            .catch(() => null);
-          const messages = parsed?.messages ?? [];
-          // 段头 token 缓存：后续追加沿用文件内 token（旧格式文件 token=null，追加保持旧格式）
-          if (parsed?.token) transcriptTokens.set(s.id, parsed.token);
+          const messages = await readChatMessages(s.file)
+            .then((jsonl) => parseChatMessages(jsonl))
+            .catch(() => []);
           // 追加式基线 = 磁盘解析结果（未写盘过的新会话在首次保存时走全量重写）
-          transcriptBaseline.set(s.id, messages);
+          messageBaseline.set(s.id, messages);
           sessions.push({ ...s, messages });
         }
       }
       // 切仓库竞态守卫：后台填充链与 VaultSwitcher 快速切换并发时，
       // 旧仓库读取结果不得覆盖新仓库的会话（等待期间已切走则丢弃）
       if (useAppStore.getState().vaultId !== vaultId) return;
-      // 迁移落盘（守卫通过后才写；失败静默——下次进入该仓库重新迁移，幂等）
-      for (const m of pendingMigrations) {
-        try {
-          await writeChatMessages(m.file, m.content);
-        } catch (e) {
-          console.error("迁移会话消息失败", e);
-        }
-        // 迁移即全量落盘：追加式基线 = 内嵌消息数组
-        transcriptBaseline.set(m.sessionId, m.baseline);
-      }
-      // 新仓库干净状态：清脏标记（旧仓库未写完的改动不再写回）；v1 迁移置脏以便落 v2 索引
-      dirty = migratedV1;
+      // 新仓库干净状态：清脏标记（旧仓库未写完的改动不再写回）
+      dirty = false;
       lastLoadedVaultId = vaultId;
       set({
         sessions,
@@ -798,7 +683,6 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
         loaded: true,
         error: null,
       });
-      if (migratedV1) schedulePersist(); // 触发索引 v2 落盘
       // 恢复补命名：对最近使用的未命名会话重试（覆盖上次命名被中断/丢失的窗口；仅补一个防请求轰炸）。
       // 未命名判定 = title 仍为空/等于首条 user 消息前缀（命名成功会改变 title，下次 load 不再匹配）
       const unnamed = [...sessions]
@@ -840,10 +724,10 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
   deleteSession: (id) => {
     const target = get().sessions.find((s) => s.id === id);
     const sessions = get().sessions.filter((s) => s.id !== id);
-    dirtyMessageFiles.delete(id); // 不再重写已删会话的消息 .md
-    transcriptBaseline.delete(id);
+    dirtyMessageFiles.delete(id); // 不再重写已删会话的消息 .jsonl
+    messageBaseline.delete(id);
     if (target?.file) {
-      // 立即删消息 .md（异步，失败仅记日志——索引已删，下次 load 不再引用）
+      // 立即删消息 .jsonl（异步，失败仅记日志——索引已删，下次 load 不再引用）
       void deleteChatMessages(target.file).catch((e) =>
         console.error("删除会话消息文件失败", e),
       );
@@ -868,7 +752,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     const resolved = resolveProviderModel();
     if (!resolved) return;
 
-    // 确保有激活会话：新对话态（null）时创建会话并激活——标题/消息 .md 路径在首条消息确定；
+    // 确保有激活会话：新对话态（null）时创建会话并激活——标题/消息 .jsonl 路径在首条消息确定；
     // 新对话态选好的 draft Agent 随会话创建固化，随后清空
     let active: EditorChatSession | null =
       get().sessions.find((s) => s.id === get().activeSessionId) ?? null;
