@@ -240,8 +240,9 @@ export function NoteEditor({ file }: { file: string }) {
           return;
         }
         if (dirtyRef.current) {
-          // 应用内其他编辑面写入（画布文本节点/AI 改笔记/保存为笔记）：静默保留本地输入，不弹「外部修改冲突」
-          // （磁盘 = 应用最近已知内容，见 isKnownNoteDiskContent）；
+          // 应用内其他编辑面写入（画布文本节点/保存为笔记）：静默保留本地输入，不弹「外部修改冲突」
+          // （磁盘 = 应用最近已知内容，见 isKnownNoteDiskContent）；AI 文件工具写入不登记该基线，
+          // 此处按真实外部修改弹冲突条（防静默覆盖 Agent 编辑，见 services/vault/aiFiles.writeVaultFile）；
           // 同时把 lastSavedRef 推进到该自写内容——挂起的 debounce 保存的写盘前校验
           // （handleChange 里「磁盘 ≠ lastSavedRef = 外部修改」）以此基线判定，不推进会把
           // 应用自写误判为外部修改弹冲突；推进后本地编辑按 LWW 覆盖应用自写（同编辑面语义）

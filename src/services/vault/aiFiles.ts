@@ -9,7 +9,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { READ_WINDOW_DEFAULT_LINES } from "@/constants/tools";
 import type { GlobVaultResult, GrepVaultResult, ReadWindowResult } from "@/types";
-import { recordNoteDiskContent } from "./index";
 
 /** 读仓库内任意文本文件（相对仓库根路径；超出仓库根/不存在抛错，由调用方降级）。 */
 export async function readVaultFile(file: string): Promise<string> {
@@ -29,10 +28,15 @@ export async function readVaultFileWindow(
   });
 }
 
-/** 写仓库内任意文本文件（原子写 + 自动建父目录）。.md 登记磁盘基线防 watcher 回波误判为外部修改。 */
+/**
+ * 写仓库内任意文本文件（原子写 + 自动建父目录）。
+ * 注意：不登记 `.md` 磁盘基线（lastWrittenMd）——AI 写入对冲突/刷新模型按「外部写入」处理：
+ * 打开中的笔记干净态静默刷新、有未保存改动弹冲突条（防静默覆盖 Agent 编辑）；
+ * 画布文本节点刷新由 refreshTextContent 的 lastSaved 判定兜底（登记基线会把「磁盘新于
+ * 节点内存」误判为自写回波，导致节点陈旧、下次画布保存回写旧正文覆盖）。
+ */
 export async function writeVaultFile(file: string, content: string): Promise<void> {
   await invoke("write_vault_file", { file, content });
-  if (/\.md$/i.test(file)) recordNoteDiskContent(file, content);
 }
 
 export interface FileEditEntry {

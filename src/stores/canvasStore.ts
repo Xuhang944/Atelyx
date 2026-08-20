@@ -20,10 +20,10 @@ import {
   readNote,
   recordNoteDiskContent,
   renameCanvasVault,
-  isKnownNoteDiskContent,
   writeCanvasVault,
   type RuntimeCanvas,
 } from "@/services/vault";
+import { decideTextNodeRefresh } from "@/utils/noteRefresh";
 import { readTableVault } from "@/services/table";
 import { tableToSnapshotText } from "@/utils/table";
 import {
@@ -1754,36 +1754,55 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   },
   refreshTextContent: async (file) => {
     // 同一 .md 可被多个 text 节点引用（同画布多节点），全部刷新（与 markFileMissing 更新全部节点同构）
-    const ids = get()
-      .nodes.filter(
-        (n) =>
-          n.type === "text" && (n.data as unknown as TextData).file === file,
-      )
-      .map((n) => n.id);
-    if (ids.length === 0) return;
+    const nodes = get().nodes;
+    const targets = nodes.filter(
+      (n) =>
+        n.type === "text" && (n.data as unknown as TextData).file === file,
+    );
+    if (targets.length === 0) return;
     try {
       const bodyMd = await readNote(file);
-      // 自写回波守卫：磁盘内容 == 应用最近已知磁盘内容（自写回波）→ 跳过覆盖。
-      // 防「提交编辑 A → 保存写盘 → 回波到达前又提交编辑 B → 回波把 B 覆盖回 A」的竞态丢字；
-      // 内存态要么与磁盘一致、要么更新，跳过恒安全（真实外部变化内容必不相等，仍走刷新）
-      if (isKnownNoteDiskContent(file, bodyMd)) return;
+      // 逐节点判定刷新/跳过（见 utils/noteRefresh#decideTextNodeRefresh）：
+      // - 节点正文 == 磁盘 → 已一致跳过；
+      // - 自上次落盘后改过正文（bodyMd ≠ lastSaved 同 id 节点）→ 保留本地编辑跳过，
+      //   防「提交编辑 A → 保存写盘 → 回波到达前又提交编辑 B → 回波把 B 覆盖回 A」丢字；
+      // - 未编辑过/新建未落盘且磁盘不同 → 刷新到磁盘最新。
+      // 不能用 isKnownNoteDiskContent（lastWrittenMd）判回波：AI 文件写入也会登记基线，
+      // 会把「磁盘新于节点内存」误判为自写回波而跳过刷新，节点保持陈旧——下次画布保存
+      // 经 toFileNode 把旧正文回写覆盖 Agent 编辑。
+      // 记录判定时刻的节点正文：set 时若正文已变（await 读盘窗口内用户又编辑了该节点），
+      // 跳过刷新保留更新的本地编辑（与 keep 分支同语义，防把新输入覆盖回磁盘内容）。
+      const staleDecisions = new Map<string, string>();
+      for (const n of targets) {
+        const cur = (n.data as unknown as TextData).bodyMd ?? "";
+        if (cur === bodyMd) continue;
+        const saved = lastSavedNodes.find((s) => s.id === n.id);
+        const savedBody = saved
+          ? (saved.data as unknown as TextData).bodyMd
+          : undefined;
+        if (decideTextNodeRefresh(cur, savedBody, bodyMd) === "refresh") {
+          staleDecisions.set(n.id, cur);
+        }
+      }
+      if (staleDecisions.size === 0) return;
       // 同步磁盘基线（lastWrittenMd）：外部编辑刷新后用户「改回旧值」时脏检测能感知差异
       // （基线陈旧会导致回退被误判为「与上次写入一致」而跳过写盘，外部内容永久覆盖用户回退）
       recordNoteDiskContent(file, bodyMd);
       // silent set：直接改 nodes，不调 schedulePersist（变更来自磁盘，写回会回环）
       set((s) => ({
-        nodes: s.nodes.map((n) =>
-          ids.includes(n.id)
-            ? {
-                ...n,
-                data: {
-                  ...n.data,
-                  bodyMd,
-                  fileMissing: false,
-                } as unknown as Node["data"],
-              }
-            : n,
-        ),
+        nodes: s.nodes.map((n) => {
+          const decCur = staleDecisions.get(n.id);
+          if (decCur === undefined) return n;
+          if (((n.data as unknown as TextData).bodyMd ?? "") !== decCur) return n;
+          return {
+            ...n,
+            data: {
+              ...n.data,
+              bodyMd,
+              fileMissing: false,
+            } as unknown as Node["data"],
+          };
+        }),
       }));
     } catch {
       get().markFileMissing(file, "text");
