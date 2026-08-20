@@ -83,7 +83,7 @@ export { UI_STATE_SCHEMA, type AppUiState } from "./uiState";
 
 export {
   VIEW_KINDS,
-  createDefaultLayout,
+  createDefaultLayouts,
   type ViewKind,
   type SplitDirection,
   type AreaNode,

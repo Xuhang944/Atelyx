@@ -27,7 +27,7 @@ import {
   splitArea as splitAreaOp,
 } from "@/utils/workspaceLayout";
 import {
-  createDefaultLayout,
+  createDefaultLayouts,
   type LayoutNode,
   type SplitDirection,
   type ViewKind,
@@ -176,7 +176,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
   lastCanvasFile: null,
   lastNoteFile: null,
   lastTableFile: null,
-  workspaceLayouts: [createDefaultLayout()],
+  workspaceLayouts: createDefaultLayouts(),
   activeLayoutId: null,
   focusedAreaId: null,
   loaded: false,
@@ -195,7 +195,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
           (l) => l && (l.tree?.kind === "area" || l.tree?.kind === "split"),
         )
           ? disk.workspaceLayouts
-          : [createDefaultLayout()];
+          : createDefaultLayouts();
       const activeLayoutId =
         disk.activeLayoutId && layouts.some((l) => l.id === disk.activeLayoutId)
           ? disk.activeLayoutId
@@ -217,7 +217,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
         lastCanvasFile: null,
         lastNoteFile: null,
         lastTableFile: null,
-        workspaceLayouts: [createDefaultLayout()],
+        workspaceLayouts: createDefaultLayouts(),
         activeLayoutId: null,
         focusedAreaId: null,
         loaded: true,

@@ -63,31 +63,79 @@ export const VIEW_KINDS: ViewKind[] = [
 ];
 
 /**
- * 默认布局（与旧三栏布局同构）：文件 | 画布 | 属性，比例 22:78，画布/属性 75:25。
- * 首次进入仓库/布局损坏时回退。
+ * 默认布局（三套：画布/笔记/表格，面积结构 文件 | [主区/副区]）。
+ * 首次进入仓库/布局损坏时回退；激活布局缺省 = 列表第一个（画布）。
  */
-export function createDefaultLayout(name = "默认布局"): WorkspaceLayout {
-  return {
-    id: crypto.randomUUID(),
-    name,
-    tree: {
-      kind: "split",
+export function createDefaultLayouts(): WorkspaceLayout[] {
+  return [
+    {
       id: crypto.randomUUID(),
-      direction: "horizontal",
-      children: [
-        { kind: "area", id: crypto.randomUUID(), view: "files" },
-        {
-          kind: "split",
-          id: crypto.randomUUID(),
-          direction: "horizontal",
-          children: [
-            { kind: "area", id: crypto.randomUUID(), view: "canvas" },
-            { kind: "area", id: crypto.randomUUID(), view: "inspector" },
-          ],
-          sizes: [75, 25],
-        },
-      ],
-      sizes: [22, 78],
+      name: "画布",
+      tree: {
+        kind: "split",
+        id: crypto.randomUUID(),
+        direction: "horizontal",
+        children: [
+          { kind: "area", id: crypto.randomUUID(), view: "files" },
+          {
+            kind: "split",
+            id: crypto.randomUUID(),
+            direction: "horizontal",
+            children: [
+              { kind: "area", id: crypto.randomUUID(), view: "canvas" },
+              { kind: "area", id: crypto.randomUUID(), view: "inspector" },
+            ],
+            sizes: [74, 26],
+          },
+        ],
+        sizes: [17, 83],
+      },
     },
-  };
+    {
+      id: crypto.randomUUID(),
+      name: "笔记",
+      tree: {
+        kind: "split",
+        id: crypto.randomUUID(),
+        direction: "horizontal",
+        children: [
+          { kind: "area", id: crypto.randomUUID(), view: "files" },
+          {
+            kind: "split",
+            id: crypto.randomUUID(),
+            direction: "horizontal",
+            children: [
+              { kind: "area", id: crypto.randomUUID(), view: "note" },
+              { kind: "area", id: crypto.randomUUID(), view: "aichat" },
+            ],
+            sizes: [72, 28],
+          },
+        ],
+        sizes: [19, 81],
+      },
+    },
+    {
+      id: crypto.randomUUID(),
+      name: "表格",
+      tree: {
+        kind: "split",
+        id: crypto.randomUUID(),
+        direction: "horizontal",
+        children: [
+          { kind: "area", id: crypto.randomUUID(), view: "files" },
+          {
+            kind: "split",
+            id: crypto.randomUUID(),
+            direction: "horizontal",
+            children: [
+              { kind: "area", id: crypto.randomUUID(), view: "table" },
+              { kind: "area", id: crypto.randomUUID(), view: "note" },
+            ],
+            sizes: [77, 23],
+          },
+        ],
+        sizes: [18, 82],
+      },
+    },
+  ];
 }
