@@ -18,7 +18,7 @@
  * - 冲突/错误/保存状态在面积 header 展示（`AreaFrame` 读 tableStore）。
  * - 弹层菜单（字段/列/行/整表/状态栏）见 `TableMenus.tsx`。
  */
-import { FileOutput, GripVertical, MoreHorizontal, MoveDiagonal, Plus, Sigma } from "lucide-react";
+import { GripVertical, MoreHorizontal, MoveDiagonal, Plus, Sigma } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
@@ -35,6 +35,9 @@ import {
   StatMenu,
 } from "@/components/table/TableMenus";
 import { computeColumnCalc, fieldDefaultWidth } from "@/utils/table";
+import { HistoryModal } from "@/components/history/HistoryModal";
+import { PopupLayer } from "@/components/common/PopupLayer";
+import { usePopupAnchor } from "@/hooks/usePopupAnchor";
 import {
   ADD_FIELD_COL_WIDTH,
   CALC_TYPE_LABELS,
@@ -71,6 +74,11 @@ export function TableEditor({ areaId }: { areaId: string }) {
     const t = setTimeout(() => setExported(false), 1500);
     return () => clearTimeout(t);
   }, [exported]);
+
+  // 工具条右上角「···」菜单（历史记录 + 导出 xlsx；统一 usePopupAnchor + PopupLayer 浮层）
+  const moreTriggerRef = useRef<HTMLButtonElement>(null);
+  const moreMenu = usePopupAnchor(moreTriggerRef);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   // 字段菜单 / 行菜单 / 添加字段浮层 / 状态栏计算菜单
   const [fieldMenu, setFieldMenu] = useState<{ fieldId: string; x: number; y: number } | null>(null);
@@ -512,18 +520,51 @@ export function TableEditor({ areaId }: { areaId: string }) {
             ))}
           </div>
         )}
-        <button
-          onClick={() => {
-            void exportXlsx().then((ok) => {
-              if (ok) setExported(true);
-            });
-          }}
-          className="flex items-center gap-1 px-2 py-1 rounded transition-colors"
-          style={{ color: exported ? "var(--accent)" : "var(--text-secondary)", background: exported ? "color-mix(in srgb, var(--accent) 15%, transparent)" : undefined }}
-          title="导出为 xlsx"
-        >
-          <FileOutput size={13} /> {exported ? "已导出" : "导出 xlsx"}
-        </button>
+        {/* 「···」更多选项：历史记录 + 导出 xlsx（统一 usePopupAnchor + PopupLayer 浮层） */}
+        <span className="flex-shrink-0">
+          <button
+            ref={moreTriggerRef}
+            onClick={() => moreMenu.toggle()}
+            title="更多选项"
+            className="p-0.5 rounded hover:opacity-80"
+            style={{ color: moreMenu.anchor ? "var(--accent)" : "var(--text-muted)" }}
+          >
+            <MoreHorizontal size={15} />
+          </button>
+          <PopupLayer
+            anchor={moreMenu.anchor}
+            onClose={moreMenu.close}
+            triggerRef={moreTriggerRef}
+            widthClass="w-36"
+          >
+            <button
+              className="w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:opacity-80"
+              style={{ color: "var(--text-primary)" }}
+              onClick={() => {
+                moreMenu.close();
+                setHistoryOpen(true);
+              }}
+              title="查看本表格的历史版本并回滚"
+            >
+              <span className="w-3.5 flex-shrink-0" />
+              历史记录
+            </button>
+            <button
+              className="w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:opacity-80"
+              style={{ color: exported ? "var(--accent)" : "var(--text-primary)" }}
+              onClick={() => {
+                moreMenu.close();
+                void exportXlsx().then((ok) => {
+                  if (ok) setExported(true);
+                });
+              }}
+              title="导出为 xlsx"
+            >
+              <span className="w-3.5 flex-shrink-0" />
+              {exported ? "已导出 xlsx" : "导出 xlsx"}
+            </button>
+          </PopupLayer>
+        </span>
       </div>
 
       {/* 时间线视图：整块替换表格主体（保留工具条） */}
@@ -826,6 +867,14 @@ export function TableEditor({ areaId }: { areaId: string }) {
       )}
       {/* 整表选中右键菜单：全部列宽 / 行高自适应 */}
       {allMenu && <SelectAllMenu x={allMenu.x} y={allMenu.y} onClose={() => setAllMenu(null)} />}
+
+      {/* 表格历史面板（工具条「···」→ 历史记录） */}
+      <HistoryModal
+        kind="table"
+        file={tableFile ?? ""}
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+      />
     </div>
   );
 }

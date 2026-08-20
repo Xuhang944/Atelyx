@@ -20,12 +20,18 @@ import {
 } from "@/services/table";
 import { copyImageToClipboard as copyImageSvc } from "@/services/clipboard";
 import { pickFile, saveFile } from "@/services/dialog";
+import {
+  loadHistory as loadTableHistory,
+  recordHistoryVersion,
+  versionContentAt,
+  type HistoryVersion,
+} from "@/services/history";
 import { markSelfSave } from "@/utils/selfSave";
 import { clearTableImageCache } from "@/services/tableImageCache";
 import { useCollabStore } from "@/stores/collabStore";
 import { createPersistController } from "@/utils/persist";
 import { createUndoManager } from "@/utils/undoStack";
-import { computeTablePatch, reorderByRank, sameIdSequence } from "@/utils/table";
+import { computeTablePatch, reorderByRank, sameIdSequence, summarizeTableSnapshot } from "@/utils/table";
 import type { CalcType, CellValue, FieldType, TableField, TableFile, TablePatch, TableRow } from "@/types";
 
 /** 编辑器视图：表格 / 时间线（内存态不持久化）。 */
@@ -130,6 +136,10 @@ interface TableStoreState {
   /** 应用远端协作者的增量补丁（relay 收到 table-patch 时调用）：纯内存合并（与 Rust 合并同语义），
    * 不置脏/不入撤销栈/不触发保存——落盘由发送方负责，本端下次保存经 diff 幂等收敛。 */
   applyRemotePatch: (file: string, patch: TablePatch) => void;
+  /** 读取表格历史版本列表（缺失/损坏 → 空数组，尽力而为）。 */
+  tableHistoryLoad: (file: string) => Promise<HistoryVersion[]>;
+  /** 回滚表格到指定版本：写回快照 + 重载内存 + 记 restore 版本；成功返回快照内容，失败返回 null。 */
+  tableHistoryRollback: (file: string, seq: number) => Promise<string | null>;
 }
 
 /** 撤销快照：fields + rows（含 id/calcType/width/height/options/values，id 保真——撤销后选中引用不悬空）。 */
@@ -296,6 +306,32 @@ async function retryMergePersist(
 }
 
 /**
+ * 记录表格历史版本（保存成功后的存档点）：以内存当前内容构建 `.atb` 格式快照 → 记一条 edit 版本
+ * （60s 内连续编辑合并为一版，不逐键）。快照取内存（与保存同源，免每次存档多一次读盘 IPC——
+ * 历史尽力而为，不阻塞保存流程）。
+ */
+function recordTableHistory(file: string): void {
+  const s = useTableStore.getState();
+  if (s.tableFile !== file) return; // 切表竞态：只记当前表格
+  const snapshot: TableFile = {
+    schema: TABLE_SCHEMA,
+    id: s.id,
+    title: s.title,
+    fields: s.fields,
+    rows: s.rows,
+    createdAt: 0, // 快照展示用；回滚经 write_table_vault 保留磁盘真实 createdAt
+    updatedAt: Date.now(),
+  };
+  void recordHistoryVersion("table", file, {
+    content: JSON.stringify(snapshot),
+    action: "edit",
+    coalesceEditMs: 60_000,
+    // 人话摘要：新增/删除行 · 修改单元格 · 字段增删/改名（列表可读，替代 JSON 行级 diff）
+    summarize: summarizeTableSnapshot,
+  });
+}
+
+/**
  * 防抖持久化控制器：写盘期间又有新变更（persistCtl.version 已变）则保留 dirty，
  * 由下一轮 timer 再写，防写盘成功回调吞掉新编辑。force = 保留本地（绕过乐观锁强制覆盖）。
  * 增量保存：与 lastSaved 快照按引用 diff，只写变化实体（见 patchTableVault）；
@@ -331,6 +367,8 @@ const persistCtl = createPersistController<boolean>({
         // 用户无需手动点掉；真实合并失败时 reportError 会再次置位）
         conflictPending: false,
       });
+      // 存档点：以当前内容快照记历史（60s 内连续编辑合并为一版；fire-and-forget 不阻塞保存流程）
+      if (updatedAt !== null) recordTableHistory(newFile ?? tableFile);
       syncLastSaved();
     };
     const reportError = (e: unknown) => {
@@ -969,5 +1007,37 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
     });
     // 核心：远端已应用内容对房间已知，推进广播基线，避免被当作本地增量重发全房
     syncBroadcastBaseline();
+  },
+
+  tableHistoryLoad: (file) => loadTableHistory("table", file),
+
+  tableHistoryRollback: async (file, seq) => {
+    // 仅当前打开表格可回滚（随后重载内存态）；file 须匹配当前表格
+    if (get().tableFile !== file) return null;
+    const versions = await loadTableHistory("table", file);
+    const content = versionContentAt(versions, seq);
+    if (content == null) return null;
+    try {
+      const snapshot = JSON.parse(content) as TableFile;
+      if (!snapshot || snapshot.schema !== TABLE_SCHEMA) return null;
+      // 取消挂起的防抖保存：回滚写盘后旧 timer 不得把恢复前内容写回
+      persistCtl.cancel();
+      // 全量写回快照（baseUpdatedAt 缺省 = 绕过乐观锁——回滚是显式覆盖，显式用户意图）
+      await writeTableVault(snapshot, file);
+      // 抑制 watcher 回波，然后重载内存（含乐观锁基准与撤销栈重置，同冲突「重新加载」语义）
+      markSelfSave(file);
+      set({ dirty: false });
+      await get().reloadFromDisk();
+      // 回滚记一条 restore 版本（滚动恢复点 + 审计「何时回滚到哪」）
+      await recordHistoryVersion("table", file, {
+        content,
+        action: "restore",
+        summarize: summarizeTableSnapshot,
+      });
+      return content;
+    } catch (e) {
+      console.error("表格回滚失败", e);
+      return null;
+    }
   },
 }));

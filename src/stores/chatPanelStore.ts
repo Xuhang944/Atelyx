@@ -19,6 +19,7 @@ import {
 } from "./streaming";
 import { runAgentTools, buildAgentTools } from "@/services/ai/tools";
 import { runSearch } from "@/services/search";
+import { recordAgentFileWrite } from "@/services/history";
 import { readVaultFileWindow, writeVaultFile, editVaultFile } from "@/services/vault/aiFiles";
 import { fetchWeb } from "@/services/web";
 import { prefix, scanMentionHits } from "@/utils/text";
@@ -698,8 +699,15 @@ async function runExchange(
         capabilities: {
           search: (query) => runSearch(useSettingsStore.getState().searchConfig, query),
           readFile: (path, opts) => readVaultFileWindow(path, opts),
-          writeFile: (path, content) => writeVaultFile(path, content).then(() => ({ ok: true, summary: `已写入「${path}」` })),
-          editFile: editVaultFile,
+          writeFile: (path, content) => writeVaultFile(path, content).then(() => {
+            // Agent 协作历史：AI 写文件以 Agent 身份记入对应 kind 的历史（fire-and-forget）
+            void recordAgentFileWrite(path, content);
+            return { ok: true, summary: `已写入「${path}」` };
+          }),
+          editFile: (path, edits) => editVaultFile(path, edits).then((res) => {
+            if (res.ok) void recordAgentFileWrite(path);
+            return res;
+          }),
           fetchUrl: fetchWeb,
         },
       }),

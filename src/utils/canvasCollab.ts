@@ -9,8 +9,10 @@
  * 本模块全部为纯函数，无 I/O、无 store 依赖，便于单测。
  */
 import type { Node } from "@xyflow/react";
+import { CANVAS_SCHEMA } from "@/constants/canvas";
 import type {
   CanvasEdge,
+  CanvasFile,
   CanvasFileEdge,
   CanvasFileNode,
   CanvasPatch,
@@ -83,6 +85,31 @@ function serializeEdgeForCollab(e: CanvasEdge): CanvasFileEdge {
     directed: e.directed,
     linkMode: e.linkMode,
     createdAt: 0,
+  };
+}
+
+/**
+ * 运行时画布 → 历史快照（`.atlx` 文件格式，`runtimeToCanvasFile` 的纯版本——复用
+ * `serializeNodeForCollab` 不触发 `.md` 写入：历史快照绝不能因记快照而把旧正文写回共享盘）。
+ * 输出与 `runtimeToCanvasFile` 结构一致（text 有 file 只带 `{title, file}`、conversation 嵌入
+ * messages），回滚经 `writeCanvasVault` 全量写回兼容。
+ */
+export function serializeCanvasSnapshot(
+  canvasId: string,
+  title: string,
+  nodes: Node[],
+  edges: CanvasEdge[],
+  messagesByConv: Record<string, Message[]>,
+): CanvasFile {
+  return {
+    schema: CANVAS_SCHEMA,
+    id: canvasId,
+    title,
+    viewport: { x: 0, y: 0, zoom: 1 },
+    nodes: nodes.map((n) => serializeNodeForCollab(n, messagesByConv)),
+    edges: edges.map(serializeEdgeForCollab),
+    createdAt: 0,
+    updatedAt: Date.now(),
   };
 }
 
@@ -265,4 +292,107 @@ export function markCollabCanvasRename(paths: string[]): void {
 /** watcher 画布分支判断该路径事件是否为协作重命名的回波（窗口内 = 跳过 reload/conflict）。 */
 export function isCollabCanvasRenamePath(path: string): boolean {
   return Date.now() - (collabRenameAt.get(path) ?? 0) < COLLAB_RENAME_SUPPRESS_MS;
+}
+
+// ===== 历史版本摘要 / diff（画布历史面板可读化）=====
+
+/** 节点展示名（conversation/text → data.title；group → label；link → url；media → 文件名）。 */
+function canvasNodeLabel(n: CanvasFileNode): string {
+  const d = n.data as unknown as Record<string, unknown>;
+  if (typeof d.title === "string" && d.title.trim()) return d.title.trim();
+  if (typeof d.label === "string" && d.label.trim()) return d.label.trim();
+  if (typeof d.url === "string" && d.url.trim()) {
+    const u = d.url.trim();
+    return u.length > 20 ? `${u.slice(0, 20)}…` : u;
+  }
+  if (typeof d.file === "string" && d.file) return d.file.split("/").pop() ?? d.file;
+  return "节点";
+}
+
+/** 对话节点消息总数（conversation 的 data.messages 内嵌在 .atlx 快照里）。 */
+function canvasMessageCount(nodes: CanvasFileNode[]): number {
+  let n = 0;
+  for (const node of nodes) {
+    const msgs = (node.data as { messages?: unknown[] }).messages;
+    if (Array.isArray(msgs)) n += msgs.length;
+  }
+  return n;
+}
+
+/** 画布历史版本 diff（相对上一版本；首版 prev 为空 → 全部节点/边计为新增）。 */
+export interface CanvasVersionDiff {
+  addedNodes: string[];
+  removedNodes: string[];
+  modifiedNodes: string[];
+  addedEdges: number;
+  removedEdges: number;
+  msgDelta: number;
+}
+
+/** 对比两个画布历史快照：节点增删/修改（不含消息）+ 边增删 + 对话消息增减（纯函数，面板懒计算）。 */
+export function diffCanvasVersions(prevRaw: string, nextRaw: string): CanvasVersionDiff {
+  let prev: CanvasFile | null = null;
+  let next: CanvasFile | null = null;
+  try {
+    if (prevRaw) prev = JSON.parse(prevRaw) as CanvasFile;
+    next = JSON.parse(nextRaw) as CanvasFile;
+  } catch {
+    // 快照损坏：尽力而为，缺省为空 diff
+  }
+  if (!next || !Array.isArray(next.nodes)) {
+    return { addedNodes: [], removedNodes: [], modifiedNodes: [], addedEdges: 0, removedEdges: 0, msgDelta: 0 };
+  }
+  const prevNodes = prev && Array.isArray(prev.nodes) ? prev.nodes : [];
+  const prevEdges = prev && Array.isArray(prev.edges) ? prev.edges : [];
+  const prevById = new Map(prevNodes.map((n) => [n.id, n]));
+  const nextById = new Map(next.nodes.map((n) => [n.id, n]));
+  const prevEdgeIds = new Set(prevEdges.map((e) => e.id));
+  const nextEdgeIds = new Set(next.edges.map((e) => e.id));
+  // 对话消息拆出单独统计：data.messages 变化不计入「修改节点」（避免每次发消息都算节点改动）
+  const stripMessages = (d: Record<string, unknown>): Record<string, unknown> => {
+    const { messages: _m, ...rest } = d;
+    return rest;
+  };
+  return {
+    addedNodes: next.nodes.filter((n) => !prevById.has(n.id)).map(canvasNodeLabel),
+    removedNodes: prevNodes.filter((n) => !nextById.has(n.id)).map(canvasNodeLabel),
+    modifiedNodes: next.nodes
+      .filter((n) => {
+        const p = prevById.get(n.id);
+        return (
+          p &&
+          JSON.stringify(stripMessages(n.data as unknown as Record<string, unknown>)) !==
+            JSON.stringify(stripMessages(p.data as unknown as Record<string, unknown>))
+        );
+      })
+      .map(canvasNodeLabel),
+    addedEdges: next.edges.filter((e) => !prevEdgeIds.has(e.id)).length,
+    removedEdges: prevEdges.filter((e) => !nextEdgeIds.has(e.id)).length,
+    msgDelta: canvasMessageCount(next.nodes) - canvasMessageCount(prevNodes),
+  };
+}
+
+/**
+ * 画布历史版本人话摘要（记录时生成，列表展示）：对比上一版本快照输出「新增/删除/修改 N 节点 ·
+ * 连线增删 · 对话消息增减」；无上一版本 = 新建统计。损坏快照 → 空串。
+ */
+export function summarizeCanvasSnapshot(prevRaw: string, nextRaw: string): string {
+  let next: CanvasFile | null = null;
+  try {
+    next = JSON.parse(nextRaw) as CanvasFile;
+  } catch {
+    return "";
+  }
+  if (!next || !Array.isArray(next.nodes)) return "";
+  if (!prevRaw) return `新建 · ${next.nodes.length} 节点 · ${next.edges.length} 连线`;
+  const diff = diffCanvasVersions(prevRaw, nextRaw);
+  const parts: string[] = [];
+  if (diff.addedNodes.length) parts.push(`新增 ${diff.addedNodes.length} 节点`);
+  if (diff.removedNodes.length) parts.push(`删除 ${diff.removedNodes.length} 节点`);
+  if (diff.modifiedNodes.length) parts.push(`修改 ${diff.modifiedNodes.length} 节点`);
+  if (diff.addedEdges) parts.push(`新增 ${diff.addedEdges} 连线`);
+  if (diff.removedEdges) parts.push(`删除 ${diff.removedEdges} 连线`);
+  if (diff.msgDelta > 0) parts.push(`对话消息 +${diff.msgDelta}`);
+  else if (diff.msgDelta < 0) parts.push(`对话消息 ${diff.msgDelta}`);
+  return parts.length ? parts.join(" · ") : "未改动";
 }

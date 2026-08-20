@@ -490,8 +490,8 @@ function toFileEdge(e: CanvasEdge): CanvasFileEdge {
 }
 
 /**
- * 运行时 → 磁盘 CanvasFile。
- * - text 节点：写 `.md` + 剥离 bodyMd，data 只留 `{title, file}`
+ * 运行时 → 磁盘 CanvasFile（保存/全量写共用）。
+ * - text 节点：写 `.md` + 剥离 bodyMd，data 只留 `{title, file}`（脏检测由 toFileNode 门控）
  * - conversation 节点：嵌入 `messagesByConv[id]` 到 `data.messages`
  * - React Flow position → 扁平 x/y
  *

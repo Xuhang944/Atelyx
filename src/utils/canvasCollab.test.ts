@@ -14,7 +14,9 @@ import {
   computeLockOwner,
   deserializeNodeForCollab,
   diffCanvasEntities,
+  diffCanvasVersions,
   mergeMessages,
+  summarizeCanvasSnapshot,
 } from "./canvasCollab";
 
 function node(id: string, x = 0, data: Record<string, unknown> = {}): Node {
@@ -159,5 +161,54 @@ describe("computeLockOwner", () => {
     expect(computeLockOwner([{ peerId: 3, since: 100 }, { peerId: 5, since: 200 }])).toBe(3);
     // 无声明 → null
     expect(computeLockOwner([])).toBeNull();
+  });
+});
+
+// ===== 历史版本摘要 / diff（画布历史面板可读化）=====
+
+/** 磁盘格式快照（.atlx 的 nodes/edges 形态）。 */
+function canvasSnap(nodes: unknown[], edges: unknown[] = []): string {
+  return JSON.stringify({
+    schema: "atelyx-canvas/v1",
+    id: "c1",
+    title: "方案",
+    nodes,
+    edges,
+    createdAt: 0,
+    updatedAt: 0,
+  });
+}
+
+describe("diffCanvasVersions / summarizeCanvasSnapshot", () => {
+  it("节点增删与内容修改计入；仅消息变化不算节点修改", () => {
+    const prev = canvasSnap([{ id: "n1", type: "text", x: 0, y: 0, data: { title: "提示词" } }]);
+    const next = canvasSnap([
+      { id: "n1", type: "text", x: 0, y: 0, data: { title: "提示词 v2" } },
+      { id: "n2", type: "text", x: 10, y: 0, data: { title: "灵感" } },
+    ]);
+    const d = diffCanvasVersions(prev, next);
+    expect(d.addedNodes).toEqual(["灵感"]);
+    expect(d.modifiedNodes).toEqual(["提示词 v2"]);
+    const conv = (messages: unknown[]) => ({ id: "c1", type: "conversation", x: 0, y: 0, data: { title: "对话", messages } });
+    const d2 = diffCanvasVersions(canvasSnap([conv([{ id: "m1" }])]), canvasSnap([conv([{ id: "m1" }, { id: "m2" }])]));
+    expect(d2.msgDelta).toBe(1);
+    expect(d2.modifiedNodes).toEqual([]);
+  });
+
+  it("首版（prev 空）摘要为新建统计", () => {
+    expect(summarizeCanvasSnapshot("", canvasSnap([{ id: "n1", type: "text", x: 0, y: 0, data: { title: "a" } }], [{ id: "e1" }]))).toBe(
+      "新建 · 1 节点 · 1 连线",
+    );
+  });
+
+  it("摘要覆盖节点/连线/消息变化", () => {
+    const prev = canvasSnap([{ id: "n1", type: "text", x: 0, y: 0, data: { title: "a" } }]);
+    const next = canvasSnap(
+      [{ id: "n1", type: "text", x: 0, y: 0, data: { title: "a" } }, { id: "n2", type: "text", x: 0, y: 0, data: { title: "b" } }],
+      [{ id: "e1" }],
+    );
+    const s = summarizeCanvasSnapshot(prev, next);
+    expect(s).toContain("新增 1 节点");
+    expect(s).toContain("新增 1 连线");
   });
 });

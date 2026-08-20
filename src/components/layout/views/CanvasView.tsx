@@ -15,6 +15,7 @@ import {
   Maximize,
   MessageSquarePlus,
   Minus,
+  MoreHorizontal,
   Palette,
   Plus,
 } from "lucide-react";
@@ -66,6 +67,9 @@ import {
 } from "@/components/canvas/panels/FileExplorerPanel";
 import { AreaPlaceholder } from "@/components/layout/AreaPlaceholder";
 import { Menu, MenuDivider, MenuItem } from "@/components/common/Menu";
+import { PopupLayer } from "@/components/common/PopupLayer";
+import { HistoryModal } from "@/components/history/HistoryModal";
+import { usePopupAnchor } from "@/hooks/usePopupAnchor";
 
 const nodeTypes = {
   conversation: withCollab(ConversationNode),
@@ -172,6 +176,12 @@ export const CanvasView = memo(function CanvasView({
     y: number;
   } | null>(null);
   const closeNodeMenu = useCallback(() => setNodeMenu(null), []);
+
+  // 工具栏右上角「···」菜单（历史记录入口；统一 usePopupAnchor + PopupLayer 浮层）
+  const moreTriggerRef = useRef<HTMLButtonElement>(null);
+  const moreMenu = usePopupAnchor(moreTriggerRef);
+  /** 画布历史面板开关（「···」→ 历史记录）。 */
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   // 加载画布：store 已持有该画布（面积重挂，未保存改动还在内存）时不重载；
   // 首次打开/切换画布（store.canvasFile 与目标不一致）才读盘
@@ -402,16 +412,105 @@ export const CanvasView = memo(function CanvasView({
 
   return (
     <div
-      className="h-full w-full relative"
+      className="h-full w-full relative flex flex-col"
       onClick={() => {
         // 点击菜单外任意处关闭右键菜单（菜单容器自身 stopPropagation，防点菜单被抢先关闭）
         closeMenu();
         closeNodeMenu();
       }}
     >
+      {/* 工具栏：与笔记/表格统一（高度 py-1.5）——只读白板横幅（左）+ 协作者胶囊 + 右上角「···」历史菜单 */}
+      <div
+        className="flex items-center gap-2 px-3 py-1.5 border-b flex-shrink-0 text-xs select-none"
+        style={{ borderColor: "var(--border)", color: "var(--text-secondary)" }}
+      >
+        {/* 只读白板横幅：外部白板格式只读查看 + 转换为画布入口（原文件保留，单向转换） */}
+        {readOnly && (
+          <span className="flex items-center gap-2 flex-shrink-0">
+            <span
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded border"
+              style={{
+                background: "var(--bg-tertiary)",
+                borderColor: "var(--border)",
+                color: "var(--text-secondary)",
+              }}
+            >
+              <FileOutput size={12} /> 只读查看 · 外部白板格式
+            </span>
+            <button
+              onClick={() => void convertWhiteboard(canvasFile)}
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded transition-colors"
+              style={{
+                background: "color-mix(in srgb, var(--accent) 15%, transparent)",
+                color: "var(--accent)",
+              }}
+              title="生成同目录 .atlx 画布副本并打开（原文件保留）"
+            >
+              <FileOutput size={12} /> 转换为画布
+            </button>
+          </span>
+        )}
+        <span className="flex-1" />
+        {/* 协作：同看本画布的在线用户胶囊（用户色点 + 昵称；断开连接自动消失） */}
+        {canvasPeers.length > 0 && (
+          <div className="flex items-center gap-1 flex-shrink-0">
+            {canvasPeers.map((p) => (
+              <span
+                key={p.peerId}
+                className="flex items-center gap-1.5 px-1.5 py-0.5 rounded border text-[11px]"
+                style={{
+                  background: "var(--bg-tertiary)",
+                  borderColor: "var(--border)",
+                  color: "var(--text-secondary)",
+                }}
+                title={`${p.nickname}${p.deviceName ? `（${p.deviceName}）` : ""} · 正在查看本画布`}
+              >
+                <span
+                  className="w-2 h-2 rounded-full flex-shrink-0"
+                  style={{ background: p.color }}
+                />
+                <span className="max-w-24 truncate">{p.nickname}</span>
+              </span>
+            ))}
+          </div>
+        )}
+        {/* 「···」更多选项：历史记录入口（统一 usePopupAnchor + PopupLayer 浮层） */}
+        <span className="flex-shrink-0">
+          <button
+            ref={moreTriggerRef}
+            onClick={() => moreMenu.toggle()}
+            title="更多选项"
+            className="p-0.5 rounded hover:opacity-80"
+            style={{ color: moreMenu.anchor ? "var(--accent)" : "var(--text-muted)" }}
+          >
+            <MoreHorizontal size={15} />
+          </button>
+          <PopupLayer
+            anchor={moreMenu.anchor}
+            onClose={moreMenu.close}
+            triggerRef={moreTriggerRef}
+            widthClass="w-36"
+          >
+            <button
+              className="w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
+              style={{ color: "var(--text-primary)" }}
+              onClick={() => {
+                moreMenu.close();
+                setHistoryOpen(true);
+              }}
+              disabled={readOnly}
+              title={readOnly ? "只读白板（外部白板格式）无历史记录" : "查看本画布的历史版本并回滚"}
+            >
+              <span className="w-3.5 flex-shrink-0" />
+              历史记录
+            </button>
+          </PopupLayer>
+        </span>
+      </div>
+
       <div
         ref={flowWrapperRef}
-        className="h-full w-full"
+        className="flex-1 min-h-0 w-full"
         onContextMenu={(e) => {
           if ((e.target as HTMLElement).closest(".react-flow__node")) return;
           onPaneContextMenu(e);
@@ -523,56 +622,6 @@ export const CanvasView = memo(function CanvasView({
           />
         </ReactFlow>
 
-        {/* 协作：同看本画布的在线用户胶囊（用户色点 + 昵称；断开连接自动消失） */}
-        {canvasPeers.length > 0 && (
-          <div className="absolute top-2 left-2 z-10 flex items-center gap-1">
-            {canvasPeers.map((p) => (
-              <span
-                key={p.peerId}
-                className="flex items-center gap-1.5 px-1.5 py-0.5 rounded border text-[11px]"
-                style={{
-                  background: "var(--bg-tertiary)",
-                  borderColor: "var(--border)",
-                  color: "var(--text-secondary)",
-                }}
-                title={`${p.nickname}${p.deviceName ? `（${p.deviceName}）` : ""} · 正在查看本画布`}
-              >
-                <span
-                  className="w-2 h-2 rounded-full flex-shrink-0"
-                  style={{ background: p.color }}
-                />
-                <span className="max-w-24 truncate">{p.nickname}</span>
-              </span>
-            ))}
-          </div>
-        )}
-
-        {/* 只读白板横幅：外部白板格式只读查看 + 转换为画布入口（原文件保留，单向转换） */}
-        {readOnly && (
-          <div
-            className="absolute top-2 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs"
-            style={{
-              background: "var(--bg-tertiary)",
-              borderColor: "var(--border)",
-              color: "var(--text-secondary)",
-            }}
-          >
-            <span>只读查看 · 外部白板格式</span>
-            <button
-              onClick={() => void convertWhiteboard(canvasFile)}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded transition-colors"
-              style={{
-                background:
-                  "color-mix(in srgb, var(--accent) 15%, transparent)",
-                color: "var(--accent)",
-              }}
-              title="生成同目录 .atlx 画布副本并打开（原文件保留）"
-            >
-              <FileOutput size={13} /> 转换为画布
-            </button>
-          </div>
-        )}
-
         {/* 左下角状态栏：统计（右下角让位 MiniMap；网格按钮已并入左下角按钮组） */}
         <div
           className="absolute bottom-1.5 left-3 z-10 text-[11px] select-none inline-flex items-center gap-1.5"
@@ -674,6 +723,14 @@ export const CanvasView = memo(function CanvasView({
           onClose={closeNodeMenu}
         />
       )}
+
+      {/* 画布历史面板（工具栏「···」→ 历史记录；readOnly 白板禁用入口不打开） */}
+      <HistoryModal
+        kind="canvas"
+        file={canvasFile}
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+      />
     </div>
   );
 });

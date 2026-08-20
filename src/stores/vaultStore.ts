@@ -35,8 +35,8 @@ import {
   recordHistoryVersion,
   setHistoryAuthor,
   versionContentAt,
-  type NoteHistoryVersion,
-} from "@/services/noteHistory";
+  type HistoryVersion as NoteHistoryVersion,
+} from "@/services/history";
 import {
   createTableVault,
   deleteTableVault,
@@ -359,8 +359,9 @@ export type NoteSaveStatus = {
   loadError: boolean;
 };
 
-/** 笔记历史版本（组件不直连 service，经本 store 读历史）。 */
-export type { NoteHistoryVersion } from "@/services/noteHistory";
+/** 历史版本类型（组件不直连 service，经本 store 读历史）。 */
+export type { HistoryAuthor, HistoryAction, HistoryVersion, HistoryKind } from "@/services/history";
+export type { HistoryVersion as NoteHistoryVersion } from "@/services/history";
 
 interface VaultFileState {
   /** 全仓库文件树（递归，跳过隐藏/排除目录与 `.tmp`）。 */
@@ -772,7 +773,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     setHistoryAuthor({ id: device || name, name: name || device || "用户", device: device || "" }),
 
   noteHistoryRecord: (file, content, action, note) =>
-    recordHistoryVersion(file, {
+    recordHistoryVersion("note", file, {
       content,
       action,
       ...(note ? { note } : {}),
@@ -780,15 +781,15 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
       coalesceEditMs: action === "edit" ? 60_000 : 0,
     }),
 
-  noteHistoryLoad: (file) => loadNoteHistory(file),
+  noteHistoryLoad: (file) => loadNoteHistory("note", file),
 
   noteHistoryRollback: async (file, seq) => {
-    const versions = await loadNoteHistory(file);
+    const versions = await loadNoteHistory("note", file);
     const content = versionContentAt(versions, seq);
     if (content == null) return null;
     await get().saveNoteContent(file, content);
     // 回滚记一条 restore 版本（滚动恢复点 + 审计「何时回滚到哪」）
-    await recordHistoryVersion(file, { content, action: "restore" });
+    await recordHistoryVersion("note", file, { content, action: "restore" });
     return content;
   },
 

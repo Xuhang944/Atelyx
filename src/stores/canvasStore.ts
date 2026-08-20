@@ -21,16 +21,26 @@ import {
   recordNoteDiskContent,
   renameCanvasVault,
   isKnownNoteDiskContent,
+  writeCanvasVault,
   type RuntimeCanvas,
 } from "@/services/vault";
 import { readTableVault } from "@/services/table";
 import { tableToSnapshotText } from "@/utils/table";
+import {
+  loadHistory as loadCanvasHistory,
+  recordAgentFileWrite,
+  recordHistoryVersion,
+  versionContentAt,
+  type HistoryVersion,
+} from "@/services/history";
 import {
   computeCanvasCollabPatch,
   computeLockOwner,
   deserializeNodeForCollab,
   markCollabCanvasRename,
   mergeMessages,
+  serializeCanvasSnapshot,
+  summarizeCanvasSnapshot,
 } from "@/utils/canvasCollab";
 import { toLlmMessages } from "@/services/ai/client";
 import { abortAutoTitle } from "@/services/ai/autoTitle";
@@ -49,6 +59,7 @@ import { markSelfSave } from "@/utils/selfSave";
 import { createUndoManager } from "@/utils/undoStack";
 import { inferImageMime } from "@/utils/whiteboard";
 import {
+  CANVAS_SCHEMA,
   DEFAULT_CONVERSATION_WIDTH,
   DEFAULT_CONVERSATION_HEIGHT,
   DEFAULT_TEXT_NODE_WIDTH,
@@ -75,6 +86,7 @@ import { useCollabStore } from "./collabStore";
 import type {
   Attachment,
   CanvasEdge,
+  CanvasFile,
   CanvasPatch,
   ConversationData,
   LinkMode,
@@ -314,6 +326,10 @@ interface CanvasState {
   mergeFromDisk: () => Promise<void>;
   /** 清空当前画布运行时状态（删除当前画布时调用：取消保存定时器 + 中止流 + 复位全部画布态）。 */
   resetCanvasState: () => void;
+  /** 读取画布历史版本列表（缺失/损坏 → 空数组，尽力而为）。 */
+  canvasHistoryLoad: (file: string) => Promise<HistoryVersion[]>;
+  /** 回滚画布到指定版本：写回快照 + 重载内存 + 记 restore 版本；成功返回快照内容，失败返回 null。 */
+  canvasHistoryRollback: (file: string, seq: number) => Promise<string | null>;
   /** 重新执行搜索结果节点的搜索（失败降级重试）。 */
   retrySearch: (nodeId: string, query: string) => Promise<void>;
 }
@@ -492,6 +508,28 @@ async function handleSaveConflict(): Promise<void> {
 }
 
 /**
+ * 记录画布历史版本（保存成功后的存档点）：以内存运行时内容构建 `.atlx` 格式快照 → 记一条 edit
+ * 版本（60s 内连续编辑合并为一版，不逐键）。快照取内存且**纯序列化**（`serializeCanvasSnapshot`
+ * 不写 `.md`——若用 toFileNode 路径，延迟执行时可能把旧正文写回共享盘覆盖新编辑；历史尽力而为，
+ * 不阻塞保存流程）。
+ */
+function recordCanvasHistory(file: string): void {
+  const s = useCanvasStore.getState();
+  if (s.canvasFile !== file || !s.canvasId) return; // 切画布/未打开竞态：只记当前画布
+  const { canvasId, canvasTitle, nodes, edges, messagesByConv } = s;
+  const content = JSON.stringify(
+    serializeCanvasSnapshot(canvasId, canvasTitle, nodes, edges, messagesByConv),
+  );
+  void recordHistoryVersion("canvas", file, {
+    content,
+    action: "edit",
+    coalesceEditMs: 60_000,
+    // 人话摘要：节点/连线增删改 · 对话消息增减（列表可读，替代 JSON 行级 diff）
+    summarize: summarizeCanvasSnapshot,
+  });
+}
+
+/**
  * 立即持久化当前画布（flush 与保存 timer 共用；timer 回调里读最新 state，
  * 确保流式完成时 onDone 触发的保存拿到最终消息内容）。
  * 增量保存：与 lastSaved 快照按引用 diff，只写变化实体（见 patchCanvasVault）；
@@ -540,6 +578,8 @@ async function persistNow(): Promise<void> {
       useCanvasStore.setState({ baseUpdatedAt: updatedAt });
     }
     useCanvasStore.setState({ error: null, dirty: false, saving: false });
+    // 存档点：以当前内容快照记历史（60s 内连续编辑合并为一版；fire-and-forget 不阻塞保存流程）
+    if (updatedAt !== null) recordCanvasHistory(newFile ?? canvasFile);
     syncLastSaved();
   };
   const reportError = (e: unknown) => {
@@ -1092,8 +1132,15 @@ async function runStream(conversationId: string): Promise<void> {
             capabilities: {
               search: (query) => runSearch(useSettingsStore.getState().searchConfig, query),
               readFile: (path, opts) => readVaultFileWindow(path, opts),
-              writeFile: (path, content) => writeVaultFile(path, content).then(() => ({ ok: true, summary: `已写入「${path}」` })),
-              editFile: editVaultFile,
+              writeFile: (path, content) => writeVaultFile(path, content).then(() => {
+                // Agent 协作历史：AI 写文件以 Agent 身份记入对应 kind 的历史（fire-and-forget）
+                void recordAgentFileWrite(path, content);
+                return { ok: true, summary: `已写入「${path}」` };
+              }),
+              editFile: (path, edits) => editVaultFile(path, edits).then((res) => {
+                if (res.ok) void recordAgentFileWrite(path);
+                return res;
+              }),
               fetchUrl: fetchWeb,
             },
           },
@@ -2367,6 +2414,40 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     });
     undoMgr.clear();
     syncLastSaved();
+  },
+  canvasHistoryLoad: (file) => loadCanvasHistory("canvas", file),
+
+  canvasHistoryRollback: async (file, seq) => {
+    // 仅当前打开画布可回滚（随后重载内存态）；file 须匹配当前画布
+    if (get().canvasFile !== file) return null;
+    const versions = await loadCanvasHistory("canvas", file);
+    const content = versionContentAt(versions, seq);
+    if (content == null) return null;
+    try {
+      const snapshot = JSON.parse(content) as CanvasFile;
+      if (!snapshot || snapshot.schema !== CANVAS_SCHEMA) return null;
+      // title 即文件名：以当前文件名归一化快照 title（防回滚旧版本触发文件名回跳/漂移）
+      const currentTitle =
+        file.split("/").pop()?.replace(/\.atlx$/i, "") ?? snapshot.title;
+      // 取消挂起的防抖保存：回滚写盘后旧 timer 不得把恢复前内容写回
+      persistCtl.cancel();
+      // 全量写回快照（baseUpdatedAt 缺省 = 绕过乐观锁——回滚是显式覆盖，显式用户意图）
+      await writeCanvasVault({ ...snapshot, title: currentTitle }, file, undefined);
+      // 抑制 watcher 回波，然后重载内存（含乐观锁基准与撤销栈重置，同冲突「重载」语义）
+      markSelfSave(file);
+      set({ dirty: false });
+      await get().reloadFromDisk();
+      // 回滚记一条 restore 版本（滚动恢复点 + 审计「何时回滚到哪」）
+      await recordHistoryVersion("canvas", file, {
+        content,
+        action: "restore",
+        summarize: summarizeCanvasSnapshot,
+      });
+      return content;
+    } catch (e) {
+      console.error("画布回滚失败", e);
+      return null;
+    }
   },
   retrySearch: async (nodeId, query) => {
     const settings = useSettingsStore.getState();

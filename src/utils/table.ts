@@ -252,7 +252,7 @@ function stringArrayEqual(a: string[] | undefined, b: string[] | undefined): boo
 }
 
 /** 单元格值相等（数组按项比较；空数组 ≈ undefined，同 stringArrayEqual 口径）。 */
-function cellValueEqual(a: CellValue | undefined, b: CellValue | undefined): boolean {
+export function cellValueEqual(a: CellValue | undefined, b: CellValue | undefined): boolean {
   if (a === undefined || b === undefined) return a === b;
   if (Array.isArray(a) || Array.isArray(b)) {
     return Array.isArray(a) && Array.isArray(b) && stringArrayEqual(a, b);
@@ -307,4 +307,141 @@ export function tablesEqual(
     disk.fields.every((f, i) => fieldEqual(f, memory.fields[i])) &&
     disk.rows.every((r, i) => rowEqual(r, memory.rows[i]))
   );
+}
+
+// ===== 历史版本摘要 / diff（表格历史面板可读化）=====
+
+/** 单元格值展示文本（数组 = 图片数；空 → 空；超长截断）。 */
+function formatCellValue(v: CellValue | undefined): string {
+  if (v === undefined) return "空";
+  if (Array.isArray(v)) return v.length ? `图片 ×${v.length}` : "空";
+  const s = String(v);
+  return s.length > 24 ? `${s.slice(0, 24)}…` : s;
+}
+
+/** 行展示名：首个非空文本字段值；无 → 空串（调用方兜底「第 N 行」）。 */
+function rowLabelOf(row: TableRow, fields: TableField[]): string {
+  for (const f of fields) {
+    const v = row.values[f.id];
+    if (typeof v === "string" && v.trim() !== "") {
+      const s = v.trim();
+      return s.length > 16 ? `${s.slice(0, 16)}…` : s;
+    }
+  }
+  return "";
+}
+
+/** 解析历史快照为 TableFile；空串/损坏 → null。 */
+function parseTableSnapshot(raw: string): TableFile | null {
+  if (!raw) return null;
+  try {
+    const t = JSON.parse(raw) as TableFile;
+    return t && Array.isArray(t.fields) && Array.isArray(t.rows) ? t : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 表格历史版本 diff（相对上一版本；首版 prev 为空 → 全部字段/行计为新增）。 */
+export interface TableVersionDiff {
+  addedFields: { name: string }[];
+  removedFields: { name: string }[];
+  renamedFields: { from: string; to: string }[];
+  addedRows: string[];
+  removedRows: string[];
+  cellChanges: { rowIndex: number; fieldName: string; from: string; to: string }[];
+  fieldOrderChanged: boolean;
+  rowOrderChanged: boolean;
+}
+
+/** 对比两个历史快照：字段增删/改名 + 行增删 + 单元格修改 + 顺序变化（纯函数，历史面板懒计算）。 */
+export function diffTableVersions(prevRaw: string, nextRaw: string): TableVersionDiff {
+  const prev = parseTableSnapshot(prevRaw);
+  const next = parseTableSnapshot(nextRaw);
+  if (!next) {
+    return {
+      addedFields: [],
+      removedFields: [],
+      renamedFields: [],
+      addedRows: [],
+      removedRows: [],
+      cellChanges: [],
+      fieldOrderChanged: false,
+      rowOrderChanged: false,
+    };
+  }
+  const prevFields = prev?.fields ?? [];
+  const prevRows = prev?.rows ?? [];
+  const prevFieldsById = new Map(prevFields.map((f) => [f.id, f]));
+  const prevRowsById = new Map(prevRows.map((r) => [r.id, r]));
+  const nextFieldIds = new Set(next.fields.map((f) => f.id));
+  const nextRowIds = new Set(next.rows.map((r) => r.id));
+  // 行号按 next 版本的实际位置（1-based）；预建 index map 免每行 indexOf（大表 O(R²) → O(N)）
+  const nextRowIndex = new Map(next.rows.map((r, i) => [r.id, i]));
+  const prevRowIndex = new Map(prevRows.map((r, i) => [r.id, i]));
+
+  const addedFields = next.fields.filter((f) => !prevFieldsById.has(f.id)).map((f) => ({ name: f.name }));
+  const removedFields = prevFields.filter((f) => !nextFieldIds.has(f.id)).map((f) => ({ name: f.name }));
+  const renamedFields = next.fields
+    .filter((f) => {
+      const p = prevFieldsById.get(f.id);
+      return p && p.name !== f.name;
+    })
+    .map((f) => ({ from: prevFieldsById.get(f.id)!.name, to: f.name }));
+
+  const addedRows = next.rows
+    .filter((r) => !prevRowsById.has(r.id))
+    .map((r) => rowLabelOf(r, next.fields) || `第 ${(nextRowIndex.get(r.id) ?? 0) + 1} 行`);
+  const removedRows = prevRows
+    .filter((r) => !nextRowIds.has(r.id))
+    .map((r) => rowLabelOf(r, prevFields) || `第 ${(prevRowIndex.get(r.id) ?? 0) + 1} 行`);
+
+  const cellChanges: TableVersionDiff["cellChanges"] = [];
+  for (const r of next.rows) {
+    const p = prevRowsById.get(r.id);
+    if (!p) continue;
+    const rowIndex = (nextRowIndex.get(r.id) ?? 0) + 1;
+    for (const f of next.fields) {
+      if (!cellValueEqual(p.values[f.id], r.values[f.id])) {
+        cellChanges.push({
+          rowIndex,
+          fieldName: f.name,
+          from: formatCellValue(p.values[f.id]),
+          to: formatCellValue(r.values[f.id]),
+        });
+      }
+    }
+  }
+
+  return {
+    addedFields,
+    removedFields,
+    renamedFields,
+    addedRows,
+    removedRows,
+    cellChanges,
+    fieldOrderChanged: !sameIdSequence(next.fields, prevFields),
+    rowOrderChanged: !sameIdSequence(next.rows, prevRows),
+  };
+}
+
+/**
+ * 历史版本人话摘要（记录时生成，列表展示）：对比上一版本快照输出「新增/删除 N 行 · 修改 N 个
+ * 单元格 · 字段增删/改名 · 调整顺序」；无上一版本 = 新建统计。空表/损坏快照 → 空串。
+ */
+export function summarizeTableSnapshot(prevRaw: string, nextRaw: string): string {
+  const next = parseTableSnapshot(nextRaw);
+  if (!next) return "";
+  if (!parseTableSnapshot(prevRaw)) return `新建 · ${next.fields.length} 字段 · ${next.rows.length} 行`;
+  const diff = diffTableVersions(prevRaw, nextRaw);
+  const parts: string[] = [];
+  if (diff.addedRows.length) parts.push(`新增 ${diff.addedRows.length} 行`);
+  if (diff.removedRows.length) parts.push(`删除 ${diff.removedRows.length} 行`);
+  if (diff.cellChanges.length) parts.push(`修改 ${diff.cellChanges.length} 个单元格`);
+  if (diff.addedFields.length) parts.push(`新增字段 ${diff.addedFields.map((f) => `「${f.name}」`).join("、")}`);
+  if (diff.removedFields.length) parts.push(`删除字段 ${diff.removedFields.map((f) => `「${f.name}」`).join("、")}`);
+  if (diff.renamedFields.length) parts.push(`字段改名 ${diff.renamedFields.map((f) => `「${f.from}」→「${f.to}」`).join("、")}`);
+  if (diff.fieldOrderChanged) parts.push("调整列顺序");
+  if (diff.rowOrderChanged) parts.push("调整行顺序");
+  return parts.length ? parts.join(" · ") : "未改动";
 }

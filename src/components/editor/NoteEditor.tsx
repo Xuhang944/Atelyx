@@ -27,7 +27,7 @@ import { parseFrontmatter, stringifyFrontmatter } from "@/utils/frontmatter";
 import { noteTitleFromFile } from "@/utils/filename";
 import { NotePropertiesView } from "@/components/editor/NotePropertiesView";
 import { MarkdownEditor } from "@/components/editor/MarkdownEditor";
-import { NoteHistoryModal } from "@/components/editor/NoteHistoryModal";
+import { HistoryModal } from "@/components/history/HistoryModal";
 import { useMarkdownComponents } from "@/hooks/useMarkdownComponents";
 import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
 import { usePopupAnchor } from "@/hooks/usePopupAnchor";
@@ -130,14 +130,6 @@ export function NoteEditor({ file }: { file: string }) {
       mountedRef.current = false;
     };
   }, []);
-
-  /** 历史记录作者身份登记（进入仓库/编辑器时；身份随设置变化 pass 进本组件）。 */
-  useEffect(() => {
-    useVaultStore.getState().noteHistorySetAuthor(
-      collabNickname || collabDevice || "用户",
-      collabDevice || "",
-    );
-  }, [collabNickname, collabDevice]);
 
   /** 编辑器根节点引用：点击编辑器外部 → 取消编辑模式（回渲染预览）。 */
   const editorRootRef = useRef<HTMLDivElement>(null);
@@ -527,9 +519,9 @@ export function NoteEditor({ file }: { file: string }) {
       style={{ background: "var(--bg-primary)" }}
       onContextMenu={handleContentContextMenu}
     >
-      {/* 顶部条：右侧编辑/预览切换（保存状态已移至面积 header） */}
+      {/* 顶部条：右侧编辑/预览切换（保存状态已移至面积 header）。高度与表格/画布工具栏统一（py-1.5）。 */}
       <div
-        className="px-3 py-1 flex items-center gap-1.5 text-xs flex-shrink-0 select-none"
+        className="px-3 py-1.5 flex items-center gap-1.5 text-xs flex-shrink-0 select-none"
         style={{ borderBottom: "1px solid var(--border)", color: "var(--text-muted)" }}
       >
         <span className="ml-auto flex items-center gap-2 flex-shrink-0">
@@ -844,8 +836,9 @@ export function NoteEditor({ file }: { file: string }) {
         </Menu>
       )}
 
-      {/* 笔记历史面板（「···」→ 历史记录） */}
-      <NoteHistoryModal
+      {/* 历史面板（「···」→ 历史记录；画布/表格共用同一 HistoryModal） */}
+      <HistoryModal
+        kind="note"
         file={file}
         open={historyOpen}
         onClose={() => setHistoryOpen(false)}

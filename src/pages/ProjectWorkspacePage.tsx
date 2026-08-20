@@ -101,6 +101,17 @@ export function ProjectWorkspacePage() {
     };
   }, []);
 
+  // 历史记录作者登记（应用级全局，三 kind——画布/笔记/表格——共用同一身份）：
+  // 身份随协作昵称/设备名变化刷新；未打开笔记时画布/表格历史也能正确署名
+  const collabNickname = useSettingsStore((s) => s.collabNickname);
+  const collabDevice = useSettingsStore((s) => s.deviceName);
+  useEffect(() => {
+    useVaultStore.getState().noteHistorySetAuthor(
+      collabNickname || collabDevice || "用户",
+      collabDevice || "",
+    );
+  }, [collabNickname, collabDevice]);
+
   /** 进仓库后恢复上次打开的文件（设置「自动恢复上次打开的文件」开启时）。
    * 依赖 uiLoaded（uiState 已从磁盘加载）+ canvases/noteList（文件树已刷新）就绪后才执行，
    * 文件已被外部删除/移动则静默跳过（降级占位，不报错）。
