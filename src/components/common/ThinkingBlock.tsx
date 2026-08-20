@@ -1,10 +1,24 @@
 /**
  * 消息气泡内的「思考过程」折叠块（reasoning_content 展示）。
- * 默认折叠；折叠且仍在流式时标题带强调色扫光等待动画，完成后静止。
+ * 默认折叠；折叠态显示一行思考摘要（完成后=首行，流式中=最新一行、跟随末尾），
+ * 折叠且仍在流式时标题带强调色扫光等待动画，完成后静止。
  * 思考仅作即时过程展示：不进 API 历史上下文、不参与复制。
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
+
+/** 摘要 = 文本首行（完成态：一眼看到思考主题）。 */
+function firstLine(text: string): string {
+  const newline = text.indexOf("\n");
+  return newline === -1 ? text : text.slice(0, newline);
+}
+
+/** 摘要 = 文本最新一行（流式态：跟随思考进度，trimEnd 去末尾换行残片）。 */
+function latestLine(text: string): string {
+  const visible = text.trimEnd();
+  const newline = visible.lastIndexOf("\n");
+  return newline === -1 ? visible : visible.slice(newline + 1);
+}
 
 export function ThinkingBlock({
   text,
@@ -14,6 +28,13 @@ export function ThinkingBlock({
   streaming?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const summary = streaming ? latestLine(text) : firstLine(text);
+  // 流式摘要跟随最新一行：水平滚动到末尾，新写的思考直接可见（不再从行首被截断）
+  const summaryRef = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    const el = summaryRef.current;
+    if (el) el.scrollLeft = streaming ? el.scrollWidth - el.clientWidth : 0;
+  }, [summary, streaming]);
   return (
     <div
       className="mb-1.5 rounded border-l-2 pl-2 text-xs"
@@ -22,7 +43,7 @@ export function ThinkingBlock({
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="relative flex items-center gap-1 w-full text-left select-none leading-4 py-0.5"
+        className="relative flex w-full items-center gap-1 text-left select-none leading-4 py-0.5"
         style={{ color: "var(--text-muted)" }}
       >
         {streaming && !open && <span className="thinking-sweep-bar" aria-hidden />}
@@ -31,7 +52,26 @@ export function ThinkingBlock({
         ) : (
           <ChevronRight size={12} className="flex-shrink-0" />
         )}
-        <span>思考过程</span>
+        <span className="flex-shrink-0">思考过程</span>
+        {summary && (
+          <>
+            <span
+              aria-hidden
+              className="h-0.5 w-0.5 flex-shrink-0 rounded-full"
+              style={{ background: "var(--text-muted)" }}
+            />
+            <span
+              ref={summaryRef}
+              className="min-w-0 flex-1 overflow-hidden whitespace-nowrap"
+              style={{
+                color: "var(--text-secondary)",
+                textOverflow: streaming ? "clip" : "ellipsis",
+              }}
+            >
+              {summary}
+            </span>
+          </>
+        )}
       </button>
       {open && (
         <div
