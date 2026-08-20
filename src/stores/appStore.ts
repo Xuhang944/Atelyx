@@ -44,6 +44,9 @@ export type UpdateStatus =
 /** 窗口关闭守卫已注册标志（installCloseGuard 幂等，防 React StrictMode 双挂载重复订阅）。 */
 let closeGuardInstalled = false;
 
+/** selectVault 并发序号：快速连续切换时仅最后一次调用有权清除切换读条（finally 守卫）。 */
+let vaultSwitchSeq = 0;
+
 /**
  * 应用级状态：路由 + 当前仓库 + 画布列表 CRUD。
  *
@@ -62,6 +65,8 @@ interface AppState {
   vaultRoot: string | null;
   /** 当前仓库名（显示用） */
   vaultName: string;
+  /** 切换仓库进行中（标题栏读条：覆盖 openVault + 文件树/画布列表/AI 会话加载完成，快速连切只认最后一次）。 */
+  switchingVault: boolean;
   /** 当前仓库稳定 ID（`.atelyx/config.json` 的 vaultId；chatPanelStore 等据此识别仓库归属）。 */
   vaultId: string | null;
   /** 最近打开的仓库列表（按最近打开倒序） */
@@ -185,6 +190,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   view: "vaultSelect",
   vaultRoot: null,
   vaultName: "",
+  switchingVault: false,
   vaultId: null,
   recentVaults: [],
   currentCanvasId: null,
@@ -285,6 +291,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   selectVault: async (root) => {
+    // 快速连续切换时仅最后一次调用有权清读条（finally 守卫）
+    const seq = ++vaultSwitchSeq;
+    set({ switchingVault: true });
     try {
       // 切换前先落盘旧仓库的全部编辑并**等待写盘完成**：openVault 会把 VaultState.root 切到新仓库，
       // 若 fire-and-forget 直接放行，写盘可能晚于 open_vault 执行、把旧仓库内容写进新仓库（跨仓库污染）。
@@ -316,24 +325,26 @@ export const useAppStore = create<AppState>((set, get) => ({
         currentTableFile: null,
         currentTableTitle: "",
       });
+      // 立即清空旧仓库文件树：文件面板不再残留上一仓库的文件（新树加载完成前显示「正在加载仓库…」读条）
+      useVaultStore.setState({ tree: [], noteList: [], tableList: [] });
       // 加载仓库级配置覆盖（.atelyx/config.json），需在发消息前完成
       await useSettingsStore.getState().loadVaultConfig();
       // 切换仓库：清空旧画布运行时状态（防残留 saveTimer 跨仓库写盘/旧消息残留）
       useCanvasStore.getState().resetCanvasState();
-      // 文件树/画布列表/AI 会话后台填充：不阻塞工作区显示（启动提速，渐进加载）；
-      // UI 使用状态（布局/展开/上次文件）为应用级，启动时已加载，切仓库不重载
-      void (async () => {
-        try {
-          await refreshCanvasAndTree();
-          await useChatPanelStore.getState().load(info.id);
-        } catch (e) {
-          console.error("加载仓库数据失败", e);
-        }
-      })();
+      // 文件树/画布列表/AI 会话随切换等待完成：读条覆盖到数据就绪，避免切换后面板仍显示旧仓库内容。
+      // 工作区视图在 set() 已立即切换（不阻塞显示）；加载失败只记录，不把已成功的切换判失败
+      try {
+        await refreshCanvasAndTree();
+        await useChatPanelStore.getState().load(info.id);
+      } catch (e) {
+        console.error("加载仓库数据失败", e);
+      }
       return true;
     } catch (e) {
       console.error("打开仓库失败", e);
       return false;
+    } finally {
+      if (seq === vaultSwitchSeq) set({ switchingVault: false });
     }
   },
 

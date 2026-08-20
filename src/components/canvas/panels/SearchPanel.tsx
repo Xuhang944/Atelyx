@@ -13,7 +13,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Menu, MenuItem } from "@/components/common/Menu";
 import { useAppStore } from "@/stores/appStore";
 import { useVaultStore } from "@/stores/vaultStore";
-import { VaultSwitcher } from "@/components/canvas/panels/VaultSwitcher";
 import { parentDir, noteTitleFromFile, stripExt } from "@/utils/filename";
 import type { CanvasFileRow, FileTreeNode } from "@/types";
 
@@ -179,11 +178,6 @@ export function SearchPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenTableFi
             );
           })
         )}
-      </div>
-
-      {/* 面板底部：仓库切换条（与文件面板一致） */}
-      <div className="flex-shrink-0 border-t" style={{ borderColor: "var(--border)" }}>
-        <VaultSwitcher />
       </div>
 
       {/* 模式下拉气泡（点击外部/Esc 关闭，当前模式打勾，未支持模式灰显） */}

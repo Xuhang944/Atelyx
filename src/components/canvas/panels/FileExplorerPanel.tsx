@@ -26,6 +26,7 @@ import {
   Folder,
   FolderPlus,
   LayoutDashboard,
+  Loader2,
   Palette,
   Paperclip,
   Pencil,
@@ -42,7 +43,6 @@ import { useChatPanelStore } from "@/stores/chatPanelStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import { useVaultStore } from "@/stores/vaultStore";
-import { VaultSwitcher } from "@/components/canvas/panels/VaultSwitcher";
 import { FileContextMenu } from "@/components/canvas/panels/FileContextMenu";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { Menu, MenuDivider, MenuItem } from "@/components/common/Menu";
@@ -233,6 +233,8 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
 
   const canvases = useAppStore((s) => s.canvases);
   const currentCanvasFile = useAppStore((s) => s.currentCanvasFile);
+  // 切换仓库读条：树已清空等待新仓库数据时显示加载占位（防残留旧仓库文件树）
+  const switchingVault = useAppStore((s) => s.switchingVault);
   const createCanvas = useAppStore((s) => s.createCanvas);
   const renameCanvas = useAppStore((s) => s.renameCanvas);
   const deleteCanvas = useAppStore((s) => s.deleteCanvas);
@@ -842,12 +844,18 @@ export function FileExplorerPanel({ onOpenCanvasFile, onOpenNoteForEdit, onOpenT
           setMenu({ x: e.clientX, y: e.clientY, target: { kind: "folder", dir: "" } });
         }}
       >
-        <ul>{renderTree(sortChildren(tree), 0, "")}</ul>
-      </div>
-
-      {/* 面板底部：仓库切换条（点击上拉已添加仓库菜单 + 管理仓库入口） */}
-      <div className="flex-shrink-0 border-t" style={{ borderColor: "var(--border)" }}>
-        <VaultSwitcher />
+        {/* 切换仓库中：树已被清空（旧仓库内容不残留），显示加载占位直到新仓库数据就绪 */}
+        {switchingVault ? (
+          <div
+            className="flex items-center gap-1.5 px-3 py-2 text-xs"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <Loader2 size={12} className="animate-spin flex-shrink-0" />
+            正在加载仓库…
+          </div>
+        ) : (
+          <ul>{renderTree(sortChildren(tree), 0, "")}</ul>
+        )}
       </div>
 
       {/* 拖拽幽灵（pointer 模拟拖拽时跟随鼠标；下方追加悬停目标的动作提示） */}

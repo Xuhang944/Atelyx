@@ -1,7 +1,6 @@
 /**
- * 标题栏左侧：仓库名 + 布局 tab 条（Blender 式工作区切换）。
+ * 标题栏左侧：仓库切换按钮（`VaultSwitcher`，当前仓库名）+ 布局 tab 条（Blender 式工作区切换）。
  *
- * - 仓库名：只读展示（文件面积底部切换条可切换仓库）
  * - 布局 tab：点击切换；**右键菜单**（重命名 inline / 删除红字，最后一个布局不可删）；
  *   双击重命名保留；**pointer 模拟拖拽排序**（WebView2 HTML5 DnD 不可靠）——
  *   位移超阈值进入拖动（setPointerCapture），松手按落点计算目标位置持久化
@@ -9,15 +8,14 @@
  */
 import { Plus } from "lucide-react";
 import { useRef, useState } from "react";
-import { useAppStore } from "@/stores/appStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import { Menu, MenuItem } from "@/components/common/Menu";
+import { VaultSwitcher } from "@/components/layout/VaultSwitcher";
 
 /** 拖拽判定阈值（px）：低于视为点击，不进入拖动模式。 */
 const DRAG_THRESHOLD = 4;
 
 export function LayoutTabs() {
-  const vaultName = useAppStore((s) => s.vaultName);
   const layouts = useUiStateStore((s) => s.workspaceLayouts);
   const activeLayoutId = useUiStateStore((s) => s.activeLayoutId);
   const activateLayout = useUiStateStore((s) => s.activateLayout);
@@ -97,15 +95,8 @@ export function LayoutTabs() {
 
   return (
     <div className="flex items-center gap-1 h-full flex-shrink-0 select-none" data-tauri-drag-region>
-      {/* 仓库名 */}
-      <span
-        className="px-2 text-[11px] truncate max-w-[140px]"
-        style={{ color: "var(--text-muted)" }}
-        title={vaultName}
-        data-tauri-drag-region
-      >
-        {vaultName}
-      </span>
+      {/* 仓库切换按钮（点击弹出已添加仓库列表 + 管理仓库） */}
+      <VaultSwitcher />
 
       <div className="flex items-stretch gap-1" data-tauri-drag-region>
         {layouts.map((l, index) => {
