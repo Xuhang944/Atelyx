@@ -241,31 +241,6 @@ function AreaStatusIndicator({ view }: { view: ViewKind }) {
   }
 }
 
-/** 画布/笔记/表格面积 header 显示当前打开文件名（无文件或其他视图不显示）。 */
-function AreaFileTitle({ view }: { view: ViewKind }) {
-  const file = useAppStore((s) =>
-    view === "canvas"
-      ? s.currentCanvasFile
-      : view === "note"
-        ? s.currentNoteFile
-        : view === "table"
-          ? s.currentTableFile
-          : null,
-  );
-  if (view !== "canvas" && view !== "note" && view !== "table") return null;
-  if (!file) return null;
-  const title = view === "table" ? tableTitleFromFile(file) : noteTitleFromFile(file);
-  return (
-    <span
-      className="flex-shrink-0 min-w-0 text-xs truncate"
-      style={{ color: "var(--accent)", maxWidth: 200 }}
-      title={file}
-    >
-      {title}
-    </span>
-  );
-}
-
 export const AreaFrame = memo(function AreaFrame({
   node,
   onFocus,
@@ -288,6 +263,22 @@ export const AreaFrame = memo(function AreaFrame({
   const used = new Set(usedKey ? usedKey.split(",") : []);
 
   const meta = VIEW_META[node.view];
+
+  // 画布/笔记/表格打开文件时，视图切换按钮直接显示文件名（其余视图/无文件为 null）
+  const currentFile = useAppStore((s) =>
+    node.view === "canvas"
+      ? s.currentCanvasFile
+      : node.view === "note"
+        ? s.currentNoteFile
+        : node.view === "table"
+          ? s.currentTableFile
+          : null,
+  );
+  const fileTitle = currentFile
+    ? node.view === "table"
+      ? tableTitleFromFile(currentFile)
+      : noteTitleFromFile(currentFile)
+    : null;
 
   const renderView = () => {
     switch (node.view) {
@@ -330,13 +321,16 @@ export const AreaFrame = memo(function AreaFrame({
               e.stopPropagation();
               picker.toggle();
             }}
-            className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:opacity-80 text-[11px]"
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:opacity-80"
             style={{ color: "var(--text-secondary)" }}
-            title="切换视图类型"
+            title={currentFile ?? "切换视图类型"}
           >
             {meta.icon}
-            <span className="max-w-[72px] truncate" style={{ color: "var(--text-primary)" }}>
-              {meta.label}
+            <span
+              className="max-w-[200px] truncate text-xs"
+              style={{ color: fileTitle ? "var(--accent)" : "var(--text-primary)" }}
+            >
+              {fileTitle ?? meta.label}
             </span>
             <ChevronDown size={11} />
           </button>
@@ -370,9 +364,6 @@ export const AreaFrame = memo(function AreaFrame({
             })}
           </PopupLayer>
         </div>
-
-        {/* 当前打开文件名（仅画布/笔记/表格；无文件不显示） */}
-        <AreaFileTitle view={node.view} />
 
         <div className="flex-1" />
 
