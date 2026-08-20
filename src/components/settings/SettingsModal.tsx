@@ -10,6 +10,7 @@ import {
   Search,
   Server,
   Settings,
+  Sparkles,
   Users,
   X,
   type LucideIcon,
@@ -26,6 +27,7 @@ import {
 } from "@/stores/collabStore";
 import { useDraftSync, useDebouncedDraft } from "@/hooks/useDraftSync";
 import { ProviderSettingsSection } from "@/components/settings/ProviderSettingsSection";
+import { AgentSettingsSection } from "@/components/settings/AgentSettingsSection";
 import { AboutSection } from "@/components/settings/AboutSection";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
@@ -38,6 +40,7 @@ type Tab =
   | "collab"
   | "providers"
   | "modelServices"
+  | "agents"
   | "search"
   | "files"
   | "editor"
@@ -49,6 +52,7 @@ const TAB_ITEMS: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: "collab", label: "多人协作", icon: Users },
   { key: "providers", label: "模型供应商", icon: Server },
   { key: "modelServices", label: "模型服务", icon: Bot },
+  { key: "agents", label: "Agent", icon: Sparkles },
   { key: "search", label: "联网搜索", icon: Search },
   { key: "files", label: "文件与路径", icon: FolderTree },
   { key: "editor", label: "编辑器", icon: PenLine },
@@ -90,7 +94,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const collabColor = useSettingsStore((s) => s.collabColor);
   const setCollabConfig = useSettingsStore((s) => s.setCollabConfig);
   const collabConnected = useCollabStore((s) => s.connected);
-  // 设置内容（左侧八 tab）：应用级（通用 / 多人协作 / 关于）+ 仓库级（模型供应商 / 模型服务 / 联网搜索 / 文件与路径 / 编辑器）
+  // 设置内容（左侧九 tab）：应用级（通用 / 多人协作 / 关于）+ 仓库级（模型供应商 / 模型服务 / Agent / 联网搜索 / 文件与路径 / 编辑器）
   const [tab, setTab] = useState<Tab>("general");
   /** 左侧 tab 栏折叠状态（折叠后仅显示图标）。 */
   const [tabsCollapsed, setTabsCollapsed] = useState(false);
@@ -724,6 +728,9 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                   />
                 </div>
               </section>
+            ) : tab === "agents" ? (
+              /* ===== Agent 面板（仓库级）：对话预设（名称 + 系统提示词 + 工具）配置 ===== */
+              <AgentSettingsSection />
             ) : tab === "search" ? (
               /* ===== 联网搜索面板（仓库级） ===== */
               <SearchConfigSection />

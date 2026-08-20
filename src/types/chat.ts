@@ -84,7 +84,9 @@ export interface EditorChatIndexEntry {
   id: string;
   /** 会话标题（首条 user 消息前缀，历史会话列表展示）。 */
   title?: string;
-  /** 系统提示词笔记引用（已标记为提示词的笔记可选；缺省 = 未设置）。 */
+  /** 引用的 Agent 配置 id（仓库级 `.atelyx/agents.json`；发送时实时解析系统提示词/工具；缺省（未设置）= 按预置「对话」Agent 处理）。 */
+  agentId?: string;
+  /** 系统提示词笔记引用（遗留字段：仅兼容读取，不再注入，见 agentId）。 */
   systemPromptFile?: string;
   /** 消息正文 .md 相对仓库根路径（`.atelyx/对话历史/<标题>.md`）。 */
   file: string;

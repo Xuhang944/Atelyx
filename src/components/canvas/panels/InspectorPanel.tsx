@@ -2,17 +2,17 @@
  * 右侧边栏属性面板。
  *
  * 单击画布节点 → 显示其属性：
- * - 对话节点：系统提示词设置（已标记笔记，与 ConversationNode header 同源）+ 被消费/产出的资产列表
+ * - 对话节点：Agent 选择（与 ConversationNode header 同源）+ 被消费/产出的资产列表
  * - 文本/媒体节点：基本信息 + 来源/消费方列表
  * 资产列表项点击 → setCenter 定位到对应节点（与 @chip 点击定位一致）。
- * 分层：走 canvasStore / vaultStore，不直调 service。
+ * 分层：走 canvasStore / settingsStore，不直调 service。
  */
-import { BookMarked, FileText, GitBranch, Image, Info, LayoutDashboard, Link2, MessageSquare, Network, Table as TableIcon } from "lucide-react";
+import { Bot, FileText, GitBranch, Image, Info, LayoutDashboard, Link2, MessageSquare, Network, Table as TableIcon } from "lucide-react";
 import { useReactFlow, type Node as FlowNode } from "@xyflow/react";
 import { useShallow } from "zustand/react/shallow";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { useVaultStore } from "@/stores/vaultStore";
+import { BUILTIN_AGENT_CHAT_ID } from "@/constants/agents";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
 import { mentionTextOf, prefix } from "@/utils/text";
 import type { ConversationData, MediaData, Message, TableData, TextData } from "@/types";
@@ -146,9 +146,8 @@ export function InspectorPanel() {
   // 只订阅选中对话的消息数（number，流式期间长度不变不重渲染；全量 messagesByConv 会每帧刷新面板）
   const msgCount = useCanvasStore((s) => (nodeId ? (s.messagesByConv[nodeId]?.length ?? 0) : 0));
   const updateNodeData = useCanvasStore((s) => s.updateNodeData);
-  const noteList = useVaultStore((s) => s.noteList);
-  // 候选 = 实际存在的笔记 ∩ 已标记列表（文件面板右键注册/注销，独立落盘 .atelyx/prompt-notes.json；hook 须在 early return 前调用）
-  const promptFiles = useSettingsStore((s) => s.promptNotes);
+  // Agent 候选（配置在 设置 → Agent，仓库级 .atelyx/agents.json；发送时实时解析系统提示词/工具）
+  const agents = useSettingsStore((s) => s.agents);
   // 分支来源：入边中 type 为 conversation 的父节点（血缘边对话→对话），无则手动创建。
   // 订阅父对话消息：父节点继续对话后来源显示名响应式刷新
   const parentConv = sources.find((n) => n.type === "conversation");
@@ -207,10 +206,12 @@ export function InspectorPanel() {
     sub = d.file ?? "表格";
   }
 
-  const sysPromptFile = isConv
-    ? (node.data as unknown as Partial<ConversationData>).systemPromptFile
+  const agentId = isConv
+    ? (node.data as unknown as Partial<ConversationData>).agentId
     : undefined;
-  const promptNotes = noteList.filter((n) => promptFiles.includes(n.file));
+  // 未选择（旧数据/清空）= 缺省「对话」：摘要按「对话」展示、运行时按「对话」解析
+  const selectedAgent =
+    agents.find((a) => a.id === (agentId || BUILTIN_AGENT_CHAT_ID)) ?? null;
 
   return (
     <div
@@ -255,33 +256,46 @@ export function InspectorPanel() {
 
           <section>
             <SectionTitle>
-              <BookMarked size={12} /> 系统提示词
+              <Bot size={12} /> Agent
             </SectionTitle>
-            {promptNotes.length === 0 ? (
-              <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-                暂无提示词笔记（在文件面板右键笔记 → 注册为提示词）
-              </p>
-            ) : (
-              <DropdownSelect
-                value={sysPromptFile ?? ""}
-                onChange={(v) =>
-                  updateNodeData(node.id, { systemPromptFile: v || undefined })
+            <DropdownSelect
+              value={agentId ?? ""}
+              onChange={(v) =>
+                updateNodeData(node.id, {
+                  agentId: v || undefined,
+                  // 选择 Agent 时清除遗留字段（systemPromptFile/agentMode/agentTools 不再生效，按动作迁移）
+                  systemPromptFile: undefined,
+                  agentMode: undefined,
+                  agentTools: undefined,
+                })
+              }
+              options={agents.map((a) => ({ value: a.id, label: a.name }))}
+              placeholder="对话"
+              emptyText="暂无 Agent（设置 → Agent 新建）"
+              className="w-full text-xs rounded px-1.5 py-1"
+              style={{
+                color: "var(--text-secondary)",
+                background: "var(--input-bg)",
+                border: "1px solid var(--input-border)",
+              }}
+              title="选中的 Agent 提供系统提示词与工具（发送时实时解析；缺省「对话」= 普通对话；配置在 设置 → Agent）"
+            />
+            {selectedAgent && (
+              <p
+                className="text-[11px] mt-1.5 leading-relaxed"
+                style={{ color: "var(--text-muted)" }}
+                title={
+                  selectedAgent.systemPromptFile
+                    ? `系统提示词：已注册提示词（${selectedAgent.systemPromptFile}）`
+                    : undefined
                 }
-                options={[
-                  { value: "", label: "不使用" },
-                  ...promptNotes.map((n) => ({
-                    value: n.file,
-                    label: n.name.replace(/\.md$/i, ""),
-                  })),
-                ]}
-                className="w-full text-xs rounded px-1.5 py-1"
-                style={{
-                  color: "var(--text-secondary)",
-                  background: "var(--input-bg)",
-                  border: "1px solid var(--input-border)",
-                }}
-                title="发送时实时读笔记正文作为首条 system 消息注入"
-              />
+              >
+                {selectedAgent.systemPromptFile
+                  ? `系统提示词：已注册提示词（${selectedAgent.systemPromptFile}）`
+                  : "系统提示词：未设置"}
+                {" · "}
+                {selectedAgent.tools.length ? `${selectedAgent.tools.length} 工具` : "无工具"}
+              </p>
             )}
           </section>
           </>

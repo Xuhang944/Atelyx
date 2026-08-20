@@ -45,7 +45,7 @@ import {
 import { toLlmMessages } from "@/services/ai/client";
 import { abortAutoTitle } from "@/services/ai/autoTitle";
 import { runSearch, resultsToText } from "@/services/search";
-import { runAgentTools, buildAgentTools } from "@/services/ai/tools";
+import { runAgentTools } from "@/services/ai/tools";
 import { readVaultFileWindow, writeVaultFile, editVaultFile } from "@/services/vault/aiFiles";
 import { fetchWeb } from "@/services/web";
 import {
@@ -69,7 +69,6 @@ import {
   DEFAULT_GROUP_WIDTH,
   DEFAULT_GROUP_HEIGHT,
 } from "@/constants/canvas";
-import { DEFAULT_AGENT_TOOLS } from "@/constants/tools";
 import { ERROR_PREFIX, TIMEOUT_ERROR_TEXT } from "@/constants/chat";
 import {
   runStreamExchange,
@@ -916,16 +915,15 @@ async function runStream(conversationId: string): Promise<void> {
     );
 
   try {
-    // Agent 模式工具组装：agentMode 关 = 普通对话不带工具；开 = 按 agentTools 勾选过滤
-    // （缺省全部）；web_search 依赖搜索源配置——勾选了但未配置时剔除并提示，其余工具不受影响
-    const settings = useSettingsStore.getState();
-    const searchReady = settings.isSearchConfigured();
+    // 系统提示词 + 工具：按 Agent 实时解析（配置在 设置 → Agent，引用已注册提示词笔记实时读正文注入）。
+    // 缺省（未选 Agent）= 预置「对话」（无系统提示词、无工具）；Agent 缺失（已删）降级为普通对话。
+    const agentReq = await useSettingsStore
+      .getState()
+      .resolveAgentRequest(nodeData?.agentId);
     let tools: ToolSchema[] = [];
-    if (nodeData?.agentMode) {
-      const enabled = nodeData.agentTools ?? DEFAULT_AGENT_TOOLS;
-      const assembly = buildAgentTools(enabled, searchReady);
-      tools = assembly.tools;
-      if (assembly.skippedWebSearch) {
+    if (agentReq) {
+      tools = agentReq.tools;
+      if (agentReq.skippedWebSearch) {
         store.setState({
           error: "未配置搜索源（设置 → 联网搜索），本次对话未启用联网搜索",
         });
@@ -933,15 +931,9 @@ async function runStream(conversationId: string): Promise<void> {
     }
     // 5.4：引用已在 send 时固化进 user 消息 content（一次性注入），此处不再动态拼接
     const apiMessages: LlmMessage[] = toLlmMessages(history);
-    // 系统提示词：从引用的笔记实时读正文，注入为首条 system 消息（外部编辑即时生效）。
-    // 读失败（笔记被删/改名）静默降级为不带系统提示词，不阻塞对话。
-    if (nodeData?.systemPromptFile) {
-      try {
-        const sysContent = await readNote(nodeData.systemPromptFile);
-        if (sysContent.trim()) apiMessages.unshift({ role: "system", text: sysContent });
-      } catch {
-        // 笔记缺失：跳过注入
-      }
+    // 系统提示词注入：Agent 引用已注册提示词笔记实时读正文（外部编辑即时生效）。读失败静默降级不阻塞对话。
+    if (agentReq?.systemPrompt?.trim()) {
+      apiMessages.unshift({ role: "system", text: agentReq.systemPrompt });
     }
     await runStreamExchange({
       provider,
@@ -1308,31 +1300,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       const data = isWhiteboard
         ? await loadWhiteboardVault(file)
         : await loadCanvasVault(file);
-      // Agent 模式旧开关字段归一化：toolsEnabled/writeToolsEnabled → agentMode/agentTools
-      // （存量文件兼容，只做一次）。重建节点对象而非原位修改——增量保存按引用 diff，
-      // 原位修改引用不变会被判「无变化」跳过写盘，迁移结果永不落盘。
-      let migrated = false;
-      const nodes = !isWhiteboard
-        ? data.nodes.map((n) => {
-            if (n.type !== "conversation") return n;
-            const d = n.data as Record<string, unknown>;
-            if (d.agentMode !== undefined) return n;
-            const searchWanted = d.toolsEnabled === true;
-            const writeWanted = d.writeToolsEnabled === true;
-            if (!searchWanted && !writeWanted) return n;
-            const tools: string[] = [];
-            if (searchWanted) tools.push("web_search");
-            if (writeWanted) tools.push("write_file");
-            const { toolsEnabled: _t, writeToolsEnabled: _w, ...rest } = d;
-            migrated = true;
-            return { ...n, data: { ...rest, agentMode: true, agentTools: tools } };
-          })
-        : data.nodes;
       set({
         canvasId: data.id,
         canvasFile: file,
         canvasTitle: data.title,
-        nodes,
+        nodes: data.nodes,
         edges: data.edges,
         readOnly: isWhiteboard,
         messagesByConv: data.messagesByConv,
@@ -1349,7 +1321,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       undoMgr.clear();
       // 已落盘基线 = 加载的磁盘状态（后续保存按引用 diff，未变实体不重写）
       syncLastSaved();
-      if (migrated) schedulePersist();
       // 恢复补命名：加载后对首个未命名对话节点重试（覆盖上次命名被中断/丢失的窗口；
       // 仅补一个防并发请求轰炸模型端点）；无 title 无消息的节点由消息检查自然跳过
       if (!isWhiteboard) {
@@ -2356,8 +2327,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       data: {
         providerId: parentData.providerId ?? "",
         model: parentData.model ?? "",
-        // 分支继承系统提示词（子节点独立演化，改动不影响父节点）
-        systemPromptFile: parentData.systemPromptFile,
+        // 分支继承 Agent（子节点独立演化，改动不影响父节点）
+        agentId: parentData.agentId,
         // 分支继承节点级推理等级（与模型同语义；子节点可独立改，不影响父节点）
         reasoningEffort: parentData.reasoningEffort,
       },

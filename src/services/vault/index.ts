@@ -47,6 +47,7 @@ import {
   type RebuildLinksResult,
   type VaultConfig,
   type VaultInfo,
+  type AgentConfig,
 } from "@/types";
 
 /** 打开仓库：设当前仓库根 + 初始化目录结构。 */
@@ -197,6 +198,16 @@ export async function readPromptNotes(): Promise<string[]> {
 /** 写系统提示词标记列表（原子写 .atelyx/prompt-notes.json，独立于 config.json）。 */
 export async function writePromptNotes(files: string[]): Promise<void> {
   await invoke("write_prompt_notes", { files });
+}
+
+/** 读 Agent 配置列表（.atelyx/agents.json，不存在/损坏返回空）。 */
+export async function readAgents(): Promise<AgentConfig[]> {
+  return invoke<AgentConfig[]>("read_agents");
+}
+
+/** 写 Agent 配置列表（原子写 .atelyx/agents.json，独立于 config.json）。 */
+export async function writeAgents(agents: AgentConfig[]): Promise<void> {
+  await invoke("write_agents", { agents });
 }
 
 /** 读文件夹图标颜色映射（.atelyx/folder-colors.json，相对仓库根路径 → hex 色；不存在/损坏返回空）。 */

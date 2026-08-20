@@ -1,11 +1,13 @@
 import { create } from "zustand";
 import { getApiKey, setApiKey, deleteApiKey } from "@/services/keychain";
-import { readFolderColors, readPromptNotes, readVaultConfig, writeFolderColors, writePromptNotes, writeVaultConfig } from "@/services/vault";
+import { readAgents, readFolderColors, readNote, readPromptNotes, readVaultConfig, writeAgents, writeFolderColors, writePromptNotes, writeVaultConfig } from "@/services/vault";
 import { fetchProviderModels } from "@/services/ai/client";
+import { buildAgentTools } from "@/services/ai/tools";
 import { getHostname, readGlobalConfig, updateGlobalConfig } from "@/services/global";
 import { useAppStore } from "@/stores/appStore";
 import { useCollabStore } from "@/stores/collabStore";
 import type {
+  AgentConfig,
   AiConfig,
   ChatTargetResult,
   FileExplorerSortKey,
@@ -13,9 +15,12 @@ import type {
   GlobalSearchConfig,
   ProviderConfig,
   ThemeMode,
+  ToolSchema,
   VaultConfig,
 } from "@/types";
 import { DEFAULT_AI_CONFIG } from "@/constants/ai";
+import { DEFAULT_AGENT_TOOLS } from "@/constants/tools";
+import { BUILTIN_AGENTS, BUILTIN_AGENT_CHAT_ID } from "@/constants/agents";
 import { PROVIDER_PRESETS } from "@/constants/providers";
 import { remapDirPrefix } from "@/utils/filename";
 import { createPersistController } from "@/utils/persist";
@@ -70,6 +75,8 @@ interface SettingsState {
   tavilyKey: string;
   /** 已标记为系统提示词的笔记相对路径列表（独立落盘 .atelyx/prompt-notes.json，config.json 不承载）。 */
   promptNotes: string[];
+  /** Agent 配置列表（仓库级，独立落盘 .atelyx/agents.json；对话节点/面板按 id 实时引用）。 */
+  agents: AgentConfig[];
   /** 文件面板文件夹图标颜色（相对仓库根路径 → hex 色；独立落盘 .atelyx/folder-colors.json）。 */
   folderColors: Record<string, string>;
   loaded: boolean;
@@ -146,6 +153,27 @@ interface SettingsState {
   remapPromptNote: (oldFile: string, newFile: string) => Promise<void>;
   /** 文件夹重命名后同步标记路径（`oldDir/` 前缀 → `newDir/`，写 .atelyx/prompt-notes.json）。 */
   remapPromptNotesByDir: (oldDir: string, newDir: string) => Promise<void>;
+  /** 新建 Agent（默认名「新 Agent」+ 全工具勾选），返回新 id；写 .atelyx/agents.json。 */
+  addAgent: () => Promise<string>;
+  /** 更新 Agent（merge patch；写 .atelyx/agents.json）。 */
+  updateAgent: (id: string, patch: Partial<AgentConfig>) => Promise<void>;
+  /** 删除 Agent（写 .atelyx/agents.json；引用它的节点/会话发送时降级为普通对话）。 */
+  removeAgent: (id: string) => Promise<void>;
+  /** 复制 Agent（新 id + 名称加「副本」；写 .atelyx/agents.json）。 */
+  duplicateAgent: (id: string) => Promise<void>;
+  /** 按 id 查找 Agent（未找到/无 id 返回 null——发送时降级为普通对话）。 */
+  resolveAgent: (id: string | undefined) => AgentConfig | null;
+  /**
+   * 解析 Agent 发送请求（画布/面板共用）：系统提示词（引用已注册提示词笔记实时读正文）+ 工具组装。
+   * Agent 不存在返回 null；笔记缺失降级为不带系统提示词；tools 空 = 不带工具。
+   */
+  resolveAgentRequest: (
+    agentId: string | undefined,
+  ) => Promise<{ systemPrompt?: string; tools: ToolSchema[]; skippedWebSearch: boolean } | null>;
+  /** 笔记重命名/移动后同步 Agent 引用的提示词笔记路径（写 .atelyx/agents.json）。 */
+  remapAgentPromptNote: (oldFile: string, newFile: string) => Promise<void>;
+  /** 文件夹重命名后同步 Agent 引用的提示词笔记路径前缀（写 .atelyx/agents.json）。 */
+  remapAgentPromptNotesByDir: (oldDir: string, newDir: string) => Promise<void>;
   /** 设置文件夹图标颜色（dir = 相对仓库根路径，color = hex 色；undefined = 清除还原默认，写 .atelyx/folder-colors.json）。 */
   setFolderColor: (dir: string, color: string | undefined) => Promise<void>;
   /** 文件夹重命名/移动后同步颜色键（`oldDir/` 前缀 → `newDir/`，写 .atelyx/folder-colors.json）。 */
@@ -266,6 +294,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   searchConfig: { provider: "tavily", searxngUrl: "" },
   tavilyKey: "",
   promptNotes: [],
+  agents: [],
   folderColors: {},
   loaded: false,
 
@@ -317,6 +346,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       searchConfig: { provider: "tavily", searxngUrl: "" },
       tavilyKey: "",
       promptNotes: [],
+      agents: [],
       loaded: true,
     });
   },
@@ -362,6 +392,22 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       } catch (e) {
         console.error("读取系统提示词标记失败", e);
       }
+      // Agent 配置独立落盘 .atelyx/agents.json（config.json 只存仓库配置）；
+      // 预置 Agent（「对话」无工具 / 「Agent」全工具，builtin 不可删）缺失即补入并落盘（首次种子/手删补齐），保证默认必现
+      let agents: AgentConfig[] = [];
+      try {
+        agents = await readAgents();
+      } catch (e) {
+        console.error("读取 Agent 配置失败", e);
+      }
+      const missingBuiltins = BUILTIN_AGENTS.filter(
+        (b) => !agents.some((a) => a.id === b.id),
+      );
+      if (missingBuiltins.length) {
+        agents = [...missingBuiltins, ...agents];
+        // 首次种子/补齐预置：await 落盘（防迟到的写盘用旧列表覆盖用户刚做的增改）
+        await writeAgents(agents).catch((e) => console.error("写入预置 Agent 失败", e));
+      }
       // 文件夹图标颜色独立落盘 .atelyx/folder-colors.json（config.json 只存仓库配置）
       let folderColors: Record<string, string> = {};
       try {
@@ -375,6 +421,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         searchConfig,
         tavilyKey,
         promptNotes,
+        agents,
         folderColors,
       });
     } catch (e) {
@@ -389,6 +436,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       searchConfig: { provider: "tavily", searxngUrl: "" },
       tavilyKey: "",
       promptNotes: [],
+      agents: [],
       folderColors: {},
     }),
 
@@ -653,6 +701,141 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       await writePromptNotes(next);
     } catch (e) {
       console.error("保存系统提示词标记失败", e);
+    }
+  },
+
+  /** Agent 配置落盘统一入口（各 CRUD 收敛于此；失败仅记日志不打断 UI）。 */
+  addAgent: async () => {
+    const id = crypto.randomUUID();
+    const agent: AgentConfig = {
+      id,
+      name: "新 Agent",
+      tools: [...DEFAULT_AGENT_TOOLS],
+    };
+    set({ agents: [...get().agents, agent] });
+    try {
+      await writeAgents(get().agents);
+    } catch (e) {
+      console.error("保存 Agent 配置失败", e);
+    }
+    return id;
+  },
+
+  updateAgent: async (id, patch) => {
+    const next = get().agents.map((a) => (a.id === id ? { ...a, ...patch } : a));
+    set({ agents: next });
+    try {
+      await writeAgents(next);
+    } catch (e) {
+      console.error("保存 Agent 配置失败", e);
+    }
+  },
+
+  removeAgent: async (id) => {
+    // 预置 Agent 不可删除（builtin 标记；UI 已隐藏删除按钮，此处兜底防误删）
+    const target = get().agents.find((a) => a.id === id);
+    if (target?.builtin) return;
+    const next = get().agents.filter((a) => a.id !== id);
+    set({ agents: next });
+    try {
+      await writeAgents(next);
+    } catch (e) {
+      console.error("保存 Agent 配置失败", e);
+    }
+  },
+
+  duplicateAgent: async (id) => {
+    const src = get().agents.find((a) => a.id === id);
+    if (!src) return;
+    const copy: AgentConfig = {
+      ...src,
+      id: crypto.randomUUID(),
+      name: `${src.name}（副本）`,
+      // 副本是普通用户 Agent（可删除），不继承预置标记
+      builtin: undefined,
+    };
+    set({ agents: [...get().agents, copy] });
+    try {
+      await writeAgents(get().agents);
+    } catch (e) {
+      console.error("保存 Agent 配置失败", e);
+    }
+  },
+
+  /** 按 id 查找 Agent：空 id = 缺省解析为预置「对话」（无工具普通对话）；未找到返回 null（发送时降级为普通对话）。 */
+  resolveAgent: (id) => {
+    if (!id) {
+      // 缺省 = 预置「对话」：对话节点/面板不显式选择时的默认行为（无系统提示词、无工具）
+      return (
+        get().agents.find((a) => a.id === BUILTIN_AGENT_CHAT_ID) ??
+        BUILTIN_AGENTS[0] ??
+        null
+      );
+    }
+    return get().agents.find((a) => a.id === id) ?? null;
+  },
+
+  resolveAgentRequest: async (agentId) => {
+    const agent = get().resolveAgent(agentId);
+    if (!agent) return null;
+    // 系统提示词：引用已注册提示词笔记实时读正文（外部编辑即时生效，读失败降级）
+    let systemPrompt: string | undefined;
+    if (agent.systemPromptFile) {
+      try {
+        const sysContent = await readNote(agent.systemPromptFile);
+        if (sysContent.trim()) systemPrompt = sysContent;
+      } catch {
+        // 笔记缺失：跳过注入
+      }
+    }
+    // 工具组装：tools 空 = 不带工具；web_search 勾选但未配置搜索源时剔除并提示
+    const s = get();
+    const searchReady = s.isSearchConfigured();
+    let tools: ToolSchema[] = [];
+    let skippedWebSearch = false;
+    if (agent.tools.length) {
+      const assembly = buildAgentTools(agent.tools, searchReady);
+      tools = assembly.tools;
+      skippedWebSearch = assembly.skippedWebSearch;
+    }
+    return { systemPrompt, tools, skippedWebSearch };
+  },
+
+  /** 笔记重命名/移动后同步 Agent 引用的提示词笔记路径（旧路径未被引用时 no-op）。 */
+  remapAgentPromptNote: async (oldFile, newFile) => {
+    const agents = get().agents;
+    if (!agents.some((a) => a.systemPromptFile === oldFile)) return;
+    const next = agents.map((a) =>
+      a.systemPromptFile === oldFile ? { ...a, systemPromptFile: newFile } : a,
+    );
+    set({ agents: next });
+    try {
+      await writeAgents(next);
+    } catch (e) {
+      console.error("保存 Agent 配置失败", e);
+    }
+  },
+
+  /** 文件夹重命名后同步 Agent 引用的提示词笔记路径前缀（`oldDir/` 前缀命中才更新）。 */
+  remapAgentPromptNotesByDir: async (oldDir, newDir) => {
+    const agents = get().agents;
+    let changed = false;
+    const next = agents.map((a) => {
+      if (a.systemPromptFile && a.systemPromptFile.startsWith(`${oldDir}/`)) {
+        changed = true;
+        return {
+          ...a,
+          systemPromptFile: remapDirPrefix(a.systemPromptFile, oldDir, newDir),
+        };
+      }
+      return a;
+    });
+    if (!changed) return;
+    set({ agents: next });
+    try {
+      await writeAgents(next);
+    } catch (e) {
+      console.error("保存 Agent 配置失败", e);
     }
   },
 

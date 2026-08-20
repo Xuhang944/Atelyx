@@ -172,6 +172,8 @@ async function applyNoteFileChange(oldFile: string, newFile: string, newTitle: s
     lastNoteRename = { oldFile, newFile };
     // 系统提示词标记按路径引用：重命名/移动后同步 promptNotes，防标记指向旧路径失效
     await useSettingsStore.getState().remapPromptNote(oldFile, newFile);
+    // Agent 引用的提示词笔记同款同步（agents.json 的 systemPromptFile 指向旧路径失效）
+    await useSettingsStore.getState().remapAgentPromptNote(oldFile, newFile);
     // 「上次打开」的笔记随路径更新（否则下次进入仓库尝试恢复旧路径）
     useUiStateStore.getState().renameLastNote(oldFile, newFile);
   } finally {
@@ -277,6 +279,7 @@ async function applyFolderFileChange(oldDir: string, newDir: string): Promise<vo
     }
     // 系统提示词标记 / 文件夹图标颜色 / 展开集合 / 上次打开文件：前缀同步（防标记与恢复指向失效路径）
     await useSettingsStore.getState().remapPromptNotesByDir(oldDir, newDir);
+    await useSettingsStore.getState().remapAgentPromptNotesByDir(oldDir, newDir);
     await useSettingsStore.getState().remapFolderColorsByDir(oldDir, newDir);
     useUiStateStore.getState().renameByDir(oldDir, newDir);
     await useVaultStore.getState().loadFiles();

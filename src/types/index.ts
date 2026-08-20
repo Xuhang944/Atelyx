@@ -47,6 +47,8 @@ export type {
   ChatTargetResult,
 } from "./provider";
 
+export type { AgentConfig } from "./agent";
+
 export {
   type CanvasViewport,
   type CanvasFile,

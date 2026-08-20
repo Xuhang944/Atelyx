@@ -892,6 +892,57 @@ pub fn write_prompt_notes_file(root: &Path, files: &[String]) -> Result<(), Stri
     atomic_write(&path, &json)
 }
 
+// ===== Agent 配置（.atelyx/agents.json，独立于 config.json）=====
+// Agent = 可复用对话预设（名称 + 系统提示词 + 工具），对话节点/面板按 id 引用；
+// 单独落盘避免混入配置字段（与 prompt-notes.json 同策略）。
+
+/// 单条 Agent 配置（字段命名与前端 types/agent.ts 对齐，camelCase）。
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConfig {
+    pub id: String,
+    pub name: String,
+    /// 引用已注册提示词笔记（相对仓库根 `.md` 路径，发送时实时读正文注入）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_file: Option<String>,
+    /// 启用的工具 id 列表（空数组 = 不带工具）。
+    #[serde(default)]
+    pub tools: Vec<String>,
+    /// 预置标记（缺省 = 用户自建；预置 Agent 不可删除）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin: Option<bool>,
+}
+
+/// Agent 配置文件根结构（带 schema 便于后续演进）。
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct AgentConfigFile {
+    pub schema: String,
+    pub agents: Vec<AgentConfig>,
+}
+
+/// 读 Agent 配置列表（不存在/解析失败返回空——手编辑损坏不阻塞，与 prompt-notes 同策略）。
+pub fn read_agents_file(root: &Path) -> Result<Vec<AgentConfig>, String> {
+    let path = root.join(".atelyx").join("agents.json");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let json = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    Ok(serde_json::from_str::<AgentConfigFile>(&json)
+        .map(|f| f.agents)
+        .unwrap_or_default())
+}
+
+/// 写 Agent 配置列表（原子写 .atelyx/agents.json）。
+pub fn write_agents_file(root: &Path, agents: &[AgentConfig]) -> Result<(), String> {
+    let path = root.join(".atelyx").join("agents.json");
+    let file = AgentConfigFile {
+        schema: "atelyx-agents/v1".to_string(),
+        agents: agents.to_vec(),
+    };
+    let json = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
+    atomic_write(&path, &json)
+}
+
 // ===== 文件夹图标颜色（.atelyx/folder-colors.json，独立于 config.json）=====
 // config.json 只保存仓库配置；文件夹颜色单独落盘，避免混入配置字段（与 prompt-notes.json 同策略）。
 
@@ -947,7 +998,10 @@ pub struct EditorChatSession {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// 系统提示词笔记引用（文件面板右键「注册为提示词」标记的笔记可选）
+    /// 引用的 Agent 配置 id（仓库级 `.atelyx/agents.json`；发送时实时解析系统提示词/工具）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// 系统提示词笔记引用（遗留字段：仅兼容读取，不再注入；缺省按预置「对话」Agent 处理）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt_file: Option<String>,
     /// 已注入上下文的笔记（防重复注入：同一笔记只注入一次，更换笔记才再次注入；仅会话运行期内有效，不落盘）

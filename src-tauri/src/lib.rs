@@ -50,6 +50,8 @@ pub fn run() {
             commands::vault::write_vault_config,
             commands::vault::read_prompt_notes,
             commands::vault::write_prompt_notes,
+            commands::vault::read_agents,
+            commands::vault::write_agents,
             commands::vault::read_folder_colors,
             commands::vault::write_folder_colors,
             commands::vault::read_editor_chats,

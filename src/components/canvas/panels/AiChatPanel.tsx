@@ -9,14 +9,14 @@ const refKeyOfPanelRef = (r: { label: string }) =>
  * - 顶部一行：左侧面板内联错误提示（仅出错时占位）+ 右侧「新建会话 / 历史会话」图标按钮
  * - 中部消息流：Markdown 公共渲染、流式指示、自动滚底
  * - 底部输入区：textarea（Enter 发送 / Shift+Enter 换行，支持 @引用标签）
- *   + 系统提示词选择（图标 + 提示词名）+ 模型选择（图标 + 模型名）+ 发送/停止按钮
+ *   + Agent 选择（图标 + Agent 名）+ 模型选择（图标 + 模型名）+ 发送/停止按钮
  *
  * 分层：组件只走 chatPanelStore / settingsStore / vaultStore，不直调 service。
  * 当前打开笔记经 props（noteFile）传入：新对话态自动 @ 当前笔记（可退格删除）。
  */
 import {
   AlertCircle,
-  BookMarked,
+  Bot,
   Cpu,
   FilePlus,
   History,
@@ -32,7 +32,6 @@ import { useEffect, useCallback, useRef, useState } from "react";
 import { useAppStore } from "@/stores/appStore";
 import { useChatPanelStore } from "@/stores/chatPanelStore";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { useVaultStore } from "@/stores/vaultStore";
 import { useAutoScrollFollow } from "@/hooks/useAutoScrollFollow";
 import { useMarkdownComponents } from "@/hooks/useMarkdownComponents";
 import {
@@ -45,7 +44,6 @@ import {
 import { ChatMessageBubble } from "@/components/common/ChatMessageBubble";
 import { MentionTextarea } from "@/components/common/MentionTextarea";
 import { JumpToBottomButton } from "@/components/common/JumpToBottomButton";
-import { AgentModeToggle } from "@/components/common/AgentModeToggle";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
 import { ModelSelect } from "@/components/common/ModelSelect";
 import { PopupLayer } from "@/components/common/PopupLayer";
@@ -104,13 +102,9 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
   const newSession = useChatPanelStore((s) => s.newSession);
   const openSession = useChatPanelStore((s) => s.openSession);
   const deleteSession = useChatPanelStore((s) => s.deleteSession);
-  const setSystemPromptFile = useChatPanelStore((s) => s.setSystemPromptFile);
+  const setAgentId = useChatPanelStore((s) => s.setAgentId);
   const setModelOverride = useChatPanelStore((s) => s.setModelOverride);
   const setEffortOverride = useChatPanelStore((s) => s.setEffortOverride);
-  const agentMode = useChatPanelStore((s) => s.agentMode);
-  const agentTools = useChatPanelStore((s) => s.agentTools);
-  const setAgentMode = useChatPanelStore((s) => s.setAgentMode);
-  const setAgentTool = useChatPanelStore((s) => s.setAgentTool);
   const clearError = useChatPanelStore((s) => s.clearError);
   const vaultRoot = useAppStore((s) => s.vaultRoot);
 
@@ -118,9 +112,9 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
   const messages = active?.messages ?? EMPTY_MESSAGES;
   // 顶部标题：激活会话名（新对话态无会话 → 「新对话」）
   const activeTitle = active?.title || "新对话";
-  // 系统提示词：激活会话的会话级引用；新对话态（无激活会话）读 draft（发送首条消息时固化）
-  const draftSystemPromptFile = useChatPanelStore((s) => s.draftSystemPromptFile);
-  const sysPromptFile = active?.systemPromptFile ?? draftSystemPromptFile;
+  // Agent：激活会话的会话级引用；新对话态（无激活会话）读 draft（发送首条消息时固化）
+  const draftAgentId = useChatPanelStore((s) => s.draftAgentId);
+  const agentId = active?.agentId ?? draftAgentId;
 
   const [input, setInput] = useState("");
   // 历史会话浮层：锚定 History 按钮（PopupLayer 统一壳，外点/Esc 关闭）
@@ -246,10 +240,8 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
   // 跟随默认时显示真实生效模型名（resolveDefaultModel：仓库默认模型反查所属供应商，均为落盘配置；昵称优先展示）
   const defaultModelName = useSettingsStore((s) => s.resolveDefaultModel()?.model ?? null);
   const defaultModelDisplay = defaultModelName ? modelNameAcrossProviders(providers, defaultModelName) : null;
-  const noteList = useVaultStore((s) => s.noteList);
-  // 系统提示词候选：实际存在的笔记 ∩ 已标记列表（文件面板右键 .md 注册/注销，独立落盘 .atelyx/prompt-notes.json）
-  const promptFiles = useSettingsStore((s) => s.promptNotes);
-  const promptNotes = noteList.filter((n) => promptFiles.includes(n.file));
+  // Agent 候选（配置在 设置 → Agent，仓库级 .atelyx/agents.json；发送时实时解析系统提示词/工具）
+  const agents = useSettingsStore((s) => s.agents);
 
   // 输入框 overlay 分段：@引用 → 圆角标签段（可删除），其余普通文本段
   const segments = splitMentions(
@@ -474,23 +466,19 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
       <div className="border-t flex-shrink-0" style={{ borderColor: "var(--border)" }}>
         {/* textarea + 内部工具条（absolute 叠放，textarea 有 pb 留白） */}
         <div className="relative">
-          {/* 输入框内底部工具条：左 提示词/模型；右 发送/停止 */}
+          {/* 输入框内底部工具条：左 Agent/模型；右 发送/停止 */}
           <div className="absolute inset-x-0 bottom-3 z-10 px-1.5 flex items-center gap-0.5">
-          {/* 系统提示词选择：DropdownSelect（PopupLayer 统一弹层壳，锚定按钮弹出） */}
+          {/* Agent 选择：选中的 Agent 提供系统提示词与工具（发送时实时解析）；缺省「对话」= 普通对话。
+              选择 Agent 时清除旧会话遗留字段（systemPromptFile 不再生效，按动作迁移） */}
           <DropdownSelect
-            value={sysPromptFile ?? ""}
-            onChange={(v) => setSystemPromptFile(v || undefined)}
-            options={[
-              { value: "", label: "不使用" },
-              ...promptNotes.map((n) => ({
-                value: n.file,
-                label: n.name.replace(/\.md$/i, ""),
-              })),
-            ]}
-            emptyText="暂无提示词笔记（在文件面板右键笔记 → 注册为提示词）"
-            prefixIcon={<BookMarked size={13} className="flex-shrink-0" />}
-            placeholder="提示词"
-            title={sysPromptFile ? `系统提示词：${noteTitleFromFile(sysPromptFile)}` : "选择系统提示词（右键笔记注册）"}
+            value={agentId ?? ""}
+            onChange={(v) => setAgentId(v || undefined)}
+            options={agents.map((a) => ({ value: a.id, label: a.name }))}
+            // 未选择（旧数据/清空）= 缺省「对话」：占位显示对话、运行时按「对话」解析
+            placeholder="对话"
+            emptyText="暂无 Agent（设置 → Agent 新建）"
+            prefixIcon={<Bot size={13} className="flex-shrink-0" />}
+            title={agentId ? `Agent：${agents.find((a) => a.id === agentId)?.name ?? ""}` : "Agent：对话（缺省，普通对话；系统提示词与工具在 设置 → Agent 中配置）"}
             className="px-1.5 py-1 rounded text-xs hover:opacity-80 w-28 min-w-0"
             style={{ color: "var(--text-secondary)" }}
           />
@@ -514,14 +502,6 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
             style={{ color: "var(--text-secondary)" }}
           />
 
-          {/* Agent 模式开关：点击 = 切换模式（普通对话 ↔ 工具调用）；开启时旁侧小箭头弹出工具勾选浮层 */}
-          <AgentModeToggle
-            agentMode={agentMode}
-            onToggleMode={() => setAgentMode(!agentMode)}
-            enabledTools={agentTools}
-            onToggleTool={setAgentTool}
-            className="px-1.5 py-1 text-xs"
-          />
           <div className="flex-1" />
           {/* 右：发送 / 停止（图标 only，金色圆钮，流式中切换为停止）——mr-1 右缘留白不顶格 */}
           <button

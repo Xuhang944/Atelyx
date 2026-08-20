@@ -32,9 +32,10 @@ use crate::vault::{
     sanitize_filename, walk_md_in, write_canvas_file, write_note as write_note_file, write_vault_config as write_vault_config_file,
     read_editor_chats_file, read_prompt_notes_file, write_prompt_notes_file,
     read_folder_colors_file, write_folder_colors_file,
+    read_agents_file, write_agents_file,
     write_editor_chats_file, read_chat_messages_file, write_chat_messages_file,
     delete_chat_messages_file, read_dir_filtered, regenerate_file_id, cache_evict_canvas,
-    BacklinkRow, CanvasFile, CanvasFileRow, CanvasPatch,
+    BacklinkRow, CanvasFile, CanvasFileRow, CanvasPatch, AgentConfig,
     ChatSegment, DeleteFolderResult, EditorChatsFile, FileTreeNode, VaultConfig, VaultState,
     WikiIndex, CANVAS_SCHEMA, query_wiki_backlinks,
 };
@@ -827,6 +828,23 @@ pub fn write_prompt_notes(
 ) -> Result<(), String> {
     let root = state.root()?;
     write_prompt_notes_file(&root, &files)
+}
+
+/// 读 Agent 配置列表（.atelyx/agents.json，不存在/损坏返回空）。
+#[tauri::command]
+pub fn read_agents(state: State<'_, VaultState>) -> Result<Vec<AgentConfig>, String> {
+    let root = state.root()?;
+    read_agents_file(&root)
+}
+
+/// 写 Agent 配置列表（原子写 .atelyx/agents.json，独立于 config.json）。
+#[tauri::command]
+pub fn write_agents(
+    agents: Vec<AgentConfig>,
+    state: State<'_, VaultState>,
+) -> Result<(), String> {
+    let root = state.root()?;
+    write_agents_file(&root, &agents)
 }
 
 /// 读文件夹图标颜色映射（.atelyx/folder-colors.json，不存在/损坏返回空）。

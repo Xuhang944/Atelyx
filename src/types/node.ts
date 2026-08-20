@@ -31,13 +31,22 @@ export type NodeKind = "conversation" | "text" | "media" | "search";
 export interface ConversationData {
   providerId: string;
   model: string;
-  /** 系统提示词笔记（相对仓库根 `.md` 路径，如 `笔记/提示词.md`）。发送时实时读正文注入 system 消息，外部编辑即时生效。 */
+  /**
+   * 引用的 Agent 配置 id（settingsStore.agents，仓库级 `.atelyx/agents.json`）：
+   * 发送时实时解析——系统提示词（引用已注册提示词笔记）注入 system 消息、勾选工具可用；
+   * 缺省（未设置）= 按预置「对话」Agent 处理（无系统提示词、无工具，普通对话）。
+   */
+  agentId?: string;
+  /**
+   * 系统提示词笔记（相对仓库根 `.md` 路径，如 `笔记/提示词.md`）。
+   * 遗留字段：仅兼容读取，不再注入（缺省按「对话」Agent 处理）；选择 Agent 时清除，不提供编辑入口。
+   */
   systemPromptFile?: string;
   /** LLM 自动生成的话题标题（首轮对话完成后命名，InspectorPanel 来源/血缘显示名用；缺省 = 未命名）。 */
   title?: string;
-  /** 启用 AI Agent 模式（缺省关 = 普通对话，不带任何工具）：开启后 AI 可自主调用工具（见 agentTools）。 */
+  /** 启用 AI Agent 模式（缺省关 = 普通对话，不带任何工具）。遗留字段：仅兼容读取，不再生效（见 agentId）。 */
   agentMode?: boolean;
-  /** Agent 模式启用的工具名列表（constants/tools.ts 的 AGENT_TOOLS_META id；缺省 = 全部工具）。 */
+  /** Agent 模式启用的工具名列表（constants/tools.ts 的 AGENT_TOOLS_META id；缺省 = 全部工具）。遗留字段：仅兼容读取，不再生效（见 agentId）。 */
   agentTools?: string[];
   /** 推理等级（本节点独立，随 .atlx 持久化；下发 `reasoning_effort`。缺省 = 不指定/跟随默认 与 providerId/model 正交独立）。 */
   reasoningEffort?: ReasoningEffort;

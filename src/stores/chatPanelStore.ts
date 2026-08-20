@@ -10,14 +10,14 @@ import {
 } from "@/services/vault";
 import { toLlmMessages } from "@/services/ai/client";
 import { abortAutoTitle } from "@/services/ai/autoTitle";
-import { DEFAULT_AGENT_TOOLS } from "@/constants/tools";
 import { ERROR_PREFIX, TIMEOUT_ERROR_TEXT } from "@/constants/chat";
+import { BUILTIN_AGENT_CHAT_ID } from "@/constants/agents";
 import {
   runStreamExchange,
   decideCleanup,
   runAutoNaming,
 } from "./streaming";
-import { runAgentTools, buildAgentTools } from "@/services/ai/tools";
+import { runAgentTools } from "@/services/ai/tools";
 import { runSearch } from "@/services/search";
 import { recordAgentFileWrite } from "@/services/history";
 import { readVaultFileWindow, writeVaultFile, editVaultFile } from "@/services/vault/aiFiles";
@@ -73,12 +73,8 @@ interface ChatPanelState {
   effortOverride: ReasoningEffort | null;
   /** 拖入输入框的笔记引用队列（文件面板拖拽笔记到 AI 对话输入框，组件消费后清空）。 */
   pendingMentions: EditorChatMessageRef[];
-  /** 新对话态（无激活会话）的待用系统提示词：发送首条消息创建会话时固化进会话；新建会话/切仓库时清空，不落盘。 */
-  draftSystemPromptFile: string | undefined;
-  /** 面板级 Agent 模式开关（内存态：默认关 = 普通对话不带工具；切仓库清空、不持久化）。 */
-  agentMode: boolean;
-  /** Agent 模式启用的工具 id 列表（缺省 = 全部工具；内存态、切仓库重置）。 */
-  agentTools: string[];
+  /** 新对话态（无激活会话）的待用 Agent：默认预置「对话」（无工具普通对话），发送首条消息创建会话时固化进会话；新建会话/切仓库时重置为默认。 */
+  draftAgentId: string | undefined;
   /** 笔记划词改写请求队列（NoteEditor 划词右键确认后入队；AiChatPanel 消费后清空）。 */
   pendingRewrites: NoteRewriteRequest[];
   /** 面板内联错误提示（未配置模型/发送失败等）。 */
@@ -113,12 +109,8 @@ interface ChatPanelState {
   queueNoteRewrite: (req: NoteRewriteRequest) => void;
   /** 清空待消费的划词改写队列（AiChatPanel 消费后调用）。 */
   clearPendingRewrites: () => void;
-  /** 设置系统提示词笔记引用（undefined = 清除）：有激活会话写会话；新对话态存 draft，发送首条消息时固化。 */
-  setSystemPromptFile: (file: string | undefined) => void;
-  /** 切换面板 Agent 模式（内存态，不持久化）。 */
-  setAgentMode: (enabled: boolean) => void;
-  /** 勾选/取消 Agent 工具（内存态，不持久化）。 */
-  setAgentTool: (name: string, enabled: boolean) => void;
+  /** 设置面板当前 Agent（undefined = 缺省「对话」）：有激活会话写会话并持久化；新对话态存 draft，发送首条消息时固化。 */
+  setAgentId: (id: string | undefined) => void;
   /** 设置面板级模型覆盖（null = 跟随仓库默认）。 */
   setModelOverride: (ov: EditorChatModelOverride | null) => void;
   /** 设置面板级推理等级覆盖（null = 不指定/跟随默认）。 */
@@ -426,9 +418,10 @@ async function persistNow(guardVaultId?: string | null): Promise<void> {
   // 2) 写索引（剥离 messages：消息在 .md 转写文件）
   const index: EditorChatsFile = {
     schema: EDITOR_CHATS_SCHEMA,
-    sessions: sessions.map(({ id, title, systemPromptFile, file, createdAt, updatedAt }) => ({
+    sessions: sessions.map(({ id, title, agentId, systemPromptFile, file, createdAt, updatedAt }) => ({
       id,
       title,
+      agentId,
       systemPromptFile,
       file,
       createdAt,
@@ -514,31 +507,20 @@ async function runExchange(
   });
   schedulePersist(active.id);
 
-  // 系统提示词：从引用的笔记实时读正文，注入为首条 system 消息（读失败降级）
-  let systemPrompt: string | undefined;
-  if (updated.systemPromptFile) {
-    try {
-      const sysContent = await readNote(updated.systemPromptFile);
-      if (sysContent.trim()) systemPrompt = sysContent;
-    } catch {
-      // 笔记缺失：跳过注入
-    }
-  }
-
   const controller = new AbortController();
   abortController = controller;
 
-  // Agent 模式工具组装：agentMode 关 = 普通对话不带工具；开 = 按 agentTools 勾选过滤
-  // （缺省全部）；web_search 依赖搜索源配置——勾选了但未配置时剔除并提示，其余工具不受影响
-  const settings = useSettingsStore.getState();
-  const searchReady = settings.isSearchConfigured();
+  // 系统提示词 + 工具：按 Agent 实时解析（配置在 设置 → Agent，引用已注册提示词笔记实时读正文注入）。
+  // 缺省（未选 Agent）= 预置「对话」（无系统提示词、无工具）；Agent 缺失（已删）降级为普通对话。
+  const agentReq = await useSettingsStore
+    .getState()
+    .resolveAgentRequest(updated.agentId);
+  let systemPrompt: string | undefined;
   let tools: ToolSchema[] = [];
-  if (useChatPanelStore.getState().agentMode) {
-    // 面板 agentTools 初始 = DEFAULT_AGENT_TOOLS，全取消 = 空数组（明确全关，不做缺省回退）
-    const enabled = useChatPanelStore.getState().agentTools;
-    const assembly = buildAgentTools(enabled, searchReady);
-    tools = assembly.tools;
-    if (assembly.skippedWebSearch) {
+  if (agentReq) {
+    systemPrompt = agentReq.systemPrompt;
+    tools = agentReq.tools;
+    if (agentReq.skippedWebSearch) {
       useChatPanelStore.setState({
         error: "未配置搜索源（设置 → 联网搜索），本次对话未启用联网搜索",
       });
@@ -721,9 +703,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
   modelOverride: null,
   effortOverride: null,
   pendingMentions: [],
-  draftSystemPromptFile: undefined,
-  agentMode: false,
-  agentTools: [...DEFAULT_AGENT_TOOLS],
+  draftAgentId: BUILTIN_AGENT_CHAT_ID,
   pendingRewrites: [],
   error: null,
   loaded: false,
@@ -767,6 +747,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
           sessions.push({
             id: s.id,
             title: s.title,
+            agentId: s.agentId,
             systemPromptFile: s.systemPromptFile,
             file,
             createdAt: s.createdAt,
@@ -808,14 +789,12 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
       set({
         sessions,
         // 新对话态：打开面板默认是空对话，历史会话从历史浮层手动打开；
-        // Agent 开关/草稿提示词为内存态，切仓库重置
+        // Agent draft 默认预置「对话」（内存态），切仓库重置
         activeSessionId: null,
         sessionVaultId: vaultId,
         modelOverride: f.modelOverride,
         effortOverride: f.effortOverride ?? null,
-        draftSystemPromptFile: undefined,
-        agentMode: false,
-        agentTools: [...DEFAULT_AGENT_TOOLS],
+        draftAgentId: BUILTIN_AGENT_CHAT_ID,
         loaded: true,
         error: null,
       });
@@ -841,9 +820,9 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
   newSession: () => {
     // 已是新对话态（无激活会话）→ 复用；否则切到新对话态。
     // 不创建空 session 对象：空会话天然不进 sessions、不落盘、不出现在历史列表，
-    // 发送首条消息时由 send 真正创建会话。draft 提示词随新建会话清空（回到全新对话态）。
+    // 发送首条消息时由 send 真正创建会话。draft Agent 随新建会话重置为默认「对话」。
     if (!get().activeSessionId) return;
-    set({ activeSessionId: null, draftSystemPromptFile: undefined, error: null });
+    set({ activeSessionId: null, draftAgentId: BUILTIN_AGENT_CHAT_ID, error: null });
   },
 
   openSession: (id) => {
@@ -890,7 +869,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     if (!resolved) return;
 
     // 确保有激活会话：新对话态（null）时创建会话并激活——标题/消息 .md 路径在首条消息确定；
-    // 新对话态选好的 draft 提示词随会话创建固化，随后清空
+    // 新对话态选好的 draft Agent 随会话创建固化，随后清空
     let active: EditorChatSession | null =
       get().sessions.find((s) => s.id === get().activeSessionId) ?? null;
     if (!active) {
@@ -900,7 +879,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
         id,
         title: prefix(trimmed, 16),
         file: chatMessageFilePath(id),
-        systemPromptFile: get().draftSystemPromptFile,
+        agentId: get().draftAgentId,
         messages: [],
         createdAt: now,
         updatedAt: now,
@@ -908,7 +887,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
       set({
         sessions: [...get().sessions, active],
         activeSessionId: active.id,
-        draftSystemPromptFile: undefined,
+        draftAgentId: undefined,
         error: null,
       });
     }
@@ -1028,31 +1007,23 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     abortController?.abort();
   },
 
-  setSystemPromptFile: (file) => {
-    const id = get().activeSessionId;
-    if (id) {
+  setAgentId: (id) => {
+    const current = get();
+    if (current.activeSessionId) {
+      // 选择 Agent 时清除旧会话遗留字段（systemPromptFile 不再生效，按动作迁移）
       set({
-        sessions: get().sessions.map((s) =>
-          s.id === id ? { ...s, systemPromptFile: file } : s
+        sessions: current.sessions.map((s) =>
+          s.id === current.activeSessionId
+            ? { ...s, agentId: id, systemPromptFile: undefined }
+            : s
         ),
       });
       schedulePersist();
     } else {
       // 新对话态：暂存待用，发送首条消息创建会话时固化（见 send）
-      set({ draftSystemPromptFile: file });
+      set({ draftAgentId: id });
     }
   },
-
-  setAgentMode: (enabled) => set({ agentMode: enabled }),
-
-  setAgentTool: (name, enabled) =>
-    set((state) => ({
-      agentTools: enabled
-        ? state.agentTools.includes(name)
-          ? state.agentTools
-          : [...state.agentTools, name]
-        : state.agentTools.filter((t) => t !== name),
-    })),
 
   setModelOverride: (ov) => {
     set({ modelOverride: ov });

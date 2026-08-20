@@ -51,13 +51,15 @@ export interface CanvasFileNode {
 export interface ConversationFileData {
   providerId: string;
   model: string;
-  /** 系统提示词笔记引用（缺省 = 未设置；旧文件无此字段兼容读取）。 */
+  /** 引用的 Agent 配置 id（仓库级 `.atelyx/agents.json`；缺省（未设置）= 按预置「对话」Agent 处理，旧文件无此字段兼容读取）。 */
+  agentId?: string;
+  /** 系统提示词笔记引用（遗留字段：仅兼容读取，不再注入，见 agentId）。 */
   systemPromptFile?: string;
   /** LLM 自动生成的话题标题（首轮对话完成后命名；旧文件无此字段兼容读取）。 */
   title?: string;
-  /** Agent 模式开关（缺省关 = 普通对话不带工具；旧文件无此字段兼容读取）。 */
+  /** Agent 模式开关（遗留字段：仅兼容读取，不再生效，见 agentId）。 */
   agentMode?: boolean;
-  /** Agent 模式启用的工具名列表（缺省 = 全部工具；旧文件无此字段兼容读取）。 */
+  /** Agent 模式启用的工具名列表（遗留字段：仅兼容读取，不再生效，见 agentId）。 */
   agentTools?: string[];
   /** 节点级推理等级（缺省 = 不指定/跟随默认；旧文件无此字段兼容读取）。 */
   reasoningEffort?: ReasoningEffort;

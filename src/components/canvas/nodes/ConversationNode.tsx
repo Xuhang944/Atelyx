@@ -6,17 +6,14 @@ import { ResizeHandle } from "./ResizeHandle";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useCollabStore } from "@/stores/collabStore";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { useVaultStore } from "@/stores/vaultStore";
 import { useNodeCollab } from "@/hooks/useNodeCollab";
 import { computeLockOwner } from "@/utils/canvasCollab";
 import { useAutoScrollFollow } from "@/hooks/useAutoScrollFollow";
-import {
-  DEFAULT_CONVERSATION_WIDTH,
+import { DEFAULT_CONVERSATION_WIDTH,
   DEFAULT_CONVERSATION_HEIGHT,
   DEFAULT_TEXT_NODE_WIDTH,
   DEFAULT_TEXT_NODE_HEIGHT,
 } from "@/constants/canvas";
-import { DEFAULT_AGENT_TOOLS } from "@/constants/tools";
 import { ERROR_PREFIX } from "@/constants/chat";
 import { isAssetConsumed } from "@/utils/consumed";
 import { findFreeSpot } from "@/utils/layout";
@@ -45,7 +42,6 @@ import { Menu, MenuItem } from "@/components/common/Menu";
 import { ChatMessageBubble } from "@/components/common/ChatMessageBubble";
 import { MentionTextarea } from "@/components/common/MentionTextarea";
 import { JumpToBottomButton } from "@/components/common/JumpToBottomButton";
-import { AgentModeToggle } from "@/components/common/AgentModeToggle";
 import { useInlineEdit } from "@/hooks/useInlineEdit";
 import { useDismissOnOutside } from "@/hooks/useDismissOnOutside";
 import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
@@ -187,16 +183,9 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
     ),
   );
 
-  // ===== 系统提示词：从已标记笔记选择（文件面板右键 .md → 注册为提示词），发送时注入 system 消息 =====
-  const noteList = useVaultStore((s) => s.noteList);
-  // 候选 = 实际存在的笔记 ∩ 已标记列表（右键注册/注销，独立落盘 .atelyx/prompt-notes.json）
-  const promptFiles = useSettingsStore((s) => s.promptNotes);
-  const promptNotes = noteList.filter((n) => promptFiles.includes(n.file));
-  const sysPromptFile = nodeData?.systemPromptFile;
-  // 文件面板未加载过时补拉一次笔记列表（正常路径 ProjectWorkspacePage 已加载）
-  useEffect(() => {
-    if (noteList.length === 0) void useVaultStore.getState().loadFiles();
-  }, [noteList.length]);
+  // ===== Agent 选择：配置在 设置 → Agent（settingsStore.agents，仓库级 .atelyx/agents.json）；
+  // 发送时实时解析系统提示词与工具（canvasStore.runStream 按 agentId 解析）=====
+  const agents = useSettingsStore((s) => s.agents);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const nodeRef = useRef<HTMLDivElement>(null);
@@ -762,44 +751,29 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
           className="ml-auto flex items-center gap-1 nodrag"
           onClick={(e) => e.stopPropagation()}
         >
-          {/* Agent 模式开关：点击 = 切换模式（普通对话 ↔ 工具调用）；开启时旁侧小箭头弹出工具勾选浮层 */}
-          <AgentModeToggle
-            agentMode={!!nodeData?.agentMode}
-            onToggleMode={() =>
-              updateNodeData(id, { agentMode: !nodeData?.agentMode })
-            }
-            enabledTools={nodeData?.agentTools ?? DEFAULT_AGENT_TOOLS}
-            onToggleTool={(name, on) => {
-              const current = nodeData?.agentTools ?? DEFAULT_AGENT_TOOLS;
-              updateNodeData(id, {
-                agentTools: on
-                  ? current.includes(name)
-                    ? current
-                    : [...current, name]
-                  : current.filter((t) => t !== name),
-              });
-            }}
-          />
-          {/* 系统提示词：选择已标记的提示词笔记，发送时注入 system 消息（留空 = 不注入），样式与模型选择一致 */}
+          {/* Agent 选择：选中的 Agent 提供系统提示词与工具（发送时实时解析）；缺省「对话」= 普通对话。
+              选择 Agent 时清除旧文件遗留字段（systemPromptFile/agentMode/agentTools 不再生效，按动作迁移） */}
           <DropdownSelect
-            value={sysPromptFile ?? ""}
+            value={nodeData?.agentId ?? ""}
             onChange={(v) =>
-              updateNodeData(id, { systemPromptFile: v || undefined })
+              updateNodeData(id, {
+                agentId: v || undefined,
+                systemPromptFile: undefined,
+                agentMode: undefined,
+                agentTools: undefined,
+              })
             }
-            options={[
-              { value: "", label: "提示词" },
-              ...promptNotes.map((n) => ({
-                value: n.file,
-                label: n.name.replace(/\.md$/i, ""),
-              })),
-            ]}
+            options={agents.map((a) => ({ value: a.id, label: a.name }))}
+            // 未选择（旧数据/清空）= 缺省「对话」：占位显示对话、运行时按「对话」解析
+            placeholder="对话"
+            emptyText="暂无 Agent（设置 → Agent 新建）"
             className="nodrag text-xs rounded px-1 py-0.5 w-24"
             style={{
               color: "var(--text-secondary)",
               background: "var(--input-bg)",
               border: "1px solid var(--input-border)",
             }}
-            title="选择系统提示词（右键笔记注册，留空 = 不注入）"
+            title="选择 Agent（系统提示词与工具在 设置 → Agent 中配置；缺省「对话」= 普通对话）"
           />
           <ModelSelect
             providers={providers}
