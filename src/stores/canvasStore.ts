@@ -21,9 +21,17 @@ import {
   recordNoteDiskContent,
   renameCanvasVault,
   isKnownNoteDiskContent,
+  type RuntimeCanvas,
 } from "@/services/vault";
 import { readTableVault } from "@/services/table";
 import { tableToSnapshotText } from "@/utils/table";
+import {
+  computeCanvasCollabPatch,
+  computeLockOwner,
+  deserializeNodeForCollab,
+  markCollabCanvasRename,
+  mergeMessages,
+} from "@/utils/canvasCollab";
 import { toLlmMessages } from "@/services/ai/client";
 import { abortAutoTitle } from "@/services/ai/autoTitle";
 import { runSearch, resultsToText } from "@/services/search";
@@ -63,9 +71,11 @@ import { prefix, scanMentionHits } from "@/utils/text";
 import { sanitizeFilename, siblingPath } from "@/utils/filename";
 import { useSettingsStore } from "./settingsStore";
 import { useAppStore } from "./appStore";
+import { useCollabStore } from "./collabStore";
 import type {
   Attachment,
   CanvasEdge,
+  CanvasPatch,
   ConversationData,
   LinkMode,
   TableData,
@@ -225,6 +235,19 @@ interface CanvasState {
   selectNode: (nodeId: string | null) => void;
   /** 更新节点 data（模型切换等内容变更，自动落库）。 */
   updateNodeData: (nodeId: string, patch: Record<string, unknown>) => void;
+  // ===== 多人实时协作（presence + canvas-patch 补丁）=====
+  /** 本端独占编辑中的对话节点（convId → 获取时间戳 since；锁主判定见 utils/canvasCollab）。 */
+  lockedConversations: Record<string, number>;
+  /** 对话节点独占编辑锁：首次真实输入时获取（幂等，已有锁不刷新 since）。 */
+  acquireConversationLock: (conversationId: string) => void;
+  /** 释放独占编辑锁（失焦无输入/发送完成/节点删除；幂等）。 */
+  releaseConversationLock: (conversationId: string) => void;
+  /** 清空全部独占编辑锁（协作关闭/退出时调用，防陈旧锁声明残留）。 */
+  clearConversationLocks: () => void;
+  /** 协作实时广播钩子注入（collabStore init 时设置；null = 协作未启用，不广播）。 */
+  setCollabBroadcast: (fn: ((file: string, patch: CanvasPatch) => void) | null) => void;
+  /** 应用远端画布补丁（relay `canvas-patch`）：按 id LWW 合并，不置脏/不入撤销栈/不触发保存。 */
+  applyRemoteCanvasPatch: (file: string, patch: CanvasPatch) => void;
   /** Rust 侧改过当前画布磁盘 .atlx 后同步乐观锁基准（重命名笔记/附件/画布），防下次保存被误判「已被外部修改」。 */
   syncBaseUpdatedAt: () => Promise<void>;
   /** 发送消息到指定对话节点，可携带待发送附件。 */
@@ -340,6 +363,132 @@ function syncLastSaved(): void {
   lastSavedEdges = s.edges;
   lastSavedMessages = s.messagesByConv;
   lastSavedTitle = s.canvasTitle;
+  syncBroadcastBaseline();
+}
+
+/** 协作广播基线：房间已看到的最新状态（本端已广播 + 已从远端应用）。
+ * 与落盘基线分离——远端已应用内容对房间是已知的，不得随本地增量重发（否则广播补丁持续膨胀）；
+ * 无远端补丁时恒等于落盘基线（无回归）。 */
+let broadcastBaselineNodes: Node[] = [];
+let broadcastBaselineEdges: Edge[] = [];
+let broadcastBaselineMessages: Record<string, Message[]> = {};
+let broadcastBaselineTitle = "";
+
+/** 把当前运行时状态引用记为「协作广播基线」。应用远端补丁/冲突合并改写内存态后调用。 */
+function syncBroadcastBaseline(): void {
+  const s = useCanvasStore.getState();
+  broadcastBaselineNodes = s.nodes;
+  broadcastBaselineEdges = s.edges;
+  broadcastBaselineMessages = s.messagesByConv;
+  broadcastBaselineTitle = s.canvasTitle;
+}
+
+/** 协作实时广播钩子（collabStore.init 注入，dispose 清空；null = 协作未启用，不广播）。 */
+let collabBroadcast: ((file: string, patch: CanvasPatch) => void) | null = null;
+
+/**
+ * 协作锁主判定（本端视角，读最新 store 状态）：conversation 节点是否被其他对端独占编辑。
+ * 用于 store 层内容写守卫（updateNodeData/send/regenerate）——UI 只读条覆盖常规路径，此为
+ * 极窄竞态下的兜底（防两对端在锁传播窗口内同时写入同一节点）。规则与 useNodeCollab 一致：
+ * 本端无锁声明 → 对端有声明即他人持锁；本端有声明 → computeLockOwner 确定性判定。
+ */
+function isConversationLockedByPeer(conversationId: string): boolean {
+  const mySince = useCanvasStore.getState().lockedConversations[conversationId];
+  const { peers, myPeerId } = useCollabStore.getState();
+  if (mySince === undefined) {
+    return peers.some((p) => p.presence?.lockedNodes?.some((l) => l.id === conversationId));
+  }
+  if (myPeerId === null) return false;
+  const claims: { peerId: number; since: number }[] = [
+    { peerId: myPeerId, since: mySince },
+  ];
+  for (const p of peers) {
+    const c = p.presence?.lockedNodes?.find((l) => l.id === conversationId);
+    if (c) claims.push({ peerId: p.peerId, since: c.since });
+  }
+  return computeLockOwner(claims) !== myPeerId;
+}
+
+/** 协作对端是否同画布在线（presence.file 命中当前画布 + view=canvas）：共享盘保存竞争时据此
+ * 自动三方合并（与表格 hasCollabPeerOnTable 同策略）；无对端 = 外部编辑 → 保持冲突条。 */
+function hasCollabPeerOnCanvas(file: string): boolean {
+  return useCollabStore
+    .getState()
+    .peers.some((p) => p.presence?.file === file && p.presence?.view === "canvas");
+}
+
+/**
+ * 三方合并：磁盘为基底 + 本地独有节点/边 + 本地独有消息按 id 补入（重叠同 id 以磁盘为准，
+ * 防静默覆盖外部修改）。mergeFromDisk（手动）与协作自动合并（handleSaveConflict）共用。
+ */
+function mergeCanvasWithDisk(
+  disk: RuntimeCanvas,
+  localNodes: Node[],
+  localEdges: CanvasEdge[],
+  localMessages: Record<string, Message[]>,
+): { nodes: Node[]; edges: CanvasEdge[]; messagesByConv: Record<string, Message[]> } {
+  const diskNodeIds = new Set(disk.nodes.map((n) => n.id));
+  const diskEdgeIds = new Set(disk.edges.map((e) => e.id));
+  const nodes = [...disk.nodes, ...localNodes.filter((n) => !diskNodeIds.has(n.id))];
+  const edges = [...disk.edges, ...localEdges.filter((e) => !diskEdgeIds.has(e.id))];
+  const messagesByConv: Record<string, Message[]> = { ...disk.messagesByConv };
+  for (const [convId, msgs] of Object.entries(localMessages)) {
+    const diskMsgs = disk.messagesByConv[convId] ?? [];
+    const diskIds = new Set(diskMsgs.map((m) => m.id));
+    const extras = msgs.filter((m) => !diskIds.has(m.id));
+    if (extras.length) messagesByConv[convId] = [...diskMsgs, ...extras];
+  }
+  return { nodes, edges, messagesByConv };
+}
+
+/**
+ * 乐观锁冲突处理：协作对端同画布在场 → 自动三方合并收敛（共享盘多人保存竞争，避免冲突条
+ * 满天飞，与表格 retryMergePersist 同策略）；否则弹冲突条（外部编辑，保持原行为不静默覆盖）。
+ * 自动合并不中止进行中的流（本地消息按 id 补入保留，流续写照常）；合并产物随下一轮防抖落盘。
+ */
+async function handleSaveConflict(): Promise<void> {
+  const canvasFile = useCanvasStore.getState().canvasFile;
+  const canvasId = useCanvasStore.getState().canvasId;
+  if (!canvasFile || !hasCollabPeerOnCanvas(canvasFile)) {
+    useCanvasStore.setState({ conflictPending: true });
+    return;
+  }
+  try {
+    // 读盘完成后立刻快照本地（缩小 await 窗口内新编辑丢失的竞态，见 mergeFromDisk 注释）
+    const data = await loadCanvasVault(canvasFile);
+    const cur = useCanvasStore.getState();
+    // 竞态守卫：await 期间用户已切画布/清空 → 放弃本次合并（旧画布的磁盘内容不得写进新画布，
+    // 与 persistNow.finish 的守卫同策略——否则 localNodes 已是新画布、data 是旧画布，交叉污染）
+    if (cur.canvasFile !== canvasFile || cur.canvasId !== canvasId) return;
+    const localNodes = cur.nodes;
+    const localEdges = cur.edges;
+    const localMessages = cur.messagesByConv;
+    // 1) 以磁盘为基底入内存 + 落盘/广播基线（后续合并补丁只含本地独有实体，引用 diff）
+    useCanvasStore.setState({
+      canvasId: data.id,
+      canvasTitle: data.title,
+      nodes: data.nodes,
+      edges: data.edges,
+      messagesByConv: data.messagesByConv,
+      baseUpdatedAt: data.updatedAt,
+      conflictPending: false,
+      dirty: false,
+    });
+    syncLastSaved();
+    // 2) 合并本地独有实体回内存（基线仍为磁盘基底 → diff 非空，本地改动不丢）
+    const merged = mergeCanvasWithDisk(data, localNodes, localEdges, localMessages);
+    useCanvasStore.setState({
+      nodes: merged.nodes,
+      edges: merged.edges,
+      messagesByConv: merged.messagesByConv,
+      dirty: true,
+    });
+    // 3) 合并产物随下一轮防抖落盘（base 已同步为新磁盘版本，不再误冲突）
+    schedulePersist();
+  } catch (e) {
+    console.error("协作自动合并失败", e);
+    useCanvasStore.setState({ conflictPending: true });
+  }
 }
 
 /**
@@ -396,8 +545,9 @@ async function persistNow(): Promise<void> {
   const reportError = (e: unknown) => {
     useCanvasStore.setState({ saving: false });
     if (typeof e === "string" && e.includes("已被外部修改")) {
-      // 乐观锁冲突：不覆盖磁盘，提示用户重载（本地改动保留在内存供查看）
-      useCanvasStore.setState({ conflictPending: true });
+      // 乐观锁冲突：协作对端同画布在场 → 自动三方合并（共享盘保存竞争，见 handleSaveConflict）；
+      // 否则不覆盖磁盘，提示用户重载（本地改动保留在内存供查看）
+      void handleSaveConflict();
     } else {
       console.error("自动保存失败", e);
       useCanvasStore.setState({ error: "自动保存失败，请检查磁盘空间或权限" });
@@ -451,11 +601,30 @@ const persistCtl = createPersistController({
 
 /**
  * debounce 500ms 持久化画布到仓库（增量补丁：只写变化实体，text 正文写 .md）。
+ * 同时协作实时广播：编辑即达（不等防抖落盘）。补丁 = 与广播基线的引用 diff（幂等 LWW，
+ * 与磁盘合并语义一致，顺序随节点/消息数组携带）。广播基线独立于落盘基线——远端已应用内容
+ * 推进广播基线后不再被重发全房；applyRemoteCanvasPatch 路径不调本函数 → 无广播回环。
+ * 节点拖动/resize 期间 schedulePersist 已被调用方门控（dragStop 才调），此处不做二次判断。
  */
 function schedulePersist() {
-  // 只读画布（外部白板格式）永不落盘：内容来自原 .canvas 文件，本应用不写该格式
-  const { readOnly, canvasId, canvasFile } = useCanvasStore.getState();
-  if (readOnly || !canvasId || !canvasFile) return;
+  const st = useCanvasStore.getState();
+  if (st.readOnly || !st.canvasId || !st.canvasFile) return;
+  if (collabBroadcast) {
+    const patch = computeCanvasCollabPatch({
+      canvasId: st.canvasId,
+      title: st.canvasTitle,
+      nodes: st.nodes,
+      edges: st.edges,
+      messagesByConv: st.messagesByConv,
+      lastSaved: {
+        nodes: broadcastBaselineNodes,
+        edges: broadcastBaselineEdges,
+        messagesByConv: broadcastBaselineMessages,
+        title: broadcastBaselineTitle,
+      },
+    });
+    if (patch) collabBroadcast(st.canvasFile, patch);
+  }
   persistCtl.schedule();
 }
 
@@ -1064,6 +1233,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   readOnly: false,
   messagesByConv: {},
   streamingByConv: {},
+  lockedConversations: {},
   pendingMentionsByConv: {},
   pendingConfirmByConv: {},
   error: null,
@@ -1125,6 +1295,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         conflictPending: false,
         // 跨画布切换清空 undo/redo 与流式状态：快照含 messages，混用会串画布污染撤销
         streamingByConv: {},
+        // 切画布释放本端独占编辑锁（旧画布锁不得带进新画布）
+        lockedConversations: {},
         loading: false,
       });
       undoMgr.clear();
@@ -1732,32 +1904,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       });
       undoMgr.clear();
       syncLastSaved();
-      const diskNodes = get().nodes;
-      const diskEdges = get().edges;
-      const diskMessages = get().messagesByConv;
-      const diskNodeIds = new Set(diskNodes.map((n) => n.id));
-      const diskEdgeIds = new Set(diskEdges.map((e) => e.id));
-      // 合并：磁盘为基础，本地新增的节点/边保留；重叠（同 id）以磁盘为准（外部修改优先）
-      const mergedNodes = [
-        ...diskNodes,
-        ...localNodes.filter((n) => !diskNodeIds.has(n.id)),
-      ];
-      const mergedEdges = [
-        ...diskEdges,
-        ...localEdges.filter((e) => !diskEdgeIds.has(e.id)),
-      ];
-      // 消息：磁盘为基础，本地独有的消息按 id 补入（避免丢用户未保存的消息）
-      const mergedMessages: Record<string, Message[]> = { ...diskMessages };
-      for (const [convId, msgs] of Object.entries(localMessages)) {
-        const diskMsgs = diskMessages[convId] ?? [];
-        const diskIds = new Set(diskMsgs.map((m) => m.id));
-        const extras = msgs.filter((m) => !diskIds.has(m.id));
-        if (extras.length) mergedMessages[convId] = [...diskMsgs, ...extras];
-      }
+      // 合并：磁盘为基础 + 本地独有节点/边 + 本地独有消息按 id 补入（mergeCanvasWithDisk，与协作自动合并共用）
+      const merged = mergeCanvasWithDisk(data, localNodes, localEdges, localMessages);
       set({
-        nodes: mergedNodes,
-        edges: mergedEdges,
-        messagesByConv: mergedMessages,
+        nodes: merged.nodes,
+        edges: merged.edges,
+        messagesByConv: merged.messagesByConv,
         conflictPending: false,
         dirty: true,
       });
@@ -1775,6 +1927,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     schedulePersist();
   },
   updateNodeData: (nodeId, patch) => {
+    // 协作独占锁守卫：对话节点被其他对端编辑时拒绝内容写（锁主为唯一写者；UI 已只读，此为竞态兜底）
+    const target = get().nodes.find((n) => n.id === nodeId);
+    if (target?.type === "conversation" && isConversationLockedByPeer(nodeId)) return;
     touchRedo();
     const nodes = get().nodes.map((n) =>
       n.id === nodeId ? { ...n, data: { ...n.data, ...patch } } : n,
@@ -1846,6 +2001,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   send: async (conversationId, content, attachments = [], mentions = []) => {
     const { canvasId, messagesByConv, nodes } = get();
     if (!canvasId) return;
+    // 协作独占锁守卫：对话节点被其他对端独占编辑（确定性锁主非本端）时拒绝发送（竞态兜底）
+    if (isConversationLockedByPeer(conversationId)) return;
 
     // AI 消息发送不进 Undo 栈（业务操作），但作废 redo：undo 后发送的新消息不得被 Ctrl+Y 抹除
     touchRedo();
@@ -2041,6 +2198,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
   regenerate: async (conversationId) => {
     const list = get().messagesByConv[conversationId] ?? [];
+    // 协作独占锁守卫：同 send（竞态兜底）
+    if (isConversationLockedByPeer(conversationId)) return;
     // 重新生成不入 Undo 栈（业务操作），但作废 redo（同 send 语义）
     touchRedo();
     let lastUserIdx = -1;
@@ -2196,6 +2355,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       readOnly: false,
       messagesByConv: {},
       streamingByConv: {},
+      lockedConversations: {},
       pendingMentionsByConv: {},
       pendingConfirmByConv: {},
       error: null,
@@ -2219,7 +2379,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     if (get().readOnly) return;
     const { nodes, edges, onNodesChange, onEdgesChange } = get();
     const selectedNodeIds = new Set(
-      nodes.filter((n) => n.selected).map((n) => n.id),
+      // 协作：被其他对端独占编辑的对话节点禁删（锁作用范围，防误删进行中的编辑）
+      nodes
+        .filter((n) => n.selected && !(n.type === "conversation" && isConversationLockedByPeer(n.id)))
+        .map((n) => n.id),
     );
     // 连接后不可手动断开：Delete 只删节点，不再删除单独选中的边（连到被删节点的边随节点删除）。
     // 例外：无向关联边可单独删除（选中边后 Delete，关联线不表达数据流，无引用语义）
@@ -2295,5 +2458,109 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     abortAllStreams();
     undoMgr.redo();
     schedulePersist();
+  },
+
+  // ===== 多人实时协作（presence + canvas-patch 补丁）=====
+
+  acquireConversationLock: (conversationId) => {
+    if (get().lockedConversations[conversationId] !== undefined) return;
+    set((st) => ({
+      lockedConversations: {
+        ...st.lockedConversations,
+        [conversationId]: Date.now(),
+      },
+    }));
+  },
+
+  releaseConversationLock: (conversationId) => {
+    if (get().lockedConversations[conversationId] === undefined) return;
+    set((st) => {
+      const next = { ...st.lockedConversations };
+      delete next[conversationId];
+      return { lockedConversations: next };
+    });
+  },
+
+  clearConversationLocks: () => {
+    if (Object.keys(get().lockedConversations).length === 0) return;
+    set({ lockedConversations: {} });
+  },
+
+  setCollabBroadcast: (fn) => {
+    collabBroadcast = fn;
+  },
+
+  applyRemoteCanvasPatch: (file, patch) => {
+    // 只应用当前打开的画布；补丁画布 id 不符（陈旧/串文件）拒绝——防污染本端状态
+    const s = get();
+    // 只读画布（外部白板格式）不接受协作补丁（内容来自原 .canvas，非共享 .atlx）
+    if (file !== s.canvasFile || patch.id !== s.canvasId || s.readOnly) return;
+    const removedNodeIds = new Set(patch.removedNodeIds);
+    const removedEdgeIds = new Set(patch.removedEdgeIds);
+    // 反解远端节点（conversation 提取 messages / text 标记补读正文 / group 补 zIndex）
+    const deserialized = patch.upsertNodes.map(deserializeNodeForCollab);
+    // 重命名（title 变化）：同步 canvasTitle + 路径漂移（canvasFile/appStore.currentCanvasFile）+
+    // 登记协作重命名抑制（watcher 旧 delete/新 create 事件跳过 reload/conflict，防本地脏编辑被重载打断）
+    let renameNewFile: string | null = null;
+    if (patch.title && patch.title !== s.canvasTitle && s.canvasFile) {
+      renameNewFile = siblingPath(s.canvasFile, `${sanitizeFilename(patch.title)}.atlx`);
+      markCollabCanvasRename([s.canvasFile, renameNewFile]);
+    }
+    set((st) => {
+      // 与 Rust patch_canvas_vault 同语义：removed 过滤 → upsert 按 id 覆盖/追加
+      const nodes = st.nodes.filter((n) => !removedNodeIds.has(n.id));
+      for (const { node } of deserialized) {
+        const i = nodes.findIndex((x) => x.id === node.id);
+        if (i >= 0) nodes[i] = node;
+        else nodes.push(node);
+      }
+      const edges = st.edges.filter((e) => !removedEdgeIds.has(e.id));
+      for (const e of patch.upsertEdges) {
+        const runtimeEdge: CanvasEdge = {
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          sourceHandle: e.sourceHandle ?? null,
+          targetHandle: e.targetHandle ?? null,
+          directed: e.directed,
+          linkMode: e.linkMode,
+        };
+        const i = edges.findIndex((x) => x.id === e.id);
+        if (i >= 0) edges[i] = runtimeEdge;
+        else edges.push(runtimeEdge);
+      }
+      // 消息：conversation 节点消息按 id 合并（远端基底 + 本地独有补入），保护本端进行中/流式
+      // 消息不被对端陈旧节点快照覆盖（锁模型下对端不并发写消息，此为兜底）；
+      // 远端删除对话节点 → 清理对应消息键
+      const messagesByConv = { ...st.messagesByConv };
+      for (const id of removedNodeIds) delete messagesByConv[id];
+      for (const { node, messages } of deserialized) {
+        if (node.type !== "conversation" || messages === undefined) continue;
+        const merged = mergeMessages(messages, messagesByConv[node.id] ?? []);
+        if (merged !== messagesByConv[node.id]) messagesByConv[node.id] = merged;
+      }
+      // 对端删除使本端选中失效：清理（防高亮残留，与表格同策略）
+      const selectedNodeId =
+        st.selectedNodeId && removedNodeIds.has(st.selectedNodeId) ? null : st.selectedNodeId;
+      return {
+        nodes,
+        edges,
+        messagesByConv,
+        selectedNodeId,
+        ...(renameNewFile ? { canvasTitle: patch.title, canvasFile: renameNewFile } : {}),
+      };
+    });
+    if (renameNewFile && useAppStore.getState().currentCanvasFile === s.canvasFile) {
+      useAppStore.setState({ currentCanvasFile: renameNewFile });
+    }
+    // 对端删除本端持锁的节点（锁模型下不应发生，防御性释放）+ 远端 text 节点正文补读（共享盘 .md）
+    for (const id of removedNodeIds) {
+      if (s.lockedConversations[id] !== undefined) get().releaseConversationLock(id);
+    }
+    for (const { refreshBodyMdFile } of deserialized) {
+      if (refreshBodyMdFile) void get().refreshTextContent(refreshBodyMdFile);
+    }
+    // 核心：远端已应用内容对房间已知，推进广播基线，避免被当作本地增量重发全房
+    syncBroadcastBaseline();
   },
 }));

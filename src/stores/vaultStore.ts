@@ -47,6 +47,7 @@ import {
 } from "@/services/table";
 import { subscribeVaultFileChanges } from "@/services/watcher";
 import { isSelfSaveEcho, markSelfSave } from "@/utils/selfSave";
+import { isCollabCanvasRenamePath } from "@/utils/canvasCollab";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -861,7 +862,10 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
           if (
             c.path === store.canvasFile &&
             !isSelfSaveEcho(c.path) &&
-            !isPendingFolderRenameOldPath(c.path)
+            !isPendingFolderRenameOldPath(c.path) &&
+            // 协作重命名的回波（对端 title 补丁已同步新路径 + 内容已应用）跳过 reload/conflict，
+            // 防本地脏编辑被重载打断；下次保存走乐观锁自动三方合并收敛
+            !isCollabCanvasRenamePath(c.path)
           ) {
             if (store.dirty) {
               // 本地有未保存改动：自动重载会丢改动，改为冲突提示让用户决策

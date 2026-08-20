@@ -1,11 +1,14 @@
-import { Loader2, Plus, RefreshCw, Scissors, X } from "lucide-react";
+import { Loader2, Lock, Plus, RefreshCw, Scissors, X } from "lucide-react";
 import { useEffect, useCallback, useRef, useState } from "react";
 import { useReactFlow, type NodeProps } from "@xyflow/react";
 import { useShallow } from "zustand/react/shallow";
 import { ResizeHandle } from "./ResizeHandle";
 import { useCanvasStore } from "@/stores/canvasStore";
+import { useCollabStore } from "@/stores/collabStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useVaultStore } from "@/stores/vaultStore";
+import { useNodeCollab } from "@/hooks/useNodeCollab";
+import { computeLockOwner } from "@/utils/canvasCollab";
 import { useAutoScrollFollow } from "@/hooks/useAutoScrollFollow";
 import {
   DEFAULT_CONVERSATION_WIDTH,
@@ -112,6 +115,9 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
     (s) => s.messagesByConv[id] ?? EMPTY_MESSAGES,
   );
   const streaming = useCanvasStore((s) => s.streamingByConv[id] ?? FALSE);
+  // 协作：本节点远端选中/独占锁主/生成中（锁主判定见 useNodeCollab）
+  const { lockedByPeer, streamingPeers, iOwnLock } = useNodeCollab(id);
+  const collabStreamingPeer = streamingPeers[0];
   const send = useCanvasStore((s) => s.send);
   const regenerate = useCanvasStore((s) => s.regenerate);
   const rollbackTo = useCanvasStore((s) => s.rollbackTo);
@@ -146,6 +152,8 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
   const titleEdit = useInlineEdit({
     value: displayTitle,
     onCommit: (v) => {
+      // 协作：节点被其他对端独占编辑时标题属内容（锁作用范围），拒绝提交
+      if (lockedByPeer) return;
       const t = v.trim();
       if (t === displayTitle) return;
       updateNodeData(id, { title: t || undefined });
@@ -194,6 +202,35 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
   const nodeRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ===== 协作独占编辑锁生命周期（锁模型：首次真实输入占锁，失焦无输入/流式结束释放）=====
+  const acquireLock = useCallback(() => {
+    useCanvasStore.getState().acquireConversationLock(id);
+  }, [id]);
+  const releaseLock = useCallback(() => {
+    useCanvasStore.getState().releaseConversationLock(id);
+  }, [id]);
+  // 锁释放判定上下文：blur/流式结束用最新 draft/附件/流式态（ref 避免每按键重挂监听）
+  const lockCtxRef = useRef({ draft: "", attachments: 0, streaming: false });
+  lockCtxRef.current = { draft: input, attachments: attachments.length, streaming };
+  // 输入区失焦且无输入/附件且未流式 → 释放锁（「失焦无输入」释放语义）。
+  // 用容器合成 onBlur（focusout 冒泡，见下方输入行 div）而非 textareaRef 原生监听——
+  // 只读条（lockedByPeer）切回输入行时 textarea 重新挂载，原生监听不随挂载重建会失效 → 锁泄漏
+  const handleInputRowBlur = useCallback(() => {
+    const ctx = lockCtxRef.current;
+    if (ctx.draft === "" && ctx.attachments === 0 && !ctx.streaming) releaseLock();
+  }, [releaseLock]);
+  // 流式结束（onDone）且无输入/附件 → 释放锁（发送后流式期间持续持有）
+  const prevStreamingRef = useRef(streaming);
+  useEffect(() => {
+    if (prevStreamingRef.current && !streaming) {
+      const ctx = lockCtxRef.current;
+      if (ctx.draft === "" && ctx.attachments === 0) releaseLock();
+    }
+    prevStreamingRef.current = streaming;
+  }, [streaming, releaseLock]);
+  // 节点卸载（删除/切画布/视图切换）→ 释放锁
+  useEffect(() => () => releaseLock(), [releaseLock]);
 
   // ===== 智能滚动跟随：贴底时自动跟随新消息；用户上翻看历史时不被拉走，显示「新消息」回底按钮（与 AI 对话面板共用 hook） =====
   const { handleScroll, jumpToBottom, showJumpToBottom } = useAutoScrollFollow(
@@ -284,9 +321,31 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
 
   const clearAttachments = () => setAttachments([]);
 
+  /** 协作锁主校验（读最新 store 状态）：本端是否仍是本节点的确定性锁主。发送前必查——若对端
+   * 在锁传播窗口内抢占成功，此时发送会并发写 → 数据丢失（store.send 亦有兜底守卫，但组件
+   * 需在清空草稿前拦截，防已输入内容被吞）。非协作环境（无对端声明）恒通过。 */
+  const isOwnLockActive = useCallback((): boolean => {
+    const { lockedConversations } = useCanvasStore.getState();
+    const { peers, myPeerId } = useCollabStore.getState();
+    const mySince = lockedConversations[id];
+    if (mySince === undefined || myPeerId === null) {
+      return !peers.some((p) => p.presence?.lockedNodes?.some((l) => l.id === id));
+    }
+    const claims: { peerId: number; since: number }[] = [{ peerId: myPeerId, since: mySince }];
+    for (const p of peers) {
+      const c = p.presence?.lockedNodes?.find((l) => l.id === id);
+      if (c) claims.push({ peerId: p.peerId, since: c.since });
+    }
+    return computeLockOwner(claims) === myPeerId;
+  }, [id]);
+
   const handleSend = () => {
     const text = input.trim();
     if ((!text && attachments.length === 0) || streaming) return;
+    // 协作锁主校验：非锁主不发送（保留草稿，等锁释放后可继续）
+    if (!isOwnLockActive()) return;
+    // 持锁发送：流式期间锁持续持有（acquire 幂等，已有锁不刷新 since）
+    acquireLock();
     setInput("");
     const atts = attachments;
     const mts = mentions;
@@ -307,6 +366,8 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
   }, []);
 
   const addImageFile = (file: File) => {
+    // 加附件 = 编辑意图 → 占锁（协作）
+    acquireLock();
     const reader = new FileReader();
     reader.onload = () => {
       if (!mountedRef.current) return;
@@ -325,6 +386,8 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
   };
 
   const addTextFile = (file: File) => {
+    // 加附件 = 编辑意图 → 占锁（协作）
+    acquireLock();
     const reader = new FileReader();
     reader.onload = () => {
       if (!mountedRef.current) return;
@@ -945,9 +1008,24 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
         onPin={handlePin}
       />
 
+      {lockedByPeer ? (
+        /* 协作：对话节点被其他对端独占编辑 → 内容只读条（输入/附件/发送禁用） */
+        <div
+          className="nodrag border-t px-3 py-2 flex items-center gap-1.5 text-xs"
+          style={{ borderColor: "var(--border)", color: lockedByPeer.color }}
+        >
+          <Lock size={13} className="flex-shrink-0" />
+          <span className="truncate">
+            {collabStreamingPeer
+              ? `${lockedByPeer.nickname} 正在生成…（只读）`
+              : `${lockedByPeer.nickname} 正在编辑…（只读）`}
+          </span>
+        </div>
+      ) : (
       <div
         className="nodrag border-t p-2 flex gap-2"
         style={{ borderColor: "var(--border)" }}
+        onBlur={handleInputRowBlur}
         onDragOver={(e) => e.preventDefault()}
         onDrop={handleDrop}
       >
@@ -976,11 +1054,20 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
         >
           <Plus size={16} />
         </button>
+        {iOwnLock && (
+          <span
+            className="self-center w-1.5 h-1.5 rounded-full flex-shrink-0"
+            style={{ background: "var(--accent)" }}
+            title="正在独占编辑（他人只读）"
+          />
+        )}
         <div className="relative flex-1 min-w-0 overflow-hidden">
           <MentionTextarea
             textareaRef={textareaRef}
             value={input}
             onChange={(v) => {
+              // 首次真实输入占锁（协作独占锁：草稿空 → 非空）
+              if (input === "" && v !== "") acquireLock();
               setInput(v);
               // @ 后继续输入 → 实时过滤候选（query = @ 位置之后的内容）
               if (picker && atIdx >= 0) {
@@ -1045,6 +1132,7 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
           </button>
         )}
       </div>
+      )}
 
       <ResizeHandle />
     </div>

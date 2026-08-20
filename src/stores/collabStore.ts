@@ -22,6 +22,7 @@ import {
 import { base64ToBytes, bytesToBase64 } from "@/utils/base64";
 import { useAppStore } from "@/stores/appStore";
 import { useTableStore } from "@/stores/tableStore";
+import { useCanvasStore } from "@/stores/canvasStore";
 import { useNoteCollabStore } from "@/stores/noteCollabStore";
 import type { CollabPeer, CollabPresence } from "@/types";
 
@@ -43,6 +44,8 @@ interface CollabStoreState {
   connected: boolean;
   /** 当前房间（同仓库 vaultId）在线用户列表。 */
   peers: CollabPeer[];
+  /** 本连接在房间内的 peerId（hello-ack 分配；锁主判定/过滤自己用，未连接 = null）。 */
+  myPeerId: number | null;
 
   /** 应用启动时调用：载入配置并建立连接（无配置 = 不连）。 */
   init: (cfg: CollabInitConfig) => void;
@@ -100,8 +103,11 @@ function establishConnection(): void {
     },
     onHelloAck: (peerId) => {
       myPeerId = peerId;
-      // hello-ack 先于 peers 帧到达（relay 端保证）：立即过滤已收快照里的自己
-      useCollabStore.setState((s) => ({ peers: s.peers.filter((p) => p.peerId !== peerId) }));
+      // hello-ack 先于 peers 帧到达（relay 端保证）：立即过滤已收快照里的自己 + 暴露本端 peerId
+      useCollabStore.setState((s) => ({
+        myPeerId: peerId,
+        peers: s.peers.filter((p) => p.peerId !== peerId),
+      }));
     },
     onPeers: (peers) =>
       useCollabStore.setState({ peers: peers.filter((p) => p.peerId !== myPeerId) }),
@@ -115,6 +121,11 @@ function establishConnection(): void {
     onTablePatch: (peerId, file, patch) => {
       if (peerId === myPeerId) return;
       useTableStore.getState().applyRemotePatch(file, patch);
+    },
+    // 画布内容补丁实时广播接收：只应用当前打开的画布（applyRemoteCanvasPatch 内部按 file + id 守卫）
+    onCanvasPatch: (peerId, file, patch) => {
+      if (peerId === myPeerId) return;
+      useCanvasStore.getState().applyRemoteCanvasPatch(file, patch);
     },
     // 笔记 Yjs 同步 / awareness 接收：解码后只合入本端已打开（注册表存在）的笔记（noteDoc 内部守卫）
     onNoteSync: (_peerId, file, payload) => {
@@ -140,6 +151,16 @@ function establishConnection(): void {
       if (connected) {
         const ts = useTableStore.getState();
         schedulePresenceBroadcast({ file: ts.tableFile, selection: ts.selection, view: ts.view });
+        // 有画布打开时补发画布 presence（覆盖 table 槽——画布为主工作区；锁/流式经
+        // schedulePresenceBroadcast 跨视图合并，重连后立即恢复对端只见的编辑锁）
+        const cs = useCanvasStore.getState();
+        if (cs.canvasFile) {
+          schedulePresenceBroadcast({
+            file: cs.canvasFile,
+            selection: cs.selectedNodeId ? { kind: "node", nodeId: cs.selectedNodeId } : null,
+            view: "canvas",
+          });
+        }
         // 重连后重新握手已打开的协作文档（上次连接断开的对端需重新拿全量状态）
         resyncAllNoteDocs();
       }
@@ -148,7 +169,19 @@ function establishConnection(): void {
 }
 
 function schedulePresenceBroadcast(presence: CollabPresence): void {
-  pendingPresence = presence;
+  // 画布锁/流式跨视图保活：无论当前 view 槽（table/note/canvas）为何，都合并 canvas 的
+  // 独占编辑锁与生成中节点——用户在看表格/笔记期间其画布锁仍对端可见，对话节点持续只读
+  const cs = useCanvasStore.getState();
+  const lockedNodes = Object.entries(cs.lockedConversations).map(([id, since]) => ({ id, since }));
+  const streamingNodeIds = Object.entries(cs.streamingByConv)
+    .filter(([, v]) => v)
+    .map(([id]) => id);
+  const merged: CollabPresence = {
+    ...presence,
+    ...(lockedNodes.length ? { lockedNodes } : {}),
+    ...(streamingNodeIds.length ? { streamingNodeIds } : {}),
+  };
+  pendingPresence = merged;
   if (broadcastTimer !== null) return;
   broadcastTimer = window.setTimeout(() => {
     broadcastTimer = null;
@@ -168,6 +201,22 @@ function ensureSubscriptions(): void {
       schedulePresenceBroadcast({ file: s.tableFile, selection: s.selection, view: s.view });
     }
   });
+  // 画布 presence：打开/切画布（canvasFile）、选中节点、独占编辑锁、流式起止任一变化 → 广播
+  // view=canvas（锁/流式经 schedulePresenceBroadcast 跨视图合并，此订阅只负责 view 槽与选中）。
+  // messagesByConv 逐 token 更新不在此订阅 → 流式 token 不刷屏 presence（只有流式起止变更）。
+  useCanvasStore.subscribe((s, prev) => {
+    const changed =
+      s.canvasFile !== prev.canvasFile ||
+      s.selectedNodeId !== prev.selectedNodeId ||
+      s.lockedConversations !== prev.lockedConversations ||
+      s.streamingByConv !== prev.streamingByConv;
+    if (!changed) return;
+    schedulePresenceBroadcast({
+      file: s.canvasFile,
+      selection: s.selectedNodeId ? { kind: "node", nodeId: s.selectedNodeId } : null,
+      view: "canvas",
+    });
+  });
   useAppStore.subscribe((s, prev) => {
     if (s.vaultId !== prev.vaultId) {
       currentVaultId = s.vaultId;
@@ -179,6 +228,7 @@ function ensureSubscriptions(): void {
 export const useCollabStore = create<CollabStoreState>((set) => ({
   connected: false,
   peers: [],
+  myPeerId: null,
 
   init: (cfg) => {
     ensureSubscriptions();
@@ -187,6 +237,8 @@ export const useCollabStore = create<CollabStoreState>((set) => ({
     // 注入表格补丁广播钩子（tableStore 在 schedulePersist 计算补丁后回调；handle 为模块级，
     // establishConnection 重建连接后闭包自动指向新连接，无需重注入）
     useTableStore.getState().setCollabBroadcast((file, patch) => handle?.sendTablePatch(file, patch));
+    // 注入画布补丁广播钩子（canvasStore 在 schedulePersist 计算补丁后回调，同表格）
+    useCanvasStore.getState().setCollabBroadcast((file, patch) => handle?.sendCanvasPatch(file, patch));
     // 注入笔记协作广播钩子（Yjs 二进制约经 base64 走 relay 同通道）
     setNoteCollabBroadcast({
       sendSyncMessage: (file, payload) => handle?.sendNoteSync(file, bytesToBase64(payload)),
@@ -219,8 +271,11 @@ export const useCollabStore = create<CollabStoreState>((set) => ({
     handle?.sendBye();
     handle?.disconnect();
     handle = null;
-    // 解除广播钩子：协作关闭后表格编辑不再走 relay（回落 watcher/磁盘通道）
+    // 解除广播钩子：协作关闭后画布/表格编辑不再走 relay（回落 watcher/磁盘通道）
     useTableStore.getState().setCollabBroadcast(null);
+    useCanvasStore.getState().setCollabBroadcast(null);
+    // 释放本端画布独占编辑锁（协作关闭后锁声明不再对端可见，内存清空防陈旧）
+    useCanvasStore.getState().clearConversationLocks();
     setNoteCollabBroadcast(null);
     // 释放全部协作文档（Y.Doc/awareness 随销毁释放观察者与定时器）
     useNoteCollabStore.getState().clear();
@@ -231,6 +286,6 @@ export const useCollabStore = create<CollabStoreState>((set) => ({
       broadcastTimer = null;
     }
     pendingPresence = null;
-    set({ connected: false, peers: [] });
+    set({ connected: false, peers: [], myPeerId: null });
   },
 }));

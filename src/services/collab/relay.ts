@@ -7,12 +7,20 @@
  * - C→S `hello`：`{ type, vaultId, nickname, color, deviceName }`（连接后首条必发）
  * - C→S `presence`：`{ type, file?, selection?, view? }`
  * - C→S `table-patch`：`{ type, file, patch }`（表格增量补丁实时广播，LWW 按 id 应用）
+ * - C→S `canvas-patch`：`{ type, file, patch }`（画布增量补丁实时广播，LWW 按 id 应用）
  * - C→S `ping`（保活）/ `bye`（离开）
  * - S→C `peers`：`{ type, peers: [...] }`（房间成员变化全量推送）
  * - S→C `presence`：`{ type, peerId, presence }`（他人转发）
  * - S→C `table-patch`：`{ type, peerId, file, patch }`（他人补丁转发，不含自己）
+ * - S→C `canvas-patch`：`{ type, peerId, file, patch }`（他人补丁转发，不含自己）
  */
-import type { CollabHello, CollabPeer, CollabPresence, TablePatch } from "@/types";
+import type {
+  CanvasPatch,
+  CollabHello,
+  CollabPeer,
+  CollabPresence,
+  TablePatch,
+} from "@/types";
 
 /** 心跳间隔：relay 侧 30s 无消息超时踢出，25s 发 ping 保活。 */
 const HEARTBEAT_MS = 25_000;
@@ -104,6 +112,7 @@ export type CollabClientMessage =
   | ({ type: "hello" } & CollabHello)
   | ({ type: "presence" } & CollabPresence)
   | { type: "table-patch"; file: string; patch: TablePatch }
+  | { type: "canvas-patch"; file: string; patch: CanvasPatch }
   | { type: "note-sync"; file: string; payload: string }
   | { type: "note-aware"; file: string; payload: string }
   | { type: "ping" }
@@ -114,6 +123,7 @@ export type CollabServerMessage =
   | { type: "hello-ack"; peerId: number }
   | { type: "presence"; peerId: number; presence: CollabPresence }
   | { type: "table-patch"; peerId: number; file: string; patch: TablePatch }
+  | { type: "canvas-patch"; peerId: number; file: string; patch: CanvasPatch }
   | { type: "note-sync"; peerId: number; file: string; payload: string }
   | { type: "note-aware"; peerId: number; file: string; payload: string }
   | { type: "pong" }
@@ -124,6 +134,8 @@ export interface CollabRelayHandle {
   sendPresence(presence: CollabPresence): void;
   /** 广播表格增量补丁（relay 转发给房间内其他成员；未连接时静默丢弃）。 */
   sendTablePatch(file: string, patch: TablePatch): void;
+  /** 广播画布增量补丁（relay 转发给房间内其他成员；未连接时静默丢弃）。 */
+  sendCanvasPatch(file: string, patch: CanvasPatch): void;
   /** 广播笔记 Yjs 同步消息（base64，relay 不透明转发；未连接时静默丢弃）。 */
   sendNoteSync(file: string, payload: string): void;
   /** 广播笔记 awareness 更新（base64，relay 不透明转发；未连接时静默丢弃）。 */
@@ -143,6 +155,8 @@ export interface CollabRelayOptions {
   onPeerPresence: (peerId: number, presence: CollabPresence) => void;
   /** 收到他人表格补丁（文件匹配由调用方判定——只应用当前打开的表格）。 */
   onTablePatch: (peerId: number, file: string, patch: TablePatch) => void;
+  /** 收到他人画布补丁（文件匹配由调用方判定——只应用当前打开的画布）。 */
+  onCanvasPatch: (peerId: number, file: string, patch: CanvasPatch) => void;
   /** 收到他人笔记 Yjs 同步消息（base64 → 调用方解码合入；文件匹配由调用方判定）。 */
   onNoteSync: (peerId: number, file: string, payload: string) => void;
   /** 收到他人笔记 awareness 更新（base64 → 调用方解码应用）。 */
@@ -199,6 +213,8 @@ export function connectCollabRelay(opts: CollabRelayOptions): CollabRelayHandle 
       else if (msg.type === "presence") opts.onPeerPresence(msg.peerId, msg.presence);
       else if (msg.type === "table-patch")
         opts.onTablePatch(msg.peerId, msg.file, msg.patch);
+      else if (msg.type === "canvas-patch")
+        opts.onCanvasPatch(msg.peerId, msg.file, msg.patch);
       else if (msg.type === "note-sync")
         opts.onNoteSync(msg.peerId, msg.file, msg.payload);
       else if (msg.type === "note-aware")
@@ -242,6 +258,10 @@ export function connectCollabRelay(opts: CollabRelayOptions): CollabRelayHandle 
     sendTablePatch: (file, patch) => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       ws.send(JSON.stringify({ type: "table-patch", file, patch }));
+    },
+    sendCanvasPatch: (file, patch) => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: "canvas-patch", file, patch }));
     },
     sendNoteSync: (file, payload) => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;

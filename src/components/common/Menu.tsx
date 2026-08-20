@@ -48,15 +48,27 @@ interface MenuItemProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   danger?: boolean;
 }
 
-/** 统一菜单项（w-full 左对齐 + 图标文本同行 + hover 强调色）；danger = 删除类操作。 */
-export function MenuItem({ danger, style, className, ...rest }: MenuItemProps) {
+/** 统一菜单项（w-full 左对齐 + 图标文本同行 + hover 强调色）；danger = 删除类操作；
+ *  disabled = 灰显不可点（协作禁删等场景）。 */
+export function MenuItem({ danger, style, className, disabled, ...rest }: MenuItemProps) {
   return (
     <button
       {...rest}
+      disabled={disabled}
       className={`w-full text-left px-3 py-1.5 text-sm inline-flex items-center gap-1.5 ${
-        danger ? "text-[#f87171] hover:bg-red-600 hover:text-white" : "hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
+        disabled
+          ? "cursor-not-allowed"
+          : danger
+            ? "text-[#f87171] hover:bg-red-600 hover:text-white"
+            : "hover:bg-[var(--accent)] hover:text-[var(--accent-fg)]"
       } ${className ?? ""}`}
-      style={danger ? undefined : { color: "var(--text-primary)", ...style }}
+      style={
+        disabled
+          ? { color: "var(--text-muted)", ...style }
+          : danger
+            ? undefined
+            : { color: "var(--text-primary)", ...style }
+      }
     />
   );
 }

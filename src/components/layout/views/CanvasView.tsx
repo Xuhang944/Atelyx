@@ -18,7 +18,7 @@ import {
   Palette,
   Plus,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Edge, Node } from "@xyflow/react";
 import {
   Background,
@@ -52,6 +52,8 @@ import { MediaNode } from "@/components/canvas/nodes/MediaNode";
 import { SearchResultNode } from "@/components/canvas/nodes/SearchResultNode";
 import { GroupNode } from "@/components/canvas/nodes/GroupNode";
 import { LinkNode } from "@/components/canvas/nodes/LinkNode";
+import { withCollab } from "@/components/canvas/nodes/withCollab";
+import { useCollabStore } from "@/stores/collabStore";
 import {
   OPEN_TABLE_EVENT,
   TableNode,
@@ -66,13 +68,13 @@ import { AreaPlaceholder } from "@/components/layout/AreaPlaceholder";
 import { Menu, MenuDivider, MenuItem } from "@/components/common/Menu";
 
 const nodeTypes = {
-  conversation: ConversationNode,
-  text: TextNode,
-  media: MediaNode,
-  search: SearchResultNode,
-  group: GroupNode,
-  link: LinkNode,
-  table: TableNode,
+  conversation: withCollab(ConversationNode),
+  text: withCollab(TextNode),
+  media: withCollab(MediaNode),
+  search: withCollab(SearchResultNode),
+  group: withCollab(GroupNode),
+  link: withCollab(LinkNode),
+  table: withCollab(TableNode),
 };
 const edgeTypes = { default: DataFlowEdge };
 
@@ -130,6 +132,17 @@ export const CanvasView = memo(function CanvasView({
   const openTable = useAppStore((s) => s.openTable);
   const convertWhiteboard = useAppStore((s) => s.convertWhiteboard);
   const focusedAreaId = useUiStateStore((s) => s.focusedAreaId);
+  // 协作：同看本画布的在线用户（presence.file 命中 + view=canvas；断开连接自动消失）
+  const collabPeers = useCollabStore((s) => s.peers);
+  const canvasPeers = useMemo(
+    () =>
+      canvasFile
+        ? collabPeers.filter(
+            (p) => p.presence?.file === canvasFile && p.presence?.view === "canvas",
+          )
+        : [],
+    [canvasFile, collabPeers],
+  );
   const {
     screenToFlowPosition,
     fitView,
@@ -509,6 +522,30 @@ export const CanvasView = memo(function CanvasView({
             style={{ bottom: 16, right: 16, width: 170, height: 130 }}
           />
         </ReactFlow>
+
+        {/* 协作：同看本画布的在线用户胶囊（用户色点 + 昵称；断开连接自动消失） */}
+        {canvasPeers.length > 0 && (
+          <div className="absolute top-2 left-2 z-10 flex items-center gap-1">
+            {canvasPeers.map((p) => (
+              <span
+                key={p.peerId}
+                className="flex items-center gap-1.5 px-1.5 py-0.5 rounded border text-[11px]"
+                style={{
+                  background: "var(--bg-tertiary)",
+                  borderColor: "var(--border)",
+                  color: "var(--text-secondary)",
+                }}
+                title={`${p.nickname}${p.deviceName ? `（${p.deviceName}）` : ""} · 正在查看本画布`}
+              >
+                <span
+                  className="w-2 h-2 rounded-full flex-shrink-0"
+                  style={{ background: p.color }}
+                />
+                <span className="max-w-24 truncate">{p.nickname}</span>
+              </span>
+            ))}
+          </div>
+        )}
 
         {/* 只读白板横幅：外部白板格式只读查看 + 转换为画布入口（原文件保留，单向转换） */}
         {readOnly && (

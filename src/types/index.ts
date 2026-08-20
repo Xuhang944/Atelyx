@@ -110,6 +110,7 @@ export type {
   CollabPresence,
   CollabPeer,
   CollabHello,
+  CollabLockClaim,
 } from "./collab";
 
 export {

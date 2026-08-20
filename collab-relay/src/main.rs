@@ -1,21 +1,24 @@
-//! Atelyx 局域网协作中转（presence + 表格补丁 relay）。
+//! Atelyx 局域网协作中转（presence + 表格/画布补丁 + 笔记 CRDT relay）。
 //!
 //! 无状态 WebSocket hub：客户端按仓库 id（vaultId）分房间，转发 presence（在线用户 + 打开文件 +
-//! 选中状态）与表格内容补丁（`table-patch`，实时协作内容通道）。纯转发不持久化——断线即消失，
-//! 30s 无消息心跳超时踢出。无鉴权（局域网信任）：同一局域网内任何客户端可加入房间；单端口，
-//! 部署 = 服务器 `git clone && docker compose up -d`。
+//! 选中状态）与内容补丁（`table-patch` 表格 / `canvas-patch` 画布，实时协作内容通道）。
+//! 纯转发不持久化——断线即消失，30s 无消息心跳超时踢出。无鉴权（局域网信任）：同一局域网内
+//! 任何客户端可加入房间；单端口，部署 = 服务器 `git clone && docker compose up -d`。
 //!
 //! 协议（JSON over WS，字段 camelCase）：
 //! - C→S `hello`：`{ type, vaultId, nickname, color, deviceName }`（首条必发）
 //! - C→S `presence`：`{ type, file?, selection?, view? }`（选中变化节流后发）
 //! - C→S `table-patch`：`{ type, file, patch }`（表格增量补丁广播；patch 不透明透传，
 //!   客户端按 file 匹配只应用当前打开的表格）
+//! - C→S `canvas-patch`：`{ type, file, patch }`（画布增量补丁广播；patch 不透明透传，
+//!   客户端按 file 匹配只应用当前打开的画布）
 //! - C→S `ping`（保活）/ `bye`（离开）
 //! - S→C `hello-ack`：`{ type, peerId }`（分配的本连接 id，先于 peers 帧——客户端据此把自己过滤出列表）
 //! - S→C `peers`：`{ type, peers: [{ peerId, nickname, color, deviceName, presence? }] }`
 //!   （房间成员变化时全量推送；presence 字段 = `{ file?, selection?, view? }`）
 //! - S→C `presence`：`{ type, peerId, presence }`（他人 presence 转发，不含自己）
 //! - S→C `table-patch`：`{ type, peerId, file, patch }`（他人补丁转发，不含自己）
+//! - S→C `canvas-patch`：`{ type, peerId, file, patch }`（他人补丁转发，不含自己）
 //! - S→C `error`：`{ type, message }`
 
 use std::collections::HashMap;
@@ -283,6 +286,28 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
                             if let Some(room) = rooms.get_mut(&hello.vault_id) {
                                 let payload = server_msg(
                                     "table-patch",
+                                    Some(peer_id),
+                                    None,
+                                    None,
+                                    Some(file),
+                                    Some(patch),
+                                    None,
+                                );
+                                for (id, peer) in room.iter() {
+                                    if *id != peer_id {
+                                        let _ = peer.tx.send(payload.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // 画布内容补丁：与表格同构（不透明透传，客户端按 file 匹配当前打开的画布）
+                    "canvas-patch" => {
+                        if let (Some(file), Some(patch)) = (msg.file, msg.patch) {
+                            let mut rooms = hub.0.lock().unwrap();
+                            if let Some(room) = rooms.get_mut(&hello.vault_id) {
+                                let payload = server_msg(
+                                    "canvas-patch",
                                     Some(peer_id),
                                     None,
                                     None,

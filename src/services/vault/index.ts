@@ -22,6 +22,7 @@ import {
   parseWhiteboard,
 } from "@/utils/whiteboard";
 import { tableToSnapshotText } from "@/utils/table";
+import { diffCanvasEntities } from "@/utils/canvasCollab";
 import { normalizeAgentSteps } from "@/utils/agentSteps";
 import { readTableVault } from "@/services/table";
 import {
@@ -546,31 +547,14 @@ export async function patchCanvasVault(opts: {
   baseUpdatedAt: number;
 }): Promise<{ updatedAt: number; file: string } | null> {
   const { file, canvasId, title, nodes, edges, messagesByConv, lastSaved, baseUpdatedAt } = opts;
-  // 预建 id → 实体索引替代循环内 .find()（大画布 O(N²) → O(N)；每次自动保存都会跑）
-  const lastNodesById = new Map(lastSaved.nodes.map((n) => [n.id, n]));
-  const lastEdgesById = new Map(lastSaved.edges.map((e) => [e.id, e]));
-  // 节点 diff：引用不同 = 变化/新增；对话节点消息变化时节点引用不变，按 conv id 补进 upsert
-  const upsertNodeIds = new Set<string>();
-  for (const n of nodes) {
-    const ls = lastNodesById.get(n.id);
-    if (!ls || ls !== n) upsertNodeIds.add(n.id);
-  }
-  for (const [convId, msgs] of Object.entries(messagesByConv)) {
-    if (lastSaved.messagesByConv[convId] !== msgs) upsertNodeIds.add(convId);
-  }
-  const currentNodeIds = new Set(nodes.map((n) => n.id));
-  const removedNodeIds = lastSaved.nodes
-    .filter((n) => !currentNodeIds.has(n.id))
-    .map((n) => n.id);
-  const upsertEdgeIds = new Set<string>();
-  for (const e of edges) {
-    const ls = lastEdgesById.get(e.id);
-    if (!ls || ls !== e) upsertEdgeIds.add(e.id);
-  }
-  const currentEdgeIds = new Set(edges.map((e) => e.id));
-  const removedEdgeIds = lastSaved.edges
-    .filter((e) => !currentEdgeIds.has(e.id))
-    .map((e) => e.id);
+  // 引用 diff（与协作广播同源，见 utils/canvasCollab）：未变实体引用相同即未变化。
+  // 对话节点消息变化时节点引用不变，messagesByConv 引用变化同样计入 upsert。
+  const { upsertNodeIds, removedNodeIds, upsertEdgeIds, removedEdgeIds } = diffCanvasEntities(
+    nodes,
+    edges,
+    messagesByConv,
+    lastSaved,
+  );
 
   const upsertNodes: CanvasFileNode[] = [];
   for (const n of nodes) {
