@@ -34,7 +34,7 @@ export interface ConversationData {
   /**
    * 引用的 Agent 配置 id（settingsStore.agents，仓库级 `.atelyx/agents.json`）：
    * 发送时实时解析——系统提示词（引用已注册提示词笔记）注入 system 消息、勾选工具可用；
-   * 缺省（未设置）= 按预置「对话」Agent 处理（无系统提示词、无工具，普通对话）。
+   * 缺省（未设置）= 按预置「对话」Agent 处理（无系统提示词、只读 + 检索 + 联网，无写入/编辑）。
    */
   agentId?: string;
   /**

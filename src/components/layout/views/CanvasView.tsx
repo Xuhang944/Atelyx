@@ -246,7 +246,7 @@ export const CanvasView = memo(function CanvasView({
         type: "conversation",
         position: { x, y },
         // 初始尺寸大一点便于多轮对话；用户可 resize 覆盖（持久化到 .atlx）。
-        // 新对话节点默认选中预置「对话」Agent（无工具普通对话；用户可改选/清除）
+        // 新对话节点默认选中预置「对话」Agent（只读 + 检索 + 联网，无写入/编辑；用户可改选/清除）
         width: DEFAULT_CONVERSATION_WIDTH,
         height: DEFAULT_CONVERSATION_HEIGHT,
         data: { providerId: "", model: "", agentId: BUILTIN_AGENT_CHAT_ID },

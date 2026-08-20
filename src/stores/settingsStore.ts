@@ -393,7 +393,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         console.error("读取系统提示词标记失败", e);
       }
       // Agent 配置独立落盘 .atelyx/agents.json（config.json 只存仓库配置）；
-      // 预置 Agent（「对话」无工具 / 「Agent」全工具，builtin 不可删）缺失即补入并落盘（首次种子/手删补齐），保证默认必现
+      // 预置 Agent（「对话」只读 + 检索 + 联网 / 「Agent」全工具，builtin 不可删）缺失即补入并落盘（首次种子/手删补齐），保证默认必现
       let agents: AgentConfig[] = [];
       try {
         agents = await readAgents();
@@ -762,10 +762,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
   },
 
-  /** 按 id 查找 Agent：空 id = 缺省解析为预置「对话」（无工具普通对话）；未找到返回 null（发送时降级为普通对话）。 */
+  /** 按 id 查找 Agent：空 id = 缺省解析为预置「对话」（只读 + 检索 + 联网，无写入/编辑）；未找到返回 null（发送时降级为普通对话）。 */
   resolveAgent: (id) => {
     if (!id) {
-      // 缺省 = 预置「对话」：对话节点/面板不显式选择时的默认行为（无系统提示词、无工具）
+      // 缺省 = 预置「对话」：对话节点/面板不显式选择时的默认行为（无系统提示词、只读 + 检索 + 联网）
       return (
         get().agents.find((a) => a.id === BUILTIN_AGENT_CHAT_ID) ??
         BUILTIN_AGENTS[0] ??
@@ -789,6 +789,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       }
     }
     // 工具组装：tools 空 = 不带工具；web_search 勾选但未配置搜索源时剔除并提示
+    // （预置「对话」除外：其 web_search 是缺省自带的，未配置源时静默剔除不弹横幅，
+    // 设置页工具区仍显示「未配置搜索源」角标；用户显式勾选搜索的 Agent 保持提示）
     const s = get();
     const searchReady = s.isSearchConfigured();
     let tools: ToolSchema[] = [];
@@ -796,7 +798,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     if (agent.tools.length) {
       const assembly = buildAgentTools(agent.tools, searchReady);
       tools = assembly.tools;
-      skippedWebSearch = assembly.skippedWebSearch;
+      skippedWebSearch = assembly.skippedWebSearch && agent.id !== BUILTIN_AGENT_CHAT_ID;
     }
     return { systemPrompt, tools, skippedWebSearch };
   },
