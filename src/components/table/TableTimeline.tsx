@@ -11,7 +11,7 @@
  * 播放中当前卡片自动滚入视野；组件卸载（切视图/关窗）自动停止。
  */
 import { Pause, Play, Square } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   PREVIEW_DEFAULT_DURATION,
   TIMELINE_CARD_GAP,
@@ -22,7 +22,7 @@ import {
 import { useTableStore } from "@/stores/tableStore";
 import { useCollabStore } from "@/stores/collabStore";
 import { useTableImageSrc } from "@/hooks/useTableImageSrc";
-import type { TableRow } from "@/types";
+import type { TableField, TableRow } from "@/types";
 
 /** 时间线卡片缩略图：条目路径经 useTableImageSrc 解析（加载中/失败显示文字摘要兜底）。 */
 function CardThumb({ entry, summary }: { entry: string | undefined; summary: string }) {
@@ -39,6 +39,163 @@ function CardThumb({ entry, summary }: { entry: string | undefined; summary: str
   }
   return <img src={src} alt="" className="w-full h-full object-cover" draggable={false} />;
 }
+
+/**
+ * 时间线卡片流：memo 隔离——播放中 playhead 不参与 props，仅换行（shotIndex 变化）时重渲染，
+ * 其余帧浅比较全等整体跳过（消除播放时每帧全表重建卡片的掉帧主因）。
+ */
+const TimelineCards = memo(function TimelineCards({
+  rows,
+  selectedRowId,
+  shotIndex,
+  durations,
+  hasDurationField,
+  imageField,
+  textField,
+  peerColorByRowId,
+  onJump,
+}: {
+  rows: TableRow[];
+  selectedRowId: string | null;
+  shotIndex: number;
+  durations: number[];
+  hasDurationField: boolean;
+  imageField?: TableField;
+  textField?: TableField;
+  peerColorByRowId: ReadonlyMap<string, string>;
+  onJump: (index: number) => void;
+}) {
+  return (
+    <>
+      {rows.map((row, i) => {
+        const isSelected = row.id === selectedRowId;
+        const isCurrent = i === shotIndex;
+        const images =
+          imageField && Array.isArray(row.values[imageField.id]) ? (row.values[imageField.id] as string[]) : [];
+        const summary =
+          textField && typeof row.values[textField.id] === "string" ? (row.values[textField.id] as string) : "";
+        return (
+          <div
+            key={row.id}
+            data-row-id={row.id}
+            data-shot-id={i}
+            onClick={() => onJump(i)}
+            className="flex flex-col rounded cursor-pointer overflow-hidden flex-shrink-0 transition-colors"
+            style={{
+              width: cardWidthAt(durations[i], hasDurationField),
+              border: `1px solid ${isCurrent ? "var(--accent)" : peerColorByRowId.get(row.id) ?? "var(--border)"}`,
+              background: isSelected ? "color-mix(in srgb, var(--accent) 12%, transparent)" : "var(--bg-secondary)",
+              outline: isCurrent ? "1px solid var(--accent)" : undefined,
+            }}
+            title={`行 ${i + 1} · ${durations[i]} 秒`}
+          >
+            <div className="h-20 overflow-hidden flex items-center justify-center" style={{ background: "var(--bg-tertiary)" }}>
+              {images.length > 0 ? (
+                <CardThumb entry={images[0]} summary={summary} />
+              ) : (
+                <div
+                  className="w-full h-full p-1.5 text-[10px] leading-4 overflow-hidden whitespace-pre-wrap break-words"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  {summary || `行 ${i + 1}`}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center justify-between px-1.5 py-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
+              <span>{i + 1}</span>
+              <span>{durations[i]}s</span>
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+});
+
+/** 刻度尺：memo 隔离——播放中 totalDuration 不变则跳过每帧重建。 */
+const TimelineRuler = memo(function TimelineRuler({ totalDuration }: { totalDuration: number }) {
+  return (
+    <div className="relative h-5">
+      {Array.from({ length: Math.floor(totalDuration / 5) + 1 }, (_, k) => {
+        const t = k * 5;
+        return (
+          <div key={t} className="absolute top-0 flex flex-col items-start" style={{ left: t * TIMELINE_PX_PER_SEC }}>
+            <div className="w-px h-3" style={{ background: "var(--text-muted)", opacity: 0.5 }} />
+            <span className="text-[9px] mt-0.5" style={{ color: "var(--text-muted)" }}>
+              {t}s
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+});
+
+/** 预览区（当前行大图/文字卡片）：memo 隔离——播放中仅换行（currentRow 引用变化）时重渲染。 */
+const TimelinePreview = memo(function TimelinePreview({
+  currentRow,
+  shotIndex,
+  imageField,
+  textField,
+  coverSrc,
+  durationSec,
+}: {
+  currentRow: TableRow;
+  shotIndex: number;
+  imageField?: TableField;
+  textField?: TableField;
+  coverSrc: string | null;
+  durationSec: number;
+}) {
+  return (
+    <div className="flex-1 min-h-0 flex items-center justify-center p-4 relative">
+      <div className="flex flex-col items-center gap-2 max-w-full">
+        {imageField && Array.isArray(currentRow.values[imageField.id]) && (currentRow.values[imageField.id] as string[]).length > 0 ? (
+          coverSrc ? (
+            <img
+              src={coverSrc}
+              alt={`行 ${shotIndex + 1}`}
+              className="max-h-[55vh] max-w-full object-contain rounded shadow-lg"
+              draggable={false}
+            />
+          ) : (
+            <div
+              className="w-72 aspect-video rounded flex items-center justify-center text-xs"
+              style={{ background: "var(--bg-secondary)", color: "var(--text-muted)", border: "1px dashed var(--border)" }}
+            >
+              图片加载中…
+            </div>
+          )
+        ) : textField && typeof currentRow.values[textField.id] === "string" && currentRow.values[textField.id] ? (
+          <div
+            className="max-w-xl max-h-[55vh] overflow-auto p-4 rounded whitespace-pre-wrap text-sm"
+            style={{ background: "var(--bg-secondary)", color: "var(--text-primary)", border: "1px solid var(--border)" }}
+          >
+            {currentRow.values[textField.id] as string}
+          </div>
+        ) : (
+          <div
+            className="px-6 py-3 rounded text-sm"
+            style={{ background: "var(--bg-secondary)", color: "var(--text-muted)", border: "1px dashed var(--border)" }}
+          >
+            行 {shotIndex + 1}（无图片与文本内容）
+          </div>
+        )}
+        <div className="text-xs" style={{ color: "var(--text-muted)" }}>
+          行 {shotIndex + 1} · {durationSec} 秒
+        </div>
+      </div>
+    </div>
+  );
+});
+
+/** 播放头进度线：memo 小件——每帧仅自身重渲染（left 变化），不拖累卡片流/刻度尺/预览区。 */
+const PlayheadLine = memo(function PlayheadLine({ left, visible }: { left: number; visible: boolean }) {
+  if (!visible) return null;
+  return (
+    <div className="absolute top-0 bottom-0 w-0.5 pointer-events-none z-10" style={{ left: 12 + left, background: "var(--accent)" }} />
+  );
+});
 
 /** 单行播放时长：duration 字段值（>0 才有效），缺省 3s。 */
 function rowDuration(row: TableRow, durationFieldId: string | undefined): number {
@@ -62,21 +219,23 @@ export function TableTimeline() {
   // 协作：同看本表格的在线用户（远端选中行 → 卡片边框用户色）
   const tableFile = useTableStore((s) => s.tableFile);
   const collabPeers = useCollabStore((s) => s.peers);
-  const peerColorAtRow = (rowId: string): string | undefined => {
-    if (!tableFile) return undefined;
+  // 协作远端选中行 → 用户色（按 rowId 预建 Map：播放每帧 O(1) 查询，不再每帧 collabPeers × rows 全量扫描；保留「首个匹配 peer 优先」语义）
+  const peerColorByRowId = useMemo(() => {
+    const map = new Map<string, string>();
+    if (!tableFile) return map;
     for (const p of collabPeers) {
       const sel = p.presence?.selection;
       if (
         p.presence?.file === tableFile &&
         sel &&
         (sel.kind === "cell" || sel.kind === "row") &&
-        sel.rowId === rowId
+        !map.has(sel.rowId)
       ) {
-        return p.color;
+        map.set(sel.rowId, p.color);
       }
     }
-    return undefined;
-  };
+    return map;
+  }, [collabPeers, tableFile]);
 
   const durationField = fields.find((f) => f.type === "duration");
   const imageField = fields.find((f) => f.type === "image");
@@ -158,15 +317,16 @@ export function TableTimeline() {
     return acc + Math.min(1, Math.max(0, frac)) * cardWidthAt(durations[shotIndex], hasDurationField);
   }, [rows.length, shotIndex, durations, shotStarts, playhead, hasDurationField]);
 
-  const shotStartOf = (index: number): number => shotStarts[index] ?? 0;
-
-  /** 跳选行：停止播放并定位到该行起点（与表格视图选中联动）。 */
-  const jumpTo = (index: number) => {
-    setPlaying(false);
-    playheadRef.current = shotStartOf(index);
-    setPlayhead(playheadRef.current);
-    selectRow(rows[index]?.id ?? null);
-  };
+  /** 跳选行：停止播放并定位到该行起点（与表格视图选中联动）。useCallback 稳定引用，防 onJump 每帧新引用击穿 TimelineCards 的 memo。 */
+  const jumpTo = useCallback(
+    (index: number) => {
+      setPlaying(false);
+      playheadRef.current = shotStarts[index] ?? 0;
+      setPlayhead(playheadRef.current);
+      selectRow(rows[index]?.id ?? null);
+    },
+    [shotStarts, rows, selectRow],
+  );
 
   const formatTime = (t: number): string => {
     const m = Math.floor(t / 60);
@@ -195,45 +355,15 @@ export function TableTimeline() {
 
   return (
     <div className="h-full flex flex-col" style={{ background: "var(--bg-primary)" }}>
-      {/* 预览区：当前行大图（无图 → 文字卡片） */}
-      <div className="flex-1 min-h-0 flex items-center justify-center p-4 relative">
-        <div className="flex flex-col items-center gap-2 max-w-full">
-          {imageField && Array.isArray(currentRow.values[imageField.id]) && (currentRow.values[imageField.id] as string[]).length > 0 ? (
-            coverSrc ? (
-              <img
-                src={coverSrc}
-                alt={`行 ${shotIndex + 1}`}
-                className="max-h-[55vh] max-w-full object-contain rounded shadow-lg"
-                draggable={false}
-              />
-            ) : (
-              <div
-                className="w-72 aspect-video rounded flex items-center justify-center text-xs"
-                style={{ background: "var(--bg-secondary)", color: "var(--text-muted)", border: "1px dashed var(--border)" }}
-              >
-                图片加载中…
-              </div>
-            )
-          ) : textField && typeof currentRow.values[textField.id] === "string" && currentRow.values[textField.id] ? (
-            <div
-              className="max-w-xl max-h-[55vh] overflow-auto p-4 rounded whitespace-pre-wrap text-sm"
-              style={{ background: "var(--bg-secondary)", color: "var(--text-primary)", border: "1px solid var(--border)" }}
-            >
-              {currentRow.values[textField.id] as string}
-            </div>
-          ) : (
-            <div
-              className="px-6 py-3 rounded text-sm"
-              style={{ background: "var(--bg-secondary)", color: "var(--text-muted)", border: "1px dashed var(--border)" }}
-            >
-              行 {shotIndex + 1}（无图片与文本内容）
-            </div>
-          )}
-          <div className="text-xs" style={{ color: "var(--text-muted)" }}>
-            行 {shotIndex + 1} · {durations[shotIndex]} 秒
-          </div>
-        </div>
-      </div>
+      {/* 预览区：当前行大图（无图 → 文字卡片）；memo 隔离，播放中仅换行时重渲染 */}
+      <TimelinePreview
+        currentRow={currentRow}
+        shotIndex={shotIndex}
+        imageField={imageField}
+        textField={textField}
+        coverSrc={coverSrc}
+        durationSec={durations[shotIndex]}
+      />
 
       {/* 控制条 */}
       <div
@@ -278,77 +408,24 @@ export function TableTimeline() {
       {/* 时间轴：刻度尺 + 卡片流 + 播放头 */}
       <div className="flex-shrink-0 border-t overflow-x-auto" style={{ borderColor: "var(--border)" }}>
         <div className="relative" style={{ width: totalWidth + 24, padding: "0 12px 10px" }}>
-          {/* 刻度尺（仅有时长字段显示） */}
-          {durationField && (
-            <div className="relative h-5">
-              {Array.from({ length: Math.floor(totalDuration / 5) + 1 }, (_, k) => {
-                const t = k * 5;
-                return (
-                  <div
-                    key={t}
-                    className="absolute top-0 flex flex-col items-start"
-                    style={{ left: t * TIMELINE_PX_PER_SEC }}
-                  >
-                    <div className="w-px h-3" style={{ background: "var(--text-muted)", opacity: 0.5 }} />
-                    <span className="text-[9px] mt-0.5" style={{ color: "var(--text-muted)" }}>
-                      {t}s
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          {/* 卡片流 */}
+          {/* 刻度尺（仅有时长字段显示；memo 隔离，播放中跳过重建） */}
+          {durationField && <TimelineRuler totalDuration={totalDuration} />}
+          {/* 卡片流（memo 隔离，播放中仅换行时重渲染） */}
           <div ref={cardsRef} className="flex items-stretch" style={{ gap: TIMELINE_CARD_GAP }}>
-            {rows.map((row, i) => {
-              const isSelected = row.id === selectedRowId;
-              const isCurrent = i === shotIndex;
-              const images =
-                imageField && Array.isArray(row.values[imageField.id]) ? (row.values[imageField.id] as string[]) : [];
-              const summary =
-                textField && typeof row.values[textField.id] === "string" ? (row.values[textField.id] as string) : "";
-              return (
-                <div
-                  key={row.id}
-                  data-row-id={row.id}
-                  data-shot-id={i}
-                  onClick={() => jumpTo(i)}
-                  className="flex flex-col rounded cursor-pointer overflow-hidden flex-shrink-0 transition-colors"
-                  style={{
-                    width: cardWidthAt(durations[i], hasDurationField),
-                    border: `1px solid ${isCurrent ? "var(--accent)" : peerColorAtRow(row.id) ?? "var(--border)"}`,
-                    background: isSelected ? "color-mix(in srgb, var(--accent) 12%, transparent)" : "var(--bg-secondary)",
-                    outline: isCurrent ? "1px solid var(--accent)" : undefined,
-                  }}
-                  title={`行 ${i + 1} · ${durations[i]} 秒`}
-                >
-                  <div className="h-20 overflow-hidden flex items-center justify-center" style={{ background: "var(--bg-tertiary)" }}>
-                    {images.length > 0 ? (
-                      <CardThumb entry={images[0]} summary={summary} />
-                    ) : (
-                      <div
-                        className="w-full h-full p-1.5 text-[10px] leading-4 overflow-hidden whitespace-pre-wrap break-words"
-                        style={{ color: "var(--text-muted)" }}
-                      >
-                        {summary || `行 ${i + 1}`}
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex items-center justify-between px-1.5 py-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-                    <span>{i + 1}</span>
-                    <span>{durations[i]}s</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          {/* 播放头（进度线） */}
-          {playing && (
-            <div
-              className="absolute top-0 bottom-0 w-0.5 pointer-events-none z-10"
-              style={{ left: 12 + playheadPx, background: "var(--accent)" }}
+            <TimelineCards
+              rows={rows}
+              selectedRowId={selectedRowId}
+              shotIndex={shotIndex}
+              durations={durations}
+              hasDurationField={hasDurationField}
+              imageField={imageField}
+              textField={textField}
+              peerColorByRowId={peerColorByRowId}
+              onJump={jumpTo}
             />
-          )}
+          </div>
+          {/* 播放头（进度线；memo 小件，每帧仅自身重渲染） */}
+          <PlayheadLine left={playheadPx} visible={playing} />
         </div>
       </div>
     </div>

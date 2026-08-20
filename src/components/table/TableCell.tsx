@@ -20,7 +20,7 @@
  * 单元格选中（selectCell）由 TableEditor 的 td 层 pointer 手势统一处理。
  */
 import { ChevronLeft, ChevronRight, ImagePlus, Plus, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ChangeEvent, KeyboardEvent, MouseEvent } from "react";
 import { useTableStore } from "@/stores/tableStore";
@@ -104,7 +104,11 @@ interface Props {
   row: TableRow;
 }
 
-export function TableCell({ field, row }: Props) {
+/**
+ * 类型化单元格（memo：store 不可变更新下未变 row/field 引用稳定，浅比较跳过整行未变单元格的重渲染，
+ * 单格编辑不再连带整行其余单元格重渲染；内部选中态/撤销回退订阅走 zustand 自身通知，不受 memo 影响）。
+ */
+export const TableCell = memo(function TableCell({ field, row }: Props) {
   const value = row.values[field.id];
   const updateCell = useTableStore((s) => s.updateCell);
 
@@ -134,7 +138,7 @@ export function TableCell({ field, row }: Props) {
   }
   // text（含未知类型前向兼容：只读文本展示）
   return <TextCell field={field} row={row} value={typeof value === "string" ? value : ""} />;
-}
+});
 
 /**
  * 选中态导航键 → 方向（移动单元格选中用；Enter = 下移一行）。
