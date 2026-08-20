@@ -43,6 +43,38 @@ export interface ReadWindowResult {
   truncated: boolean;
 }
 
+/** glob 检索结果（对应 Rust `glob_vault`，camelCase 序列化）。 */
+export interface GlobVaultResult {
+  /** 搜索基准：path 参数原样（缺省 = 空串 = 仓库根）。 */
+  root: string;
+  /** 命中的文件路径（相对仓库根、`/` 分隔；按修改时间升序，最多内联上限条）。 */
+  paths: string[];
+  /** 全部命中数（可能大于 paths.length，超上限时用于提示收窄）。 */
+  total: number;
+  /** 是否因超上限被截断（total > paths.length）。 */
+  capped: boolean;
+}
+
+/** grep 匹配行（对应 Rust `GrepMatchRow`，camelCase 序列化）。 */
+export interface GrepMatchRow {
+  /** 相对仓库根路径（`/` 分隔）。 */
+  path: string;
+  /** 文件内 1-based 行号。 */
+  lineNumber: number;
+  /** 行内容（超长已按字节截断并附后缀）。 */
+  line: string;
+}
+
+/** grep 检索结果（对应 Rust `grep_vault`）。 */
+export interface GrepVaultResult {
+  /** 内联返回的匹配行（最多上限条，行号升序、按文件连续）。 */
+  matches: GrepMatchRow[];
+  /** 全部匹配数（可能大于 matches.length，超上限时用于提示收窄）。 */
+  total: number;
+  /** 是否因超上限被截断（total > matches.length）。 */
+  capped: boolean;
+}
+
 /** 工具执行所需的能力缝（由调用方注入；工具依赖此而非 store）。 */
 export interface ToolCapabilities {
   /** 联网搜索（依赖搜索源配置）。 */
@@ -59,6 +91,16 @@ export interface ToolCapabilities {
     path: string,
     edits: Array<{ oldText: string; newText: string }>,
   ) => Promise<{ ok: boolean; summary: string }>;
+  /** 按 glob 模式枚举仓库内文件路径（只返回文件，相对仓库根；上限内联 + total）。 */
+  glob?: (
+    pattern: string,
+    opts?: { path?: string },
+  ) => Promise<GlobVaultResult>;
+  /** 正则搜索仓库内文件内容，返回匹配行（含行号与路径；上限内联 + total）。 */
+  grep?: (
+    pattern: string,
+    opts?: { path?: string; include?: string },
+  ) => Promise<GrepVaultResult>;
   /** 抓取网页正文。 */
   fetchUrl?: (url: string) => Promise<{ url: string; title?: string; content: string }>;
 }

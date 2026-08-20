@@ -8,7 +8,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { READ_WINDOW_DEFAULT_LINES } from "@/constants/tools";
-import type { ReadWindowResult } from "@/types";
+import type { GlobVaultResult, GrepVaultResult, ReadWindowResult } from "@/types";
 import { recordNoteDiskContent } from "./index";
 
 /** 读仓库内任意文本文件（相对仓库根路径；超出仓库根/不存在抛错，由调用方降级）。 */
@@ -38,6 +38,26 @@ export async function writeVaultFile(file: string, content: string): Promise<voi
 export interface FileEditEntry {
   oldText: string;
   newText: string;
+}
+
+/** glob 检索（AI glob 工具后端）：按模式返回相对仓库根的文件路径列表（修改时间升序、上限内联 + total）。 */
+export async function globVault(
+  pattern: string,
+  opts?: { path?: string },
+): Promise<GlobVaultResult> {
+  return invoke<GlobVaultResult>("glob_vault", { pattern, path: opts?.path });
+}
+
+/** grep 检索（AI grep 工具后端）：正则搜仓库文件内容，返回匹配行（上限内联 + total）。 */
+export async function grepVault(
+  pattern: string,
+  opts?: { path?: string; include?: string },
+): Promise<GrepVaultResult> {
+  return invoke<GrepVaultResult>("grep_vault", {
+    pattern,
+    path: opts?.path,
+    include: opts?.include,
+  });
 }
 
 /**

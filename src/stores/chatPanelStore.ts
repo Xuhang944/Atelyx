@@ -20,7 +20,7 @@ import {
 import { runAgentTools } from "@/services/ai/tools";
 import { runSearch } from "@/services/search";
 import { recordAgentFileWrite } from "@/services/history";
-import { readVaultFileWindow, writeVaultFile, editVaultFile } from "@/services/vault/aiFiles";
+import { readVaultFileWindow, writeVaultFile, editVaultFile, globVault, grepVault } from "@/services/vault/aiFiles";
 import { fetchWeb } from "@/services/web";
 import { prefix, scanMentionHits } from "@/utils/text";
 import { appendNarration, appendReasoning, mergeToolRuns, promoteLastNarration } from "@/utils/agentSteps";
@@ -71,7 +71,7 @@ interface ChatPanelState {
   effortOverride: ReasoningEffort | null;
   /** 拖入输入框的笔记引用队列（文件面板拖拽笔记到 AI 对话输入框，组件消费后清空）。 */
   pendingMentions: EditorChatMessageRef[];
-  /** 新对话态（无激活会话）的待用 Agent：默认预置「对话」（无工具普通对话），发送首条消息创建会话时固化进会话；新建会话/切仓库时重置为默认。 */
+  /** 新对话态（无激活会话）的待用 Agent：默认预置「对话」（只读 + 检索 + 联网，无写入/编辑），发送首条消息创建会话时固化进会话；新建会话/切仓库时重置为默认。 */
   draftAgentId: string | undefined;
   /** 笔记划词改写请求队列（NoteEditor 划词右键确认后入队；AiChatPanel 消费后清空）。 */
   pendingRewrites: NoteRewriteRequest[];
@@ -439,7 +439,7 @@ async function runExchange(
   abortController = controller;
 
   // 系统提示词 + 工具：按 Agent 实时解析（配置在 设置 → Agent，引用已注册提示词笔记实时读正文注入）。
-  // 缺省（未选 Agent）= 预置「对话」（无系统提示词、无工具）；Agent 缺失（已删）降级为普通对话。
+  // 缺省（未选 Agent）= 预置「对话」（无系统提示词、只读 + 检索 + 联网）；Agent 缺失（已删）降级为普通对话。
   const agentReq = await useSettingsStore
     .getState()
     .resolveAgentRequest(updated.agentId);
@@ -609,6 +609,8 @@ async function runExchange(
         capabilities: {
           search: (query) => runSearch(useSettingsStore.getState().searchConfig, query),
           readFile: (path, opts) => readVaultFileWindow(path, opts),
+          glob: (pattern, opts) => globVault(pattern, opts),
+          grep: (pattern, opts) => grepVault(pattern, opts),
           writeFile: (path, content) => writeVaultFile(path, content).then(() => {
             // Agent 协作历史：AI 写文件以 Agent 身份记入对应 kind 的历史（fire-and-forget）
             void recordAgentFileWrite(path, content);

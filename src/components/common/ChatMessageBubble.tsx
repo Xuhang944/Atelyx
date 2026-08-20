@@ -17,6 +17,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  FileSearch,
   FileText,
   FilePlus,
   GitBranch,
@@ -26,6 +27,7 @@ import {
   Loader2,
   PenLine,
   RefreshCw,
+  Search,
   Wrench,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -328,6 +330,10 @@ function toolIcon(name: string, size: number) {
       return <Link size={size} className="flex-shrink-0" />;
     case "read_file":
       return <FileText size={size} className="flex-shrink-0" />;
+    case "glob":
+      return <FileSearch size={size} className="flex-shrink-0" />;
+    case "grep":
+      return <Search size={size} className="flex-shrink-0" />;
     case "edit_file":
       return <PenLine size={size} className="flex-shrink-0" />;
     case "write_file":

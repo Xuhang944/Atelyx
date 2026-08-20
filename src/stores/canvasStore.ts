@@ -46,7 +46,7 @@ import { toLlmMessages } from "@/services/ai/client";
 import { abortAutoTitle } from "@/services/ai/autoTitle";
 import { runSearch, resultsToText } from "@/services/search";
 import { runAgentTools } from "@/services/ai/tools";
-import { readVaultFileWindow, writeVaultFile, editVaultFile } from "@/services/vault/aiFiles";
+import { readVaultFileWindow, writeVaultFile, editVaultFile, globVault, grepVault } from "@/services/vault/aiFiles";
 import { fetchWeb } from "@/services/web";
 import {
   findFreeSpot,
@@ -871,6 +871,8 @@ async function runStream(conversationId: string): Promise<void> {
     return;
   }
   const { provider, model } = resolved;
+  // 发送起始清上次错误（与 chatPanelStore.runExchange 对称：搜索源等已配置后不滞留旧横幅）
+  store.setState({ error: null });
   // 推理等级为节点级独立覆盖（与 provider/model 正交，resolveChatTarget 不产 effort）；缺省 = 不指定（跟随默认，不下发 reasoning_effort）
   const reasoningEffort = nodeData?.reasoningEffort;
 
@@ -916,7 +918,7 @@ async function runStream(conversationId: string): Promise<void> {
 
   try {
     // 系统提示词 + 工具：按 Agent 实时解析（配置在 设置 → Agent，引用已注册提示词笔记实时读正文注入）。
-    // 缺省（未选 Agent）= 预置「对话」（无系统提示词、无工具）；Agent 缺失（已删）降级为普通对话。
+    // 缺省（未选 Agent）= 预置「对话」（无系统提示词、只读 + 检索 + 联网）；Agent 缺失（已删）降级为普通对话。
     const agentReq = await useSettingsStore
       .getState()
       .resolveAgentRequest(nodeData?.agentId);
@@ -1124,6 +1126,8 @@ async function runStream(conversationId: string): Promise<void> {
             capabilities: {
               search: (query) => runSearch(useSettingsStore.getState().searchConfig, query),
               readFile: (path, opts) => readVaultFileWindow(path, opts),
+              glob: (pattern, opts) => globVault(pattern, opts),
+              grep: (pattern, opts) => grepVault(pattern, opts),
               writeFile: (path, content) => writeVaultFile(path, content).then(() => {
                 // Agent 协作历史：AI 写文件以 Agent 身份记入对应 kind 的历史（fire-and-forget）
                 void recordAgentFileWrite(path, content);

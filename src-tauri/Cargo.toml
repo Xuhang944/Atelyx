@@ -57,6 +57,11 @@ notify-debouncer-mini = "0.4"
 # dunce::canonicalize 去除前缀、保持标准 Windows 路径（E:\xxx），跨平台同语义
 dunce = "1"
 
+# 仓库内文件检索（glob/grep AI 工具）：globset 为 glob 模式匹配（`**/` 任意深度语义）、
+# regex 为内容搜索正则——两者即 ripgrep 所用的同一套引擎，保证搜索语义与业界一致
+globset = "0.4"
+regex = "1"
+
 # 表格导出 xlsx（rust_xlsxwriter 原生生成，样式：表头/边框/列宽/冻结首行/图片嵌入）
 rust_xlsxwriter = "0.80"
 

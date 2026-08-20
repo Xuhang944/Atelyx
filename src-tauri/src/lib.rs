@@ -99,6 +99,9 @@ pub fn run() {
             commands::keychain::set_api_key,
             commands::keychain::get_api_key,
             commands::keychain::delete_api_key,
+            // 仓库文件检索（AI glob/grep 工具后端：模式发现路径 / 正则搜内容）
+            commands::filesearch::glob_vault,
+            commands::filesearch::grep_vault,
             // 联网搜索代理（Tavily/SearXNG，Rust 侧请求绕 CORS + key 不进 WebView）
             commands::search::search_web,
             commands::web::fetch_web,

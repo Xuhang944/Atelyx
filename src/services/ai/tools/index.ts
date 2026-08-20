@@ -18,6 +18,8 @@ import type {
 import { WEB_SEARCH_TOOL } from "./webSearch";
 import { WEB_FETCH_TOOL } from "./webFetch";
 import { READ_FILE_TOOL } from "./readFile";
+import { GLOB_TOOL } from "./glob";
+import { GREP_TOOL } from "./grep";
 import { EDIT_FILE_TOOL } from "./editFile";
 import { WRITE_FILE_TOOL } from "./writeFile";
 import { createToolRegistry } from "./registry";
@@ -27,6 +29,8 @@ export const AGENT_TOOLS = [
   WEB_SEARCH_TOOL,
   WEB_FETCH_TOOL,
   READ_FILE_TOOL,
+  GLOB_TOOL,
+  GREP_TOOL,
   EDIT_FILE_TOOL,
   WRITE_FILE_TOOL,
 ] as unknown as ToolDefinition[];

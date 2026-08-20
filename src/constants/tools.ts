@@ -20,11 +20,20 @@ export interface AgentToolMeta {
  * 前端无需重复定义。 */
 export const READ_WINDOW_DEFAULT_LINES = 2000;
 
+/** glob 单次内联返回路径上限 / grep 单次内联返回匹配上限 / grep 单行预览字节上限。
+ * 均由 Rust 侧 filesearch.rs 强制（glob_vault/grep_vault），此处仅用于工具描述文案，
+ * 口径与 READ_WINDOW_DEFAULT_LINES 一致。 */
+export const GLOB_MAX_RESULTS = 100;
+export const GREP_MAX_MATCHES = 250;
+export const GREP_MAX_LINE_BYTES = 2000;
+
 /** UI 展示与默认勾选的工具名单（执行层同名集合见 services/ai/tools）。 */
 export const AGENT_TOOLS_META: AgentToolMeta[] = [
   { id: "web_search", label: "联网搜索", needsSearch: true },
   { id: "web_fetch", label: "抓取网页" },
   { id: "read_file", label: "读取文件" },
+  { id: "glob", label: "查找文件" },
+  { id: "grep", label: "搜索内容" },
   { id: "edit_file", label: "编辑文件" },
   { id: "write_file", label: "写入文件" },
 ];

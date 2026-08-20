@@ -124,6 +124,9 @@ export {
   type ToolExecResult,
   type ReadWindowLine,
   type ReadWindowResult,
+  type GlobVaultResult,
+  type GrepMatchRow,
+  type GrepVaultResult,
 } from "./tool";
 
 export type {
