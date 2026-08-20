@@ -6,26 +6,46 @@
  * 推导为「单思考步 + 工具步」。新写入一律只写 `steps`。
  *
  * 思考流式累积（`appendReasoning`）与工具轮合并（`mergeToolRuns`）都是不可变更新——
- * 只在最后一步是思考步时拼接，否则另起思考步；从而第二轮思考不会并进第一轮。
+ * 思考/叙述并入「当前轮」最后一个同类型步（尾部向前找，遇工具步即停），
+ * 这样思考与叙述交错到达（同一 rAF 帧 flush）时不会把一段思考拆成两个思考块；
+ * 工具轮之间的思考仍自然分隔（第二轮思考不会并进第一轮）。
  */
 import type { AgentStep, ToolRun } from "@/types";
 
-/** 思考增量写入 steps：最后一步是思考步则拼接，否则新起思考步（工具轮之间自然分隔）。 */
+/**
+ * 思考增量写入 steps：并入当前轮最后一个思考步（尾部向前找第一个 reasoning，遇工具步即停）。
+ * 只当最后一步是思考步才拼接会漏掉「思考/叙述同帧到达」的情况——叙述步插在中间后，
+ * 后续思考增量会被拆成新思考步（一段思考渲染成两个折叠块）。工具轮之间依旧分隔。
+ */
 export function appendReasoning(steps: AgentStep[], text: string): AgentStep[] {
   if (!text) return steps;
-  const last = steps[steps.length - 1];
-  if (last && last.kind === "reasoning") {
-    return [...steps.slice(0, -1), { kind: "reasoning", text: last.text + text }];
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const s = steps[i];
+    if (s.kind === "reasoning") {
+      return [
+        ...steps.slice(0, i),
+        { kind: "reasoning", text: s.text + text },
+        ...steps.slice(i + 1),
+      ];
+    }
+    if (s.kind === "tool") break;
   }
   return [...steps, { kind: "reasoning", text }];
 }
 
-/** 叙述正文增量写入 steps（工具轮的文本叙述，渲染为该步的「思考行」）：最后已是 text 步则拼接，否则新起。 */
+/** 叙述正文增量写入 steps（工具轮的文本叙述，渲染为该步的「思考行」）：并入当前轮最后一个 text 步（尾部向前找，遇工具步即停），否则新起。 */
 export function appendNarration(steps: AgentStep[], text: string): AgentStep[] {
   if (!text) return steps;
-  const last = steps[steps.length - 1];
-  if (last && last.kind === "text") {
-    return [...steps.slice(0, -1), { kind: "text", text: last.text + text }];
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const s = steps[i];
+    if (s.kind === "text") {
+      return [
+        ...steps.slice(0, i),
+        { kind: "text", text: s.text + text },
+        ...steps.slice(i + 1),
+      ];
+    }
+    if (s.kind === "tool") break;
   }
   return [...steps, { kind: "text", text }];
 }
@@ -33,6 +53,8 @@ export function appendNarration(steps: AgentStep[], text: string): AgentStep[] {
 /**
  * 把最后一段叙述提升为最终回复正文（`onNarrationFinalize`）：
  * 收束轮（无工具、只有正文）里，把刚流式生成的最后一个 text 步从 steps 移除、并入 `content`。
+ * 提升「当前轮」最后一个 text 步（尾部向前找，遇工具步即停）——思考尾步可能拖在叙述之后，
+ * 若只看最后一步会把回答留在叙述行、永远不进 content。
  */
 export function promoteLastNarration(msg: {
   steps?: AgentStep[];
@@ -40,12 +62,17 @@ export function promoteLastNarration(msg: {
 }): { steps?: AgentStep[]; content: string } {
   const steps = msg.steps;
   if (!steps?.length) return { content: msg.content, steps };
-  const last = steps[steps.length - 1];
-  if (last?.kind !== "text") return { content: msg.content, steps };
-  return {
-    steps: steps.slice(0, -1),
-    content: msg.content + last.text,
-  };
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const s = steps[i];
+    if (s.kind === "text") {
+      return {
+        steps: [...steps.slice(0, i), ...steps.slice(i + 1)],
+        content: msg.content + s.text,
+      };
+    }
+    if (s.kind === "tool") break;
+  }
+  return { content: msg.content, steps };
 }
 
 /**
@@ -81,6 +108,19 @@ export function normalizeAgentSteps(msg: {
   if (msg.reasoningContent) steps.push({ kind: "reasoning", text: msg.reasoningContent });
   for (const run of msg.toolRuns ?? []) steps.push({ kind: "tool", run });
   return steps;
+}
+
+/**
+ * 归并旧数据里被拆开的同轮思考/叙述步（幂等）：按 `appendReasoning`/`appendNarration` 的
+ * 同轮合并语义重放一遍，把「思考/叙述交错到达」时期落盘的 `[reasoning, text, reasoning]`
+ * 这类分裂 steps 愈合为单思考块 + 单叙述行。加载旧消息时调用，新流式不会产生分裂。
+ */
+export function coalesceAgentSteps(steps: AgentStep[]): AgentStep[] {
+  return steps.reduce<AgentStep[]>((acc, s) => {
+    if (s.kind === "reasoning") return appendReasoning(acc, s.text);
+    if (s.kind === "text") return appendNarration(acc, s.text);
+    return [...acc, s];
+  }, []);
 }
 
 /** 一轮步骤组 = 该步的思考/叙述（按序，多为 reasoning 或 text）+ 其全部工具行（渲染分组用）。 */

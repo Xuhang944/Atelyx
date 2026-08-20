@@ -23,7 +23,7 @@ import { recordAgentFileWrite } from "@/services/history";
 import { readVaultFileWindow, writeVaultFile, editVaultFile, globVault, grepVault } from "@/services/vault/aiFiles";
 import { fetchWeb } from "@/services/web";
 import { prefix, scanMentionHits } from "@/utils/text";
-import { appendNarration, appendReasoning, mergeToolRuns, promoteLastNarration } from "@/utils/agentSteps";
+import { appendNarration, appendReasoning, coalesceAgentSteps, mergeToolRuns, promoteLastNarration } from "@/utils/agentSteps";
 import { baseName } from "@/utils/filename";
 import { createPersistController } from "@/utils/persist";
 import { useSettingsStore } from "./settingsStore";
@@ -188,7 +188,7 @@ function parseChatMessages(jsonl: string): EditorChatMessage[] {
         content: raw.content,
         ...(typeof raw.displayContent === "string" ? { displayContent: raw.displayContent } : {}),
         ...(Array.isArray(raw.refs) ? { refs: raw.refs } : {}),
-        ...(Array.isArray(raw.steps) ? { steps: raw.steps } : {}),
+        ...(Array.isArray(raw.steps) ? { steps: coalesceAgentSteps(raw.steps) } : {}),
         ...(typeof raw.createdAt === "number"
           ? { createdAt: raw.createdAt }
           : { createdAt: messages.length }),

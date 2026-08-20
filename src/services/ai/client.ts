@@ -267,9 +267,12 @@ export async function* streamRequest(
           const delta = choice?.delta;
           if (!delta) continue;
           if (delta.content) yield { type: "text-delta", text: delta.content };
-          // 思考过程增量：多字段探测（思考型模型在推理阶段只发思考字段，各家命名不一）
+          // 思考过程增量：多字段探测（思考型模型在推理阶段只发思考字段，各家命名不一）；
+          // 仅接受非空字符串——个别兼容网关把该字段发成对象/空串，混入会导致思考文本被污染
           const reasoning = delta.reasoning_content ?? delta.reasoning ?? delta.reasoning_text;
-          if (reasoning) yield { type: "reasoning-delta", text: reasoning };
+          if (typeof reasoning === "string" && reasoning.length > 0) {
+            yield { type: "reasoning-delta", text: reasoning };
+          }
           // 工具调用：{ index, id?, function: { name?, arguments? } }，按 index 累积
           const tc = delta.tool_calls as ToolCallDelta[] | undefined;
           if (tc) {

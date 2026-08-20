@@ -23,7 +23,7 @@ import {
 } from "@/utils/whiteboard";
 import { tableToSnapshotText } from "@/utils/table";
 import { diffCanvasEntities } from "@/utils/canvasCollab";
-import { normalizeAgentSteps } from "@/utils/agentSteps";
+import { coalesceAgentSteps, normalizeAgentSteps } from "@/utils/agentSteps";
 import { readTableVault } from "@/services/table";
 import {
   type CanvasFile,
@@ -367,10 +367,11 @@ async function canvasFileToRuntime(file: CanvasFile): Promise<RuntimeCanvas> {
     } else if (n.type === "conversation") {
       const cd = data as unknown as ConversationFileData;
       if (cd.messages?.length) {
-        // 旧 .atlx 消息只有 reasoningContent/toolRuns 遗留字段 → 归一化为 steps（步进展示）
+        // 旧 .atlx 消息只有 reasoningContent/toolRuns 遗留字段 → 归一化为 steps（步进展示）；
+        // 再经 coalesceAgentSteps 愈合早期「思考/叙述交错」落盘的分裂 steps（同轮思考合并为单块）
         messagesByConv[n.id] = cd.messages.map((msg) => {
           const steps = normalizeAgentSteps(msg);
-          return steps ? { ...msg, steps } : { ...msg };
+          return steps ? { ...msg, steps: coalesceAgentSteps(steps) } : { ...msg };
         });
       }
       delete data.messages;

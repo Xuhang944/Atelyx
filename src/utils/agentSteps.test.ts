@@ -1,0 +1,185 @@
+/**
+ * Agent 步进纯操作契约测试（utils/agentSteps）。
+ *
+ * 核心回归：思考与叙述增量在同一 rAF 帧交错到达（引擎 flushPending 先叙述后思考）时，
+ * 同轮思考必须并入前一个思考步（一段思考渲染为单个「思考过程」折叠块）、同轮叙述必须并入
+ * 前一个叙述步（不拆行）；工具轮之间的思考/叙述仍各自成步（分组渲染每轮独立）。
+ * `promoteLastNarration` 在叙述后拖有思考尾步时仍能提升回答为 content。
+ */
+import { describe, expect, it } from "vitest";
+import {
+  appendNarration,
+  appendReasoning,
+  coalesceAgentSteps,
+  groupAgentSteps,
+  promoteLastNarration,
+} from "./agentSteps";
+import type { AgentStep, ToolRun } from "@/types";
+
+const R = (text: string): AgentStep => ({ kind: "reasoning", text });
+const T = (text: string): AgentStep => ({ kind: "text", text });
+const run = (id: string, status: ToolRun["status"] = "done"): ToolRun => ({
+  id,
+  name: "web_search",
+  argsSummary: `搜索(${id})`,
+  status,
+});
+const tool = (id: string): AgentStep => ({ kind: "tool", run: run(id) });
+
+describe("appendReasoning", () => {
+  it("连续思考增量拼接进最后思考步", () => {
+    expect(appendReasoning([R("我")], "想")).toEqual([R("我想")]);
+  });
+
+  it("空 steps 时新起思考步", () => {
+    expect(appendReasoning([], "想")).toEqual([R("想")]);
+  });
+
+  it("思考步前有同轮叙述步时仍并入该轮思考步（不拆块）", () => {
+    // 引擎同帧 flush：叙述先进 steps、思考尾随其后——修复前会拆成两个思考步
+    expect(appendReasoning([R("我"), T("让我查一下")], "资料")).toEqual([
+      R("我资料"),
+      T("让我查一下"),
+    ]);
+  });
+
+  it("工具步之后另起思考步（工具轮之间分隔）", () => {
+    expect(appendReasoning([R("第一轮"), tool("t1")], "第二轮")).toEqual([
+      R("第一轮"),
+      tool("t1"),
+      R("第二轮"),
+    ]);
+  });
+});
+
+describe("appendNarration", () => {
+  it("连续叙述增量拼接进最后叙述步", () => {
+    expect(appendNarration([T("先")], "再")).toEqual([T("先再")]);
+  });
+
+  it("叙述步前有同轮思考步时仍并入该轮叙述步（不拆行）", () => {
+    expect(appendNarration([T("先"), R("想想")], "再")).toEqual([
+      T("先再"),
+      R("想想"),
+    ]);
+  });
+
+  it("工具步之后另起叙述步", () => {
+    expect(appendNarration([T("先"), tool("t1")], "再")).toEqual([
+      T("先"),
+      tool("t1"),
+      T("再"),
+    ]);
+  });
+});
+
+describe("promoteLastNarration", () => {
+  it("最后一步是叙述时提升为 content", () => {
+    const { steps, content } = promoteLastNarration({
+      steps: [R("想"), T("回答")],
+      content: "",
+    });
+    expect(content).toBe("回答");
+    expect(steps).toEqual([R("想")]);
+  });
+
+  it("叙述后拖有思考尾步时仍提升该轮叙述（回答不再卡在叙述行）", () => {
+    const { steps, content } = promoteLastNarration({
+      steps: [R("想"), T("回答"), R("尾")],
+      content: "",
+    });
+    expect(content).toBe("回答");
+    expect(steps).toEqual([R("想"), R("尾")]);
+  });
+
+  it("该轮无叙述（纯思考收束）时不提升", () => {
+    const msg = { steps: [R("想")], content: "" };
+    expect(promoteLastNarration(msg)).toEqual(msg);
+  });
+
+  it("不跨工具轮提升", () => {
+    const msg = {
+      steps: [R("想"), T("叙述"), tool("t1"), R("第二轮")],
+      content: "",
+    };
+    expect(promoteLastNarration(msg)).toEqual(msg);
+  });
+
+  it("提升最后一个工具轮后的叙述，不动前几轮叙述", () => {
+    const { steps, content } = promoteLastNarration({
+      steps: [R("想"), T("第一轮叙述"), tool("t1"), R("二"), T("最终回答")],
+      content: "",
+    });
+    expect(content).toBe("最终回答");
+    expect(steps).toEqual([R("想"), T("第一轮叙述"), tool("t1"), R("二")]);
+  });
+
+  it("无 steps 时原样返回", () => {
+    expect(promoteLastNarration({ content: "x" })).toEqual({
+      content: "x",
+      steps: undefined,
+    });
+  });
+});
+
+describe("coalesceAgentSteps", () => {
+  it("愈合同轮被拆开的思考/叙述（加载旧数据）", () => {
+    expect(coalesceAgentSteps([R("我"), T("叙述"), R("资料")])).toEqual([
+      R("我资料"),
+      T("叙述"),
+    ]);
+  });
+
+  it("保持工具轮分隔", () => {
+    expect(coalesceAgentSteps([R("一"), tool("t1"), R("二")])).toEqual([
+      R("一"),
+      tool("t1"),
+      R("二"),
+    ]);
+  });
+
+  it("幂等：已归并的 steps 再归并不变", () => {
+    const merged = coalesceAgentSteps([R("我"), T("叙述"), R("资料")]);
+    expect(coalesceAgentSteps(merged)).toEqual(merged);
+  });
+});
+
+describe("流式同帧交错（回归：思考被拆成两行）", () => {
+  it("叙述与思考同帧 flush 不产生拆分，渲染为单思考组", () => {
+    // 模拟引擎 flushPending 顺序：先叙述（onNarration）后思考（applyBatch）
+    let steps: AgentStep[] = [];
+    const flush = (narr: string, reason: string) => {
+      if (narr) steps = appendNarration(steps, narr);
+      if (reason) steps = appendReasoning(steps, reason);
+    };
+    flush("", "我"); // 思考阶段
+    flush("", "想想");
+    flush("让我查", "资料"); // 思考→回答过渡帧：叙述与思考尾同时到达（修复点）
+    flush("", "再想");
+    expect(steps).toEqual([R("我想想资料再想"), T("让我查")]);
+
+    const groups = groupAgentSteps(steps);
+    expect(groups).toHaveLength(1); // 单组 → 渲染单个「思考过程」折叠块
+    expect(groups[0].thinkings).toEqual([
+      { kind: "reasoning", text: "我想想资料再想" },
+      { kind: "text", text: "让我查" },
+    ]);
+    expect(groups[0].tools).toEqual([]);
+
+    // 收束：叙述提升为 content（回答不再卡在叙述行）
+    const promoted = promoteLastNarration({ steps, content: "" });
+    expect(promoted.content).toBe("让我查");
+    expect(promoted.steps).toEqual([R("我想想资料再想")]);
+  });
+});
+
+describe("groupAgentSteps", () => {
+  it("多轮思考→工具各自成组（每轮一个思考块，设计行为不回退）", () => {
+    const groups = groupAgentSteps([R("一"), T("叙述"), tool("t1"), R("二")]);
+    expect(groups).toHaveLength(2);
+    expect(groups[0].thinkings.map((t) => t.text)).toEqual(["一", "叙述"]);
+    expect(groups[0].tools.map((r) => r.id)).toEqual(["t1"]);
+    expect(groups[1].thinkings).toEqual([{ kind: "reasoning", text: "二" }]);
+    expect(groups[1].tools).toEqual([]);
+  });
+});
