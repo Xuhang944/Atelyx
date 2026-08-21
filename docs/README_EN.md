@@ -10,43 +10,43 @@
 
 <h1 style="color:#E5E0D5;font-weight:700;letter-spacing:3px;margin:16px 0 10px">ATELYX</h1>
 
-<p style="color:#D4AF37;font-size:17px;font-weight:600;margin:0 0 14px">Conversation is no longer linear — it is a directed graph on an infinite canvas</p>
+<p style="color:#D4AF37;font-size:17px;font-weight:600;margin:0 0 14px">Put conversations, notes, tables, and knowledge into one workbench — AI throughout, and multi-user collaboration</p>
 
 <p style="color:#8b8b8b;max-width:660px;margin:0 auto 30px;font-size:15px;line-height:1.8">
-A human-first desktop creation workbench that unifies AI conversations, notes, knowledge, search, and tables into one directed graph. Edges are data flow, nodes are reusable assets — thinking should never be interrupted.
+A human-first desktop creation workbench: a dockable multi-view workspace with multiple windows, so AI conversations, notes, knowledge bases, search, and tables are reachable and connectable at a glance — real-time multi-user collaboration, with AI woven throughout. Thinking should never be interrupted.
 </p>
 
 <span style="background:#D4AF37;color:#1C1C1E;border-radius:999px;padding:4px 18px;font-size:13px;font-weight:700;margin:0 4px">Windows</span>
-<span style="border:1px solid #5a5a5e;color:#9a9a9e;border-radius:999px;padding:3px 17px;font-size:13px;font-weight:600;margin:0 4px">Linux · target platform</span>
+<span style="border:1px solid #5a5a5e;color:#9a9a9e;border-radius:999px;padding:3px 17px;font-size:13px;font-weight:600;margin:0 4px">Linux · Wayland</span>
 <span style="border:1px solid #5a5a5e;color:#9a9a9e;border-radius:999px;padding:3px 17px;font-size:13px;font-weight:600;margin:0 4px">Apache-2.0</span>
 
 </div>
 
 ## Design Philosophy
 
-A conversation with AI should not be a one-way timeline — once branches multiply, they become impossible to compare; context cannot be reused across conversations; materials are used and lost. Atelyx reorganizes all of this on an infinite canvas:
+The worst thing in creation is not the lack of inspiration — it is the interruption of thought. When writing a screenplay, your material lives in a writing app, the storyboard in a spreadsheet tool, and coordination switches back to a chat app — each step feels convenient on its own, yet every switch breaks your flow. What Atelyx wants is to make those switches unnecessary:
 
 <div style="border:1px solid #2a2a2e;border-left:3px solid #D4AF37;border-radius:8px;padding:14px 20px;margin:14px 0">
 
-**01 · Conversation is a directed graph, not a chat log** — every branch becomes a new node on the canvas, inheriting the full state of its parent and evolving independently. However many branches you explore, you can lay them side by side, compare paths, and see where each one leads.
+**01 · One workbench, home for all creation** — conversations, notes, tables, files, and search can all sit side by side in a single workbench. Tabs dock, panels tear off into independent windows, and views combine freely.
 
-**02 · Edges are data flow** — arrows point from producer to consumer; solid lines mean consumed, dashed lines mean pending. Data-flow edges cannot be manually disconnected — reference semantics are data semantics.
+**02 · AI woven throughout** — from conversation and note text-selection to table row generation, to reading/writing vault files and web search, AI is one part of the creative flow rather than a separate chat tool you must switch to.
 
-**03 · A reference is an edge, an edge is a reference** — typing `@` in the input box and dragging a line from a node's border are two ways of performing the same operation.
+**03 · Artifacts are reusable** — materials, search results, and distilled paragraphs settle into reusable assets that plug into any conversation; context is no longer one-off.
 
-**04 · Artifacts become nodes** — web search results, pasted materials, and paragraphs distilled from a conversation automatically settle onto the canvas as reusable assets, connectable to any conversation.
+**04 · Knowledge collaborates** — over a LAN, multiple people see each other in real time: co-editing a note, co-editing a canvas, co-viewing a table. Who is looking at what, and where their selection is, is visible at a glance.
 
-**05 · Files are the vault** — there is no database. Canvases, notes, and attachments are plain files: accumulable, backup-able, Git-syncable, and openable in external editors with real-time sync back.
+**05 · Files are the vault** — no database; canvases, notes, and attachments are plain files: accumulable, backup-able, Git-syncable, and openable in external editors with real-time sync back.
 
 </div>
 
-## Origin
+## Signature: Infinite Canvas · Directed Graph
 
-The worst thing in creation is not the lack of inspiration — it is the interruption of thought. When writing a screenplay, your material lives in a writing app, the storyboard in a spreadsheet tool, and coordination switches back to a chat app — each step feels convenient on its own, yet every switch breaks your flow.
+The canvas remains a signature capability: a conversation with AI should not be a one-way timeline. Once branches multiply, they become impossible to compare; Atelyx turns them into canvas nodes — each branch inherits the full state of its parent and evolves independently, so any number of threads can be laid side by side and compared.
 
-Atelyx started from exactly these switches. We wondered: if conversations, notes, materials, and tables all lived on one canvas, reachable and connectable at a glance, would your thinking survive the transitions? So Atelyx exists — it may not give you more ideas, but at least your thinking is never interrupted by tools.
-
-## Core Concepts
+- **Conversation is a directed graph, not a chat log** — a branch is a new node on the canvas; edges express data flow (producer → consumer)
+- **Edges are data flow** — typing `@` in the input box and dragging a line from a node's border are two ways of performing the same operation; solid = consumed, dashed = pending
+- **Artifacts become nodes** — web search results, pasted materials, and paragraphs distilled from a conversation automatically settle onto the canvas as reusable assets
 
 ```
 +----------------+             +----------------+
@@ -68,22 +68,25 @@ Atelyx started from exactly these switches. We wondered: if conversations, notes
 ```
 
 - **Conversation node** — multi-turn AI chat with streaming output, branching, and referenceable assets
-- **Text node** — a paragraph distilled from a conversation; editable and re-usable as prompt context in any conversation
+- **Text node** — a paragraph distilled from a conversation; editable and reusable as prompt context in any conversation
 - **Media node** — images and files pasted or dragged in, injected as multimodal attachments
 - **Search results node** — the artifact of the AI autonomously searching the web mid-conversation
 - **Table node** — a reference to a vault table; a snapshot assembled by field name is injected on use
 - **Group / Link node** — canvas organization and external URL cards
 
-## Features
+## Core Capabilities
 
 | | |
 | --- | --- |
-| **Infinite canvas · branching** | Conversations are canvas nodes, not timelines; branches inherit the full state of their parent and evolve independently, so any number of threads can be compared side by side |
-| **Edges are data flow** | A reference is an edge: `@` mention and drag-and-connect are the same operation; solid = consumed, dashed = pending; artifacts are reusable across conversations |
-| **Artifacts settle as nodes** | Web search results, pasted materials, and paragraphs distilled from a conversation automatically become reusable nodes, connectable to any conversation |
-| **Note editor** | Live-preview editing; inline frontmatter properties; wiki links with quick-create for missing targets; auto-discovered backlinks |
-| **Multi-dimensional table** | Typed fields and multi-image cells; timeline view with playback; AI-assisted row generation; xlsx export |
-| **File-based vault** | No database, everything is files; notes openable in external editors with real-time sync; renames cascade across references and internal links |
+| **Dockable workspace · multi-window** | Tab groups dock; panels tear off into independent windows and can be dragged between panels; built-in canvas/note/table layouts; layouts named, saved, and restored on restart; tabs can be locked against accidental edits |
+| **Real-time multi-user collaboration** | LAN relay, online members visible in real time (nickname / color / selection highlight); notes co-edited via Yjs with remote cursors; canvas nodes and messages sync instantly with exclusive per-conversation locks and generation indicators; table selections and content shared live |
+| **AI conversation & Agents** | Streaming output, branching anytime, collapsible reasoning; reasoning-effort and model two-level selector; vault-level Agent configuration (system prompt + tools); multi-provider model management, connectivity test, model aliases |
+| **AI I/O & web** | Agent tools: web search, web fetch, read/locate/search/write/edit vault files |
+| **Note editor** | Live-preview editing; inline frontmatter properties; wiki links with quick-create for missing targets; auto-discovered backlinks; AI rewriting on text selection; collaboration |
+| **Multi-dimensional table** | Typed fields and multi-image cells; timeline view with playback; AI-assisted row generation; column/row height auto-fitting; undo/redo; xlsx export |
+| **History & rollback** | Canvas/note/table version lists, plain-language summaries, change diffs, one-click rollback |
+| **File-based vault** | No database, everything is files; notes openable in external editors with real-time sync; renames cascade across references and internal links; exclude folders / attachment folder configurable |
+| **Online + vault search** | Web search (Tavily / self-hosted SearXNG); in-vault file lookup + full-text search; search results settle into nodes |
 
 ## Interface Overview
 
@@ -95,7 +98,7 @@ Atelyx started from exactly these switches. We wondered: if conversations, notes
 
 <img src="screenshots/note.svg" alt="Note editor: live preview and backlinks" width="100%">
 
-<img src="screenshots/workspace.svg" alt="Workspace: area grid layout" width="100%">
+<img src="screenshots/workspace.svg" alt="Workspace: dockable tab groups and multi-window" width="100%">
 
 </div>
 
@@ -106,7 +109,7 @@ Download the installer for your platform from [GitHub Releases](https://github.c
 | Platform | Package |
 | --- | --- |
 | Windows 10/11 (x64) | `.msi` / `.exe` |
-| Linux (native Wayland, X11 compatible) | target platform — installers published after build validation |
+| Linux (native Wayland, X11 compatible) | build from source |
 
 Or build from source:
 
@@ -124,7 +127,7 @@ A vault is a local folder of your choice. No database — everything is stored a
 
 ```
 my-vault/
-├── .atelyx/        vault-level config (hidden; API keys never land here — OS keychain)
+├── .atelyx/        vault-level config (hidden: config / agents / prompt-notes / chat history / history; API keys never land here)
 ├── project-a/
 │   ├── canvas.atlx canvas file (one JSON per canvas)
 │   ├── table.atb   table file
@@ -143,19 +146,22 @@ my-vault/
 | --- | --- |
 | Desktop shell | Tauri 2 (Rust backend, native Wayland) |
 | Frontend | React 18 + TypeScript + Vite |
+| Workspace | Dockable tab groups + multi-window tearing; panel layout tree |
 | Canvas | React Flow |
 | State | Zustand |
 | Styling | TailwindCSS + lucide-react |
-| Markdown | react-markdown (GFM / syntax highlight / KaTeX / XSS-safe); CodeMirror 6 live-preview editing |
+| Markdown | react-markdown; CodeMirror 6 live-preview editing |
+| Collaboration | Yjs/CRDT note co-editing + self-hosted WebSocket relay (Docker, LAN) |
 | Storage | File-based vault (no database) + `notify` real-time external-edit watching |
-| AI | OpenAI-compatible providers, direct SSE streaming; API keys in the OS keychain |
+| AI | OpenAI-compatible providers (with reasoning effort); Agent tools can read/write files and go online; API keys in the OS keychain |
 | Search | Tavily API + self-hosted SearXNG |
+| Update | Auto-update with signed installers |
 
 ## Development
 
 ```bash
 pnpm run dev         # Vite dev server
-pnpm run check       # typecheck + ESLint
+pnpm run check       # typecheck + ESLint + tests
 pnpm run format      # Prettier
 pnpm run tauri:dev   # start dev (Vite + Tauri window)
 pnpm run tauri:build # build installers
@@ -164,6 +170,8 @@ pnpm run tauri:build # build installers
 ## Privacy & Security
 
 - **API keys live in the OS keychain by default** (isolated per vault) — never in vault files or logs; optional "save with vault" for multi-device sync
+- **Multi-user collaboration is LAN-only** — peers see each other through a self-hosted relay, with no cloud sync; relay address and identity (nickname / color) are user-configured
+- Markdown rendering disables raw HTML (XSS-safe); vault file reads/writes validate paths (confined to the vault root)
 - Auto-update installers carry signature verification; invalid signatures are rejected
 
 ## Contributing
