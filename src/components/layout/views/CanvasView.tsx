@@ -1,9 +1,9 @@
 /**
- * 画布视图面积：ReactFlow 画布完整渲染（节点/边/悬浮控件/小地图/状态栏）。
+ * 画布视图面板：ReactFlow 画布完整渲染（节点/边/悬浮控件/小地图/状态栏）。
  *
- * 从旧「主编辑区画布窗口」抽取：视口缓存（面积卸载重挂恢复）、画布右键菜单、
+ * 从旧「主编辑区画布窗口」抽取：视口缓存（面板卸载重挂恢复）、画布右键菜单、
  * 节点右键菜单、面板拖拽落点、只读白板横幅全部内聚于此。
- * 画布快捷键仅在**本面积聚焦**时生效（focusedAreaId 门控）。
+ * 画布快捷键仅在**本面板聚焦**时生效（focusedPanelId 门控）。
  */
 import {
   FileOutput,
@@ -66,7 +66,7 @@ import {
   ATELYX_FILE_MIME,
   type AtelyxFilePayload,
 } from "@/components/canvas/panels/FileExplorerPanel";
-import { AreaPlaceholder } from "@/components/layout/AreaPlaceholder";
+import { PanelPlaceholder } from "@/components/layout/PanelPlaceholder";
 import { Menu, MenuDivider, MenuItem } from "@/components/common/Menu";
 import { PopupLayer } from "@/components/common/PopupLayer";
 import { HistoryModal } from "@/components/history/HistoryModal";
@@ -84,7 +84,7 @@ const nodeTypes = {
 const edgeTypes = { default: DataFlowEdge };
 
 /**
- * 画布视口缓存（按画布文件隔离）。模块级而非 useRef：面积卸载（布局切换/关闭）时
+ * 画布视口缓存（按画布文件隔离）。模块级而非 useRef：面板卸载（布局切换/关闭）时
  * 组件实例销毁、ref 随之丢失；模块级 Map 跨挂载存活，重挂后 onInit 才能恢复视口。
  */
 const viewportCache = new Map<string, Viewport>();
@@ -113,11 +113,11 @@ function isValidConnection(connection: Edge | Connection) {
   return true;
 }
 
-/** 画布面积 props：areaId 用于聚焦判定（画布快捷键门控）。 */
+/** 画布面板 props：panelId 用于聚焦判定（画布快捷键门控）。 */
 export const CanvasView = memo(function CanvasView({
-  areaId,
+  panelId,
 }: {
-  areaId: string;
+  panelId: string;
 }) {
   const nodes = useCanvasStore((s) => s.nodes);
   const edges = useCanvasStore((s) => s.edges);
@@ -136,7 +136,7 @@ export const CanvasView = memo(function CanvasView({
   const canvasFile = useAppStore((s) => s.currentCanvasFile);
   const openTable = useAppStore((s) => s.openTable);
   const convertWhiteboard = useAppStore((s) => s.convertWhiteboard);
-  const focusedAreaId = useUiStateStore((s) => s.focusedAreaId);
+  const focusedPanelId = useUiStateStore((s) => s.focusedPanelId);
   // 协作：同看本画布的在线用户（presence.file 命中 + view=canvas；断开连接自动消失）
   const collabPeers = useCollabStore((s) => s.peers);
   const canvasPeers = useMemo(
@@ -184,14 +184,14 @@ export const CanvasView = memo(function CanvasView({
   /** 画布历史面板开关（「···」→ 历史记录）。 */
   const [historyOpen, setHistoryOpen] = useState(false);
 
-  // 加载画布：store 已持有该画布（面积重挂，未保存改动还在内存）时不重载；
+  // 加载画布：store 已持有该画布（面板重挂，未保存改动还在内存）时不重载；
   // 首次打开/切换画布（store.canvasFile 与目标不一致）才读盘
   useEffect(() => {
     if (canvasFile && useCanvasStore.getState().canvasFile !== canvasFile)
       load(canvasFile);
   }, [canvasFile, load]);
 
-  // 画布加载完成（首次打开/切换画布 loading true→false；面积重挂时 load 不执行、
+  // 画布加载完成（首次打开/切换画布 loading true→false；面板重挂时 load 不执行、
   // loading 恒 false，挂载即走此分支）→ 恢复该画布上次视口位置；本次运行未打开过
   // （无缓存视口，如重启后首次打开）→ 自动适应视图。fitView prop 仅初次挂载生效，
   // 切画布不重挂实例，需手动触发
@@ -204,7 +204,7 @@ export const CanvasView = memo(function CanvasView({
     }
     if (prevLoadingRef.current) {
       prevLoadingRef.current = false;
-      // 占位面积（无画布）没有视口可恢复/适应，跳过
+      // 占位面板（无画布）没有视口可恢复/适应，跳过
       if (!canvasFile) return;
       const t = setTimeout(() => {
         const vp = viewportCache.get(canvasFile);
@@ -226,13 +226,13 @@ export const CanvasView = memo(function CanvasView({
     return screenToFlowPosition(center);
   }, [screenToFlowPosition]);
 
-  // 画布快捷键仅在画布面积聚焦时启用（其他面积激活时 Delete/Ctrl+Z/Ctrl+A 不误操作画布）；
+  // 画布快捷键仅在画布面板聚焦时启用（其他面板激活时 Delete/Ctrl+Z/Ctrl+A 不误操作画布）；
   // 只读白板（外部白板格式）不提供编辑快捷键；Ctrl+V 粘贴到画布视口中心（坐标由 UI 层提供，store 不依赖 ReactFlow）
   const handlePaste = useCallback(
     () => pasteNodes(canvasCenter()),
     [pasteNodes, canvasCenter],
   );
-  const focused = focusedAreaId === areaId;
+  const focused = focusedPanelId === panelId;
   useCanvasHotkeys(
     menu ? closeMenu : undefined,
     focused && !readOnly,
@@ -391,7 +391,7 @@ export const CanvasView = memo(function CanvasView({
     selectNode(null);
   }, [selectNode]);
 
-  // 画布表格节点「打开表格」按钮 → 打开表格面积（ReactFlow 节点无法经 props 回调，走事件桥接）
+  // 画布表格节点「打开表格」按钮 → 打开表格面板（ReactFlow 节点无法经 props 回调，走事件桥接）
   useEffect(() => {
     const onOpenTable = (e: Event) => {
       const detail = (e as CustomEvent).detail as
@@ -404,7 +404,7 @@ export const CanvasView = memo(function CanvasView({
 
   if (!canvasFile) {
     return (
-      <AreaPlaceholder
+      <PanelPlaceholder
         icon={<Palette size={64} strokeWidth={1.5} />}
         title="打开画布"
         description="从左侧文件面板或搜索面板单击一个 .atlx 画布开始编辑。"
@@ -530,7 +530,7 @@ export const CanvasView = memo(function CanvasView({
           onPaneClick={handlePaneClick}
           onNodeContextMenu={onNodeContextMenuInternal}
           onMoveEnd={(_event, viewport) => {
-            // 记录当前画布视口，面积卸载（布局切换/关闭）重挂时恢复（onInit）
+            // 记录当前画布视口，面板卸载（布局切换/关闭）重挂时恢复（onInit）
             if (canvasFile) viewportCache.set(canvasFile, viewport);
           }}
           onInit={(instance) => {

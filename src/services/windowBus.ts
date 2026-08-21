@@ -22,16 +22,17 @@ export interface WindowRect {
   height: number;
 }
 
-/** drop 区类型：center = 加标签；left/right/top/bottom = 分割（主窗口面积）；tab = 标签条排序。 */
+/** drop 区类型：center = 加标签；left/right/top/bottom = 分割（主窗口面板）；tab = 标签条排序。 */
 export type DropZone = "center" | "left" | "right" | "top" | "bottom" | "tab";
 
 /** 一次命中的 drop 目标（本窗口计算，广播给主窗口在 drag-end 应用）。 */
 export interface DropTargetInfo {
-  kind: "area" | "panel";
+  /** 恒为 "panel"（主窗口面板与撕裂窗口均按面板命中；两者靠 `window` 区分）。 */
+  kind: "panel";
   /** 目标窗口 label（"main" 或 panel label）。 */
   window: string;
-  /** kind = area 时的面积 id。 */
-  areaId?: string;
+  /** 主窗口面板 id（撕裂窗口命中时为 undefined）。 */
+  panelId?: string;
   zone: DropZone;
   /** zone = tab 时的插入位置（目标标签组内下标）。 */
   tabIndex?: number;
@@ -57,6 +58,7 @@ export type PanelLayoutOp =
   | { op: "setActive"; tabId: string }
   | { op: "closeTab"; tabId: string }
   | { op: "setLocked"; tabId: string; locked: boolean }
+  | { op: "setTabView"; tabId: string; view: ViewKind }
   | { op: "moveTab"; tabId: string; toIndex: number }
   | { op: "addView"; view: ViewKind };
 
@@ -64,7 +66,7 @@ export interface PanelDragStartPayload {
   sourceWindow: string;
   tabId: string;
   view: ViewKind;
-  /** 源宿主：主窗口面积 id 或撕裂窗口 id。 */
+  /** 源宿主：主窗口面板 id 或撕裂窗口 id。 */
   sourceHost: string;
   screenX: number;
   screenY: number;

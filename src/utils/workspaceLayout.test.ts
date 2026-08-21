@@ -1,15 +1,15 @@
 /**
  * 工作区布局树操作契约测试（utils/workspaceLayout）。
  *
- * 覆盖：标签组操作（增删/激活/锁定/排序）、分割/关闭、撕裂/停靠、撕裂窗口操作、
- * 旧 schema 迁移（view 字段 → 标签组）、全局视图唯一与宿主判定、布局复制 id 重生成。
+ * 覆盖：标签组操作（增删/激活/锁定/排序/切换视图）、分割/关闭、撕裂/停靠、撕裂窗口操作、
+ * 旧 schema 迁移（view 字段 → 标签组、kind "area" → "panel"）、全局视图唯一与宿主判定、布局复制 id 重生成。
  */
 import { describe, expect, it } from "vitest";
 import {
-  addTabToArea,
-  closeArea,
+  addTabToPanel,
+  closePanel,
   collectAllViews,
-  collectAreas,
+  collectPanels,
   collectTabs,
   collectViewsInTree,
   detachedAddTab,
@@ -18,127 +18,135 @@ import {
   detachedSetActive,
   detachedSetBounds,
   detachedSetLocked,
+  detachedSetTabView,
   findTabInDetached,
   findTabInTree,
   findViewHost,
   migrateLegacyTree,
-  moveTabWithinArea,
+  moveTabWithinPanel,
   parentSplitOf,
   regenerateIds,
-  removeTabFromArea,
+  removeTabFromPanel,
   setActiveTab,
   setTabLocked,
-  splitArea,
-  tearOffFromArea,
+  setTabView,
+  splitPanel,
+  tearOffFromPanel,
 } from "./workspaceLayout";
 import {
-  createArea,
+  createPanel,
   createTab,
   type DetachedWindow,
   type LayoutNode,
+  type PanelNode,
   type SplitNode,
 } from "@/types/workspaceLayout";
 
-function makeArea(views: string[], active = 0): LayoutNode {
-  const area = createArea(views[0] as never);
+function makePanel(views: string[], active = 0): LayoutNode {
+  const panel = createPanel(views[0] as never);
   for (let i = 1; i < views.length; i++) {
-    // 直接构造多标签面积（避免依赖被测试函数本身）
-    area.tabs.push(createTab(views[i] as never));
+    // 直接构造多标签面板（避免依赖被测试函数本身）
+    panel.tabs.push(createTab(views[i] as never));
   }
-  area.activeTabId = area.tabs[active]?.id ?? area.tabs[0]?.id ?? null;
-  return area;
+  panel.activeTabId = panel.tabs[active]?.id ?? panel.tabs[0]?.id ?? null;
+  return panel;
 }
 
 describe("标签组基础操作", () => {
-  it("addTabToArea 插入尾部并激活", () => {
-    const tree = makeArea(["canvas", "note"]);
-    const area = collectAreas(tree)[0];
+  it("addTabToPanel 插入尾部并激活", () => {
+    const tree = makePanel(["canvas", "note"]);
+    const panel = collectPanels(tree)[0];
     const tab = createTab("table");
-    const next = addTabToArea(tree, area!.id, tab);
-    const nextArea = collectAreas(next)[0];
-    expect(nextArea!.tabs.map((t) => t.view)).toEqual(["canvas", "note", "table"]);
-    expect(nextArea!.activeTabId).toBe(tab.id);
+    const next = addTabToPanel(tree, panel!.id, tab);
+    const nextPanel = collectPanels(next)[0];
+    expect(nextPanel!.tabs.map((t) => t.view)).toEqual(["canvas", "note", "table"]);
+    expect(nextPanel!.activeTabId).toBe(tab.id);
   });
 
-  it("addTabToArea 支持指定插入位置", () => {
-    const tree = makeArea(["canvas", "table"]);
-    const area = collectAreas(tree)[0];
+  it("addTabToPanel 支持指定插入位置", () => {
+    const tree = makePanel(["canvas", "table"]);
+    const panel = collectPanels(tree)[0];
     const tab = createTab("note");
-    const next = addTabToArea(tree, area!.id, tab, 1);
-    expect(collectAreas(next)[0]!.tabs.map((t) => t.view)).toEqual(["canvas", "note", "table"]);
+    const next = addTabToPanel(tree, panel!.id, tab, 1);
+    expect(collectPanels(next)[0]!.tabs.map((t) => t.view)).toEqual(["canvas", "note", "table"]);
   });
 
-  it("removeTabFromArea 移除非激活标签不动激活位", () => {
-    const tree = makeArea(["canvas", "note", "table"], 1);
-    const area = collectAreas(tree)[0];
-    const next = removeTabFromArea(tree, area!.id, area!.tabs[0]!.id);
-    const nextArea = collectAreas(next)[0];
-    expect(nextArea!.tabs.map((t) => t.view)).toEqual(["note", "table"]);
-    expect(nextArea!.activeTabId).toBe(area!.tabs[1]!.id);
+  it("removeTabFromPanel 移除非激活标签不动激活位", () => {
+    const tree = makePanel(["canvas", "note", "table"], 1);
+    const panel = collectPanels(tree)[0];
+    const next = removeTabFromPanel(tree, panel!.id, panel!.tabs[0]!.id);
+    const nextPanel = collectPanels(next)[0];
+    expect(nextPanel!.tabs.map((t) => t.view)).toEqual(["note", "table"]);
+    expect(nextPanel!.activeTabId).toBe(panel!.tabs[1]!.id);
   });
 
-  it("removeTabFromArea 移除激活标签时激活右邻（VS Code 语义）", () => {
-    const tree = makeArea(["canvas", "note", "table"], 0);
-    const area = collectAreas(tree)[0];
-    const next = removeTabFromArea(tree, area!.id, area!.tabs[0]!.id);
-    const nextArea = collectAreas(next)[0];
-    expect(nextArea!.activeTabId).toBe(area!.tabs[1]!.id);
+  it("removeTabFromPanel 移除激活标签时激活右邻（VS Code 语义）", () => {
+    const tree = makePanel(["canvas", "note", "table"], 0);
+    const panel = collectPanels(tree)[0];
+    const next = removeTabFromPanel(tree, panel!.id, panel!.tabs[0]!.id);
+    const nextPanel = collectPanels(next)[0];
+    expect(nextPanel!.activeTabId).toBe(panel!.tabs[1]!.id);
   });
 
-  it("removeTabFromArea 移除最后一个标签 → 空面积（保留在树中）", () => {
-    const tree = makeArea(["canvas"]);
-    const area = collectAreas(tree)[0];
-    const next = removeTabFromArea(tree, area!.id, area!.tabs[0]!.id);
-    const nextArea = collectAreas(next)[0];
-    expect(nextArea!.tabs).toEqual([]);
-    expect(nextArea!.activeTabId).toBeNull();
-    expect(collectAreas(next)).toHaveLength(1);
+  it("removeTabFromPanel 移除最后一个标签 → 空面板（保留在树中）", () => {
+    const tree = makePanel(["canvas"]);
+    const panel = collectPanels(tree)[0];
+    const next = removeTabFromPanel(tree, panel!.id, panel!.tabs[0]!.id);
+    const nextPanel = collectPanels(next)[0];
+    expect(nextPanel!.tabs).toEqual([]);
+    expect(nextPanel!.activeTabId).toBeNull();
+    expect(collectPanels(next)).toHaveLength(1);
   });
 
-  it("setActiveTab / setTabLocked", () => {
-    const tree = makeArea(["canvas", "note"]);
-    const area = collectAreas(tree)[0];
-    const locked = setTabLocked(tree, area!.id, area!.tabs[1]!.id, true);
-    expect(collectAreas(locked)[0]!.tabs[1]!.locked).toBe(true);
-    const activated = setActiveTab(locked, area!.id, area!.tabs[1]!.id);
-    expect(collectAreas(activated)[0]!.activeTabId).toBe(area!.tabs[1]!.id);
+  it("setActiveTab / setTabLocked / setTabView", () => {
+    const tree = makePanel(["canvas", "note"]);
+    const panel = collectPanels(tree)[0];
+    const locked = setTabLocked(tree, panel!.id, panel!.tabs[1]!.id, true);
+    expect(collectPanels(locked)[0]!.tabs[1]!.locked).toBe(true);
+    const activated = setActiveTab(locked, panel!.id, panel!.tabs[1]!.id);
+    expect(collectPanels(activated)[0]!.activeTabId).toBe(panel!.tabs[1]!.id);
+    // 切换视图：把 canvas 标签换成 files，其余标签不动
+    const switched = setTabView(activated, panel!.id, panel!.tabs[0]!.id, "files");
+    const switchedPanel = collectPanels(switched)[0]!;
+    expect(switchedPanel.tabs[0]!.view).toBe("files");
+    expect(switchedPanel.tabs[1]!.view).toBe("note");
   });
 
-  it("moveTabWithinArea 组内排序（toIndex = 插入点下标）", () => {
-    const tree = makeArea(["a", "b", "c"]);
-    const area = collectAreas(tree)[0];
+  it("moveTabWithinPanel 组内排序（toIndex = 插入点下标）", () => {
+    const tree = makePanel(["a", "b", "c"]);
+    const panel = collectPanels(tree)[0];
     // 后移：a 拖到 b、c 之间（插入点 2）→ [b, a, c]
-    const moved = moveTabWithinArea(tree, area!.id, area!.tabs[0]!.id, 2);
-    expect(collectAreas(moved)[0]!.tabs.map((t) => t.view)).toEqual(["b", "a", "c"]);
+    const moved = moveTabWithinPanel(tree, panel!.id, panel!.tabs[0]!.id, 2);
+    expect(collectPanels(moved)[0]!.tabs.map((t) => t.view)).toEqual(["b", "a", "c"]);
     // 拖到末尾（插入点 3）→ [b, c, a]
-    const end = moveTabWithinArea(moved, area!.id, area!.tabs[0]!.id, 3);
-    expect(collectAreas(end)[0]!.tabs.map((t) => t.view)).toEqual(["b", "c", "a"]);
+    const end = moveTabWithinPanel(moved, panel!.id, panel!.tabs[0]!.id, 3);
+    expect(collectPanels(end)[0]!.tabs.map((t) => t.view)).toEqual(["b", "c", "a"]);
     // 前移：a 从末尾拖回开头（插入点 0）
-    const back = moveTabWithinArea(end, area!.id, collectAreas(end)[0]!.tabs[2]!.id, 0);
-    expect(collectAreas(back)[0]!.tabs.map((t) => t.view)).toEqual(["a", "b", "c"]);
+    const back = moveTabWithinPanel(end, panel!.id, collectPanels(end)[0]!.tabs[2]!.id, 0);
+    expect(collectPanels(back)[0]!.tabs.map((t) => t.view)).toEqual(["a", "b", "c"]);
   });
 });
 
 describe("分割 / 关闭", () => {
-  it("根面积分割 → 嵌套回退（面积 → Split[原面积, 新空面积]），均分", () => {
-    const tree = makeArea(["canvas", "note"]);
-    const area = collectAreas(tree)[0];
-    const { tree: next, newAreaId } = splitArea(tree, area!.id, "horizontal");
-    const areas = collectAreas(next);
-    expect(areas).toHaveLength(2);
-    expect(areas[0]!.tabs.map((t) => t.view)).toEqual(["canvas", "note"]);
-    expect(areas[1]!.tabs).toEqual([]);
-    expect(areas[1]!.id).toBe(newAreaId);
+  it("根面板分割 → 嵌套回退（面板 → Split[原面板, 新空面板]），均分", () => {
+    const tree = makePanel(["canvas", "note"]);
+    const panel = collectPanels(tree)[0];
+    const { tree: next, newPanelId } = splitPanel(tree, panel!.id, "horizontal");
+    const panels = collectPanels(next);
+    expect(panels).toHaveLength(2);
+    expect(panels[0]!.tabs.map((t) => t.view)).toEqual(["canvas", "note"]);
+    expect(panels[1]!.tabs).toEqual([]);
+    expect(panels[1]!.id).toBe(newPanelId);
   });
 
-  it("closeArea 合并到兄弟（兄弟顶替）；根面积不可关闭", () => {
-    const tree = makeArea(["canvas"]);
-    expect(closeArea(tree, collectAreas(tree)[0]!.id)).toBeNull();
-    const { tree: split } = splitArea(tree, collectAreas(tree)[0]!.id, "horizontal");
-    const areas = collectAreas(split);
-    const closed = closeArea(split, areas[1]!.id);
-    expect(collectAreas(closed!)).toHaveLength(1);
-    expect(collectAreas(closed!)[0]!.tabs.map((t) => t.view)).toEqual(["canvas"]);
+  it("closePanel 合并到兄弟（兄弟顶替）；根面板不可关闭", () => {
+    const tree = makePanel(["canvas"]);
+    expect(closePanel(tree, collectPanels(tree)[0]!.id)).toBeNull();
+    const { tree: split } = splitPanel(tree, collectPanels(tree)[0]!.id, "horizontal");
+    const panels = collectPanels(split);
+    const closed = closePanel(split, panels[1]!.id);
+    expect(collectPanels(closed!)).toHaveLength(1);
+    expect(collectPanels(closed!)[0]!.tabs.map((t) => t.view)).toEqual(["canvas"]);
   });
 });
 
@@ -147,109 +155,109 @@ describe("多叉同级分割（左中右）", () => {
     kind: "split",
     id: "s1",
     direction: "horizontal",
-    children: [createArea("files"), createArea("canvas"), createArea("inspector")],
+    children: [createPanel("files"), createPanel("canvas"), createPanel("inspector")],
     sizes: [30, 40, 30],
   });
 
-  it("父方向匹配 → 同级插入到目标面积后，尺寸从相邻面积均分", () => {
+  it("父方向匹配 → 同级插入到目标面板后，尺寸从相邻面板均分", () => {
     const tree = trio();
-    const target = collectAreas(tree)[1]!; // canvas
-    const { tree: next, newAreaId } = splitArea(tree, target.id, "horizontal", "after");
-    const areas = collectAreas(next);
-    expect(areas.map((a) => a.id)).toEqual([
-      collectAreas(tree)[0]!.id,
+    const target = collectPanels(tree)[1]!; // canvas
+    const { tree: next, newPanelId } = splitPanel(tree, target.id, "horizontal", "after");
+    const panels = collectPanels(next);
+    expect(panels.map((p) => p.id)).toEqual([
+      collectPanels(tree)[0]!.id,
       target.id,
-      newAreaId,
-      collectAreas(tree)[2]!.id,
+      newPanelId,
+      collectPanels(tree)[2]!.id,
     ]);
     const split = next as SplitNode;
     expect(split.sizes).toEqual([30, 20, 20, 30]);
   });
 
-  it("before 插入到目标面积前", () => {
+  it("before 插入到目标面板前", () => {
     const tree = trio();
-    const target = collectAreas(tree)[1]!;
-    const { tree: next, newAreaId } = splitArea(tree, target.id, "horizontal", "before");
-    const areas = collectAreas(next);
-    expect(areas.map((a) => a.id)).toEqual([
-      collectAreas(tree)[0]!.id,
-      newAreaId,
+    const target = collectPanels(tree)[1]!;
+    const { tree: next, newPanelId } = splitPanel(tree, target.id, "horizontal", "before");
+    const panels = collectPanels(next);
+    expect(panels.map((p) => p.id)).toEqual([
+      collectPanels(tree)[0]!.id,
+      newPanelId,
       target.id,
-      collectAreas(tree)[2]!.id,
+      collectPanels(tree)[2]!.id,
     ]);
     expect((next as SplitNode).sizes).toEqual([30, 20, 20, 30]);
   });
 
-  it("父方向不匹配 → 嵌套回退（面积 → 垂直 Split[原面积, 新面积]）", () => {
+  it("父方向不匹配 → 嵌套回退（面板 → 垂直 Split[原面板, 新面板]）", () => {
     const tree = trio();
-    const target = collectAreas(tree)[1]!;
-    const { tree: next, newAreaId } = splitArea(tree, target.id, "vertical", "after");
-    // 树变 [files, [canvas | new], inspector]：外层 3 面积变 2 子树（canvas 被包裹）
-    const areas = collectAreas(next);
-    expect(areas.map((a) => a.id)).toEqual([
-      collectAreas(tree)[0]!.id,
+    const target = collectPanels(tree)[1]!;
+    const { tree: next, newPanelId } = splitPanel(tree, target.id, "vertical", "after");
+    // 树变 [files, [canvas | new], inspector]：外层 3 面板变 2 子树（canvas 被包裹）
+    const panels = collectPanels(next);
+    expect(panels.map((p) => p.id)).toEqual([
+      collectPanels(tree)[0]!.id,
       target.id,
-      newAreaId,
-      collectAreas(tree)[2]!.id,
+      newPanelId,
+      collectPanels(tree)[2]!.id,
     ]);
-    expect(areas).toHaveLength(4);
+    expect(panels).toHaveLength(4);
   });
 
-  it("closeArea 多叉移除中间面积：剩 2 个时尺寸归一化到 100", () => {
+  it("closePanel 多叉移除中间面板：剩 2 个时尺寸归一化到 100", () => {
     const tree = trio();
-    const target = collectAreas(tree)[1]!;
-    const closed = closeArea(tree, target.id);
+    const target = collectPanels(tree)[1]!;
+    const closed = closePanel(tree, target.id);
     expect(closed!.kind).toBe("split");
     const split = closed as SplitNode;
-    expect(collectAreas(split).map((a) => a.id)).toEqual([
-      collectAreas(tree)[0]!.id,
-      collectAreas(tree)[2]!.id,
+    expect(collectPanels(split).map((p) => p.id)).toEqual([
+      collectPanels(tree)[0]!.id,
+      collectPanels(tree)[2]!.id,
     ]);
     expect(split.sizes).toEqual([50, 50]);
   });
 
-  it("closeArea 移除后剩 1 个 → 父塌缩（唯一子节点顶替）", () => {
+  it("closePanel 移除后剩 1 个 → 父塌缩（唯一子节点顶替）", () => {
     const tree: LayoutNode = {
       kind: "split",
       id: "s1",
       direction: "horizontal",
-      children: [createArea("files"), createArea("canvas")],
+      children: [createPanel("files"), createPanel("canvas")],
       sizes: [40, 60],
     };
-    const target = collectAreas(tree)[1]!;
-    const closed = closeArea(tree, target.id);
-    expect(closed!.kind).toBe("area");
-    expect((closed as ReturnType<typeof createArea>).tabs.map((t) => t.view)).toEqual(["files"]);
+    const target = collectPanels(tree)[1]!;
+    const closed = closePanel(tree, target.id);
+    expect(closed!.kind).toBe("panel");
+    expect((closed as ReturnType<typeof createPanel>).tabs.map((t) => t.view)).toEqual(["files"]);
   });
 
   it("parentSplitOf 定位父 split 与下标", () => {
     const tree = trio();
-    const target = collectAreas(tree)[2]!;
+    const target = collectPanels(tree)[2]!;
     const hit = parentSplitOf(tree, target.id);
     expect(hit?.split.id).toBe("s1");
     expect(hit?.index).toBe(2);
     expect(parentSplitOf(tree, "missing")).toBeNull();
-    // 根面积无父
-    expect(parentSplitOf(createArea("files"), createArea("files").id)).toBeNull();
+    // 根面板无父
+    expect(parentSplitOf(createPanel("files"), createPanel("files").id)).toBeNull();
   });
 });
 
 describe("撕裂 / 停靠", () => {
-  it("tearOffFromArea 移除标签（面积留空）并返回标签", () => {
-    const tree = makeArea(["canvas", "note"]);
-    const area = collectAreas(tree)[0];
-    const hit = tearOffFromArea(tree, area!.id, area!.tabs[0]!.id);
+  it("tearOffFromPanel 移除标签（面板留空）并返回标签", () => {
+    const tree = makePanel(["canvas", "note"]);
+    const panel = collectPanels(tree)[0];
+    const hit = tearOffFromPanel(tree, panel!.id, panel!.tabs[0]!.id);
     expect(hit).not.toBeNull();
     expect(hit!.tab.view).toBe("canvas");
-    expect(collectAreas(hit!.tree)[0]!.tabs.map((t) => t.view)).toEqual(["note"]);
+    expect(collectPanels(hit!.tree)[0]!.tabs.map((t) => t.view)).toEqual(["note"]);
   });
 
-  it("tearOffFromArea 最后一个标签撕裂后面积留空", () => {
-    const tree = makeArea(["canvas"]);
-    const area = collectAreas(tree)[0];
-    const hit = tearOffFromArea(tree, area!.id, area!.tabs[0]!.id);
+  it("tearOffFromPanel 最后一个标签撕裂后面板留空", () => {
+    const tree = makePanel(["canvas"]);
+    const panel = collectPanels(tree)[0];
+    const hit = tearOffFromPanel(tree, panel!.id, panel!.tabs[0]!.id);
     expect(hit).not.toBeNull();
-    expect(collectAreas(hit!.tree)[0]!.tabs).toEqual([]);
+    expect(collectPanels(hit!.tree)[0]!.tabs).toEqual([]);
   });
 });
 
@@ -277,7 +285,7 @@ describe("撕裂窗口操作", () => {
     expect(emptied[0]!.activeTabId).toBeNull();
   });
 
-  it("detachedMoveTab / detachedSetLocked / detachedSetActive / detachedSetBounds", () => {
+  it("detachedMoveTab / detachedSetLocked / detachedSetActive / detachedSetBounds / detachedSetTabView", () => {
     const w = win(["a", "b", "c"]);
     const moved = detachedMoveTab([w], "w1", w.tabs[2]!.id, 0);
     expect(moved[0]!.tabs.map((t) => t.view)).toEqual(["c", "a", "b"]);
@@ -287,6 +295,10 @@ describe("撕裂窗口操作", () => {
     expect(active[0]!.activeTabId).toBe(moved[0]!.tabs[1]!.id);
     const bounds = detachedSetBounds(active, "w1", { x: 10, y: 20, width: 500, height: 600 });
     expect(bounds[0]!.bounds).toEqual({ x: 10, y: 20, width: 500, height: 600 });
+    // 切换撕裂窗口标签视图：c 标签 → files，其余不动
+    const switched = detachedSetTabView(bounds, "w1", bounds[0]!.tabs[0]!.id, "files");
+    expect(switched[0]!.tabs[0]!.view).toBe("files");
+    expect(switched[0]!.tabs[1]!.view).toBe("a");
   });
 
   it("detachedSetBounds 未命中窗口返回原数组（引用稳定）", () => {
@@ -299,7 +311,7 @@ describe("撕裂窗口操作", () => {
 
 describe("视图唯一与宿主判定", () => {
   it("collectAllViews 汇总树 + 撕裂窗口视图", () => {
-    const tree = makeArea(["canvas", "note"]);
+    const tree = makePanel(["canvas", "note"]);
     const w: DetachedWindow = {
       id: "w1",
       tabs: [createTab("table")],
@@ -310,7 +322,7 @@ describe("视图唯一与宿主判定", () => {
   });
 
   it("findViewHost：树内 = main；撕裂窗口 = 窗口 id；未渲染 = null", () => {
-    const tree = makeArea(["canvas"]);
+    const tree = makePanel(["canvas"]);
     const w: DetachedWindow = {
       id: "w1",
       tabs: [createTab("table")],
@@ -323,7 +335,7 @@ describe("视图唯一与宿主判定", () => {
   });
 
   it("findTabInTree / findTabInDetached 命中", () => {
-    const tree = makeArea(["canvas"]);
+    const tree = makePanel(["canvas"]);
     const tab = collectTabs(tree)[0]!;
     expect(findTabInTree(tree, tab.id)?.tab.view).toBe("canvas");
     expect(findTabInTree(tree, "nope")).toBeNull();
@@ -339,28 +351,28 @@ describe("视图唯一与宿主判定", () => {
 });
 
 describe("旧 schema 迁移", () => {
-  it("view 字段面积 → 单标签面积（id 保留，标签激活）", () => {
+  it("view 字段面板（kind 旧 area）→ 单标签面板（id 保留，标签激活）", () => {
     const legacy: LayoutNode = { kind: "area", id: "area-1", view: "canvas" } as never;
     const migrated = migrateLegacyTree(legacy);
-    expect(migrated.kind).toBe("area");
-    const area = migrated as ReturnType<typeof createArea>;
-    expect(area.id).toBe("area-1");
-    expect(area.tabs).toHaveLength(1);
-    expect(area.tabs[0]!.view).toBe("canvas");
-    expect(area.tabs[0]!.locked).toBe(false);
-    expect(area.activeTabId).toBe(area.tabs[0]!.id);
+    expect(migrated.kind).toBe("panel");
+    const panel = migrated as ReturnType<typeof createPanel>;
+    expect(panel.id).toBe("area-1");
+    expect(panel.tabs).toHaveLength(1);
+    expect(panel.tabs[0]!.view).toBe("canvas");
+    expect(panel.tabs[0]!.locked).toBe(false);
+    expect(panel.activeTabId).toBe(panel.tabs[0]!.id);
   });
 
-  it("view = empty 面积 → 空面积", () => {
+  it("view = empty 面板 → 空面板", () => {
     const legacy: LayoutNode = { kind: "area", id: "area-1", view: "empty" } as never;
     const migrated = migrateLegacyTree(legacy);
-    expect(migrated.kind).toBe("area");
-    const area = migrated as ReturnType<typeof createArea>;
-    expect(area.tabs).toEqual([]);
-    expect(area.activeTabId).toBeNull();
+    expect(migrated.kind).toBe("panel");
+    const panel = migrated as ReturnType<typeof createPanel>;
+    expect(panel.tabs).toEqual([]);
+    expect(panel.activeTabId).toBeNull();
   });
 
-  it("递归迁移 split 树（子面积逐个转标签组，split 结构保留）", () => {
+  it("递归迁移 split 树（子面板逐个转标签组，split 结构保留）", () => {
     const legacy: LayoutNode = {
       kind: "split",
       id: "split-1",
@@ -372,29 +384,36 @@ describe("旧 schema 迁移", () => {
       ],
     } as never;
     const migrated = migrateLegacyTree(legacy);
-    const areas = collectAreas(migrated);
-    expect(areas.map((a) => a.id)).toEqual(["a1", "a2"]);
+    const panels = collectPanels(migrated);
+    expect(panels.map((p) => p.id)).toEqual(["a1", "a2"]);
     expect(collectViewsInTree(migrated)).toEqual(["files", "canvas"]);
   });
 
-  it("已迁移的新形状原样返回", () => {
-    const tree = makeArea(["canvas"]);
+  it("已迁移的新形状（kind panel，含 tabs）原样返回且引用稳定", () => {
+    const tree = makePanel(["canvas"]);
     expect(migrateLegacyTree(tree)).toBe(tree);
+  });
+
+  it("已迁移的新形状但 kind 仍为旧 area（含 tabs/activeTabId）→ 归一化为 panel", () => {
+    const legacy: PanelNode = { kind: "area", id: "p1", tabs: [], activeTabId: null } as never;
+    const migrated = migrateLegacyTree(legacy);
+    expect(migrated.kind).toBe("panel");
+    expect((migrated as PanelNode).tabs).toEqual([]);
   });
 });
 
 describe("布局复制 id 重生成", () => {
   it("regenerateIds 全部节点与标签换新 id，activeTabId 重映射，结构不变", () => {
-    const tree = makeArea(["canvas", "note"]);
+    const tree = makePanel(["canvas", "note"]);
     const originalIds = {
-      area: collectAreas(tree)[0]!.id,
+      panel: collectPanels(tree)[0]!.id,
       tabs: collectTabs(tree).map((t) => t.id),
     };
     const copy = regenerateIds(tree);
-    const copyArea = collectAreas(copy)[0]!;
-    expect(copyArea.id).not.toBe(originalIds.area);
-    expect(copyArea.tabs.map((t) => t.id)).not.toEqual(originalIds.tabs);
-    expect(copyArea.tabs.map((t) => t.view)).toEqual(["canvas", "note"]);
-    expect(copyArea.activeTabId).toBe(copyArea.tabs[0]!.id);
+    const copyPanel = collectPanels(copy)[0]!;
+    expect(copyPanel.id).not.toBe(originalIds.panel);
+    expect(copyPanel.tabs.map((t) => t.id)).not.toEqual(originalIds.tabs);
+    expect(copyPanel.tabs.map((t) => t.view)).toEqual(["canvas", "note"]);
+    expect(copyPanel.activeTabId).toBe(copyPanel.tabs[0]!.id);
   });
 });

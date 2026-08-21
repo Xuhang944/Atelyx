@@ -1,7 +1,7 @@
 /**
  * 应用级 UI 使用状态（`app_data_dir/ui-state.json`，schema `atelyx-ui-state/v1`）。
  *
- * 工作区布局（布局列表 + 激活布局 + 聚焦面积）+ 上次打开的文件 + 文件面板展开，
+ * 工作区布局（布局列表 + 激活布局 + 聚焦面板）+ 上次打开的文件 + 文件面板展开，
  * 全部**应用级**：app_data_dir 本机独有、不随仓库同步，跨仓库共享——
  * 布局/展开/上次文件是个人使用偏好，与仓库无关（各仓库 `.atelyx/ui-state.json`
  * 的按设备分桶模型已废弃）。
@@ -29,8 +29,8 @@ export interface AppUiState {
   workspaceLayouts?: WorkspaceLayout[];
   /** 激活布局 id（缺省 = 布局列表第一个）。 */
   activeLayoutId?: string;
-  /** 聚焦面积 id（画布快捷键门控；缺省 = 布局第一个面积）。 */
-  focusedAreaId?: string;
+  /** 聚焦面板 id（画布快捷键门控；缺省 = 布局第一个面板）。 */
+  focusedPanelId?: string;
   /** 撕裂出去的独立窗口（应用级、跨布局共享；缺省 = 无）。 */
   detachedWindows?: DetachedWindow[];
 }

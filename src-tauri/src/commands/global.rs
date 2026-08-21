@@ -145,14 +145,14 @@ pub fn write_global_config(app: AppHandle, mut config: GlobalConfig) -> Result<(
 }
 
 // ===== 应用级 UI 使用状态（app_data_dir/ui-state.json）=====
-// 工作区布局（布局列表 + 激活布局 + 聚焦面积）+ 上次打开文件 + 文件面板展开，
+// 工作区布局（布局列表 + 激活布局 + 聚焦面板）+ 上次打开文件 + 文件面板展开，
 // 全部应用级：app_data_dir 本机独有、不随仓库同步，跨仓库共享（无需按设备分桶）。
 // 与全局配置（global.json）分离：高频展开/折叠/拖拽写入抖动不进配置。
 
 /// ui-state.json 的 schema 版本（与前端 types/uiState.ts 的 UI_STATE_SCHEMA 对齐）。
 pub const UI_STATE_SCHEMA: &str = "atelyx-ui-state/v1";
 
-/// 应用级 UI 使用状态（扁平结构；`workspace_layouts` 区域树由前端自持 schema）。
+/// 应用级 UI 使用状态（扁平结构；`workspace_layouts` 面板树由前端自持 schema）。
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AppUiState {
@@ -175,9 +175,9 @@ pub struct AppUiState {
     /// 激活布局 id（缺省 = 布局列表第一个）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_layout_id: Option<String>,
-    /// 聚焦面积 id（画布快捷键门控；缺省 = 布局第一个面积）。
+    /// 聚焦面板 id（画布快捷键门控；缺省 = 布局第一个面板）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub focused_area_id: Option<String>,
+    pub focused_panel_id: Option<String>,
 }
 
 fn app_ui_state_path(app: &AppHandle) -> Result<PathBuf, String> {

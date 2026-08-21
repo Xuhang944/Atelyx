@@ -1,10 +1,10 @@
 /**
- * 面积占位引导（无文件/空视图时显示）。
+ * 面板占位引导（无文件/空视图时显示）。
  * 图标 + 标题 + 描述，与旧「打开画布/笔记/表格」占位同款。
  */
 import type { ReactNode } from "react";
 
-export function AreaPlaceholder({
+export function PanelPlaceholder({
   icon,
   title,
   description,

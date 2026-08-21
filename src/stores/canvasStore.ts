@@ -240,7 +240,7 @@ interface CanvasState {
   confirmConnect: (conversationId: string, nodeId: string) => void;
   /** 清空某对话的待确认队列（菜单消费后）。 */
   clearPendingConfirm: (conversationId: string) => void;
-  /** 属性面板选中的节点 id（单击节点设置、单击空白清空；跨面积共享，null = 未选中）。 */
+  /** 属性面板选中的节点 id（单击节点设置、单击空白清空；跨面板共享，null = 未选中）。 */
   selectedNodeId: string | null;
   /** 设置属性面板选中节点（null = 清空选中）。 */
   selectNode: (nodeId: string | null) => void;
@@ -1586,7 +1586,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     return true;
   },
   pasteNodes: (position) => {
-    // 未打开画布（占位面积）时粘贴无意义：不写入 store（canvasId null 时 persist 虽不落盘，
+    // 未打开画布（占位面板）时粘贴无意义：不写入 store（canvasId null 时 persist 虽不落盘，
     // 但节点会残留在内存态，打开画布前状态混乱）
     if (!get().canvasId || clipboardNodes.length === 0) return;
     get().pushUndo();

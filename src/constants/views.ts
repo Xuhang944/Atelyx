@@ -1,5 +1,5 @@
 /**
- * 视图显示名（面积头标签 / 撕裂窗口标题共用）。
+ * 视图显示名（面板头标签 / 撕裂窗口标题共用）。
  */
 import type { ViewKind } from "@/types";
 
@@ -11,5 +11,5 @@ export const VIEW_LABELS: Record<ViewKind, string> = {
   search: "搜索",
   inspector: "属性",
   aichat: "AI 对话",
-  empty: "空面积",
+  empty: "空面板",
 };

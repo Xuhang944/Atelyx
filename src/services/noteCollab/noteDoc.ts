@@ -7,7 +7,7 @@
  * - 落盘：收敛后全文（`flushNoteDoc`）写回 `.md` 真源（调用方负责）。
  * - awareness：本地光标/选中/身份经 `y-codemirror.next` 更新；远端状态用于渲染用户色光标/选中。
  *
- * 多面积打开同一笔记共享同一 `Y.Doc` 实例（per-file 单例引用计数），避免多 doc 分叉。
+ * 多面板打开同一笔记共享同一 `Y.Doc` 实例（per-file 单例引用计数），避免多 doc 分叉。
  * 本模块为纯数据/同步层：网络收发经 collabStore 注入的广播钩子完成，不直连 relay。
  *
  * # 磁盘基线收敛（防重开翻倍）
@@ -247,7 +247,7 @@ function handleBaselineReset(file: string, diskText: string): void {
 }
 
 /**
- * 打开并绑定笔记文档：有激活编辑器（多面积共享）时复用现有 doc；
+ * 打开并绑定笔记文档：有激活编辑器（多面板共享）时复用现有 doc；
  * 无激活时以磁盘正文 text 重置基线（快照）后返回。调用方应在编辑器挂载时调用（refCount++）。
  * 传入的 text 为 LF 规范化后的全文（调用方保证）。
  * 重开时先广播 BASELINE_RESET 让房间收敛到磁盘权威基线，再发 syncStep1 握手。

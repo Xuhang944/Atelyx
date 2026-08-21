@@ -3,7 +3,7 @@
  *
  * 持有跨会话恢复所需的使用数据，独立落盘 `app_data_dir/ui-state.json`
  * （与全局配置 global.json 分离，高频展开/折叠/布局拖拽写入抖动不进配置）：
- * - 工作区布局（布局列表 + 激活布局 + 聚焦面积，见 `types/workspaceLayout.ts`）；
+ * - 工作区布局（布局列表 + 激活布局 + 聚焦面板，见 `types/workspaceLayout.ts`）；
  * - 撕裂窗口（应用级 `detachedWindows`：视图 + 位置尺寸，跨布局共享，重启恢复）；
  * - 上次打开的画布/笔记/表格文件（设置「自动恢复上次打开的文件」开启时恢复）；
  * - 文件面板展开的文件夹集合（进入仓库自动恢复上次展开情况）。
@@ -12,7 +12,7 @@
  * 切仓库不清空、不重载（布局/展开/上次文件是个人使用偏好）。`load` 只在应用
  * 启动时调用一次（appStore.init），`flush` 直接整写（无合并/无归属校验）。
  *
- * **布局权威在主窗口**：全部布局操作（标签激活/关闭/锁定/排序/撕裂/停靠/分割/删除面积）
+ * **布局权威在主窗口**：全部布局操作（标签激活/关闭/锁定/排序/撕裂/停靠/分割/删除面板）
  * 在本 store 应用并持久化；撕裂窗口只发操作请求、经 `layout-changed` 广播同步。
  * 视图跨窗口交接的编排（flush/clear/load + OS 窗口生命周期）在 `stores/panelStore.ts`。
  *
@@ -24,8 +24,8 @@ import { readAppUiState, writeAppUiState } from "@/services/uiState";
 import { remapDirPrefix } from "@/utils/filename";
 import { createPersistController } from "@/utils/persist";
 import {
-  addTabToArea as addTabToAreaOp,
-  closeArea as closeAreaOp,
+  addTabToPanel as addTabToPanelOp,
+  closePanel as closePanelOp,
   collectViewsInTree as collectViewsInTreeOp,
   detachedAddTab as detachedAddTabOp,
   detachedMoveTab as detachedMoveTabOp,
@@ -33,18 +33,20 @@ import {
   detachedSetActive as detachedSetActiveOp,
   detachedSetBounds as detachedSetBoundsOp,
   detachedSetLocked as detachedSetLockedOp,
-  findArea,
+  detachedSetTabView as detachedSetTabViewOp,
+  findPanel,
   findTabInDetached,
   findTabInTree,
   migrateLegacyTree,
-  moveTabWithinArea as moveTabWithinAreaOp,
+  moveTabWithinPanel as moveTabWithinPanelOp,
   regenerateIds,
-  removeTabFromArea as removeTabFromAreaOp,
+  removeTabFromPanel as removeTabFromPanelOp,
   setActiveTab as setActiveTabOp,
   setLayoutSizes as setLayoutSizesOp,
   setTabLocked as setTabLockedOp,
-  splitArea as splitAreaOp,
-  tearOffFromArea,
+  setTabView as setTabViewOp,
+  splitPanel as splitPanelOp,
+  tearOffFromPanel,
 } from "@/utils/workspaceLayout";
 import {
   createDefaultLayouts,
@@ -70,8 +72,8 @@ interface UiStateStore {
   workspaceLayouts: WorkspaceLayout[];
   /** 激活布局 id（缺省 = 列表第一个）。 */
   activeLayoutId: string | null;
-  /** 聚焦面积 id（画布快捷键门控；面积可能已被关闭/布局切换，渲染兜底聚焦第一个）。 */
-  focusedAreaId: string | null;
+  /** 聚焦面板 id（画布快捷键门控；面板可能已被关闭/布局切换，渲染兜底聚焦第一个）。 */
+  focusedPanelId: string | null;
   /** 撕裂出去的独立窗口（应用级、跨布局共享；视图全局唯一约束覆盖树 + 此列表）。 */
   detachedWindows: DetachedWindow[];
   /** 当前 ui-state 是否已从磁盘加载（恢复 effect 依赖它避免在加载前误清状态）。 */
@@ -107,32 +109,39 @@ interface UiStateStore {
   closeNote: () => void;
   /** 关闭表格：清空 lastTableFile。 */
   closeTable: () => void;
-  /** 设置聚焦面积（点击面积时；null = 无聚焦）。 */
-  setFocusedArea: (areaId: string | null) => void;
+  /** 设置聚焦面板（点击面板时；null = 无聚焦）。 */
+  setFocusedPanel: (panelId: string | null) => void;
 
-  /** 添加视图到面积（下拉入口）：组内已有该视图 = 激活；否则新建标签并激活。 */
-  addViewToArea: (areaId: string, view: ViewKind) => void;
-  /** 激活面积中的标签。 */
-  setActiveTab: (areaId: string, tabId: string) => void;
-  /** 关闭面积中的标签（≡ 菜单）：锁定标签拒关；最后一个标签关闭 → 面积留空。 */
-  closeTab: (areaId: string, tabId: string) => void;
-  /** 锁定/解锁面积中的标签（锁定 = 固定：禁拖/禁撕裂/禁关闭）。 */
-  setTabLocked: (areaId: string, tabId: string, locked: boolean) => void;
-  /** 面积标签组内排序。 */
-  moveTabWithinArea: (areaId: string, tabId: string, toIndex: number) => void;
-  /** 窗口内跨面积移动标签（面积 A → 面积 B 标签组，默认尾部）。 */
-  moveTabBetweenAreas: (fromAreaId: string, toAreaId: string, tabId: string, index?: number) => void;
-  /** 分割激活布局中的面积：父 split 方向匹配时同级插入新空面积（多叉），否则嵌套回退。返回新面积 id。 */
-  splitArea: (
-    areaId: string,
+  /** 添加视图到面板（下拉入口）：组内已有该视图 = 激活；否则新建标签并激活。 */
+  addViewToPanel: (panelId: string, view: ViewKind) => void;
+  /** 激活面板中的标签。 */
+  setActiveTab: (panelId: string, tabId: string) => void;
+  /** 关闭面板中的标签（标签右键菜单）：锁定标签拒关；最后一个标签关闭 → 面板留空。 */
+  closeTab: (panelId: string, tabId: string) => void;
+  /** 锁定/解锁面板中的标签（锁定 = 固定：禁拖/禁撕裂/禁关闭）。 */
+  setTabLocked: (panelId: string, tabId: string, locked: boolean) => void;
+  /** 切换面板中某标签的视图（标签右键「切换标签视图」；视图全局唯一约束由 UI 层校验）。 */
+  setTabView: (panelId: string, tabId: string, view: ViewKind) => void;
+  /** 面板标签组内排序。 */
+  moveTabWithinPanel: (panelId: string, tabId: string, toIndex: number) => void;
+  /** 窗口内跨面板移动标签（面板 A → 面板 B 标签组，默认尾部）。 */
+  moveTabBetweenPanels: (
+    fromPanelId: string,
+    toPanelId: string,
+    tabId: string,
+    index?: number,
+  ) => void;
+  /** 分割激活布局中的面板：父 split 方向匹配时同级插入新空面板（多叉），否则嵌套回退。返回新面板 id。 */
+  splitPanel: (
+    panelId: string,
     direction: SplitDirection,
     position?: "before" | "after",
   ) => string | null;
-  /** 删除面积 = 合并到父 Split 兄弟（空面积「删除面积」入口）；最后一个面积不可删。 */
-  closeArea: (areaId: string) => boolean;
-  /** 撕裂标签：从面积移除（面积留空）→ 挂到应用级 detachedWindows，返回新窗口条目。 */
+  /** 删除面板 = 整块移除（含其全部标签）并合并到父 Split 兄弟；最后一个面板不可删。 */
+  closePanel: (panelId: string) => boolean;
+  /** 撕裂标签：从面板移除（面板留空）→ 挂到应用级 detachedWindows，返回新窗口条目。 */
   tearOffTab: (
-    areaId: string,
+    panelId: string,
     tabId: string,
     bounds: DetachedWindow["bounds"],
   ) => DetachedWindow | null;
@@ -142,9 +151,9 @@ interface UiStateStore {
     tabId: string,
     bounds: DetachedWindow["bounds"],
   ) => DetachedWindow | null;
-  /** 拖回：把撕裂窗口中的标签停靠进主窗口面积（默认尾部并激活；源窗口拖空自动移除）。 */
-  dockTabIntoArea: (areaId: string, tabId: string, index?: number) => void;
-  /** 拖入：把标签停靠进撕裂窗口（来源 = 树面积或另一撕裂窗口；同窗口 = 组内排序）。 */
+  /** 拖回：把撕裂窗口中的标签停靠进主窗口面板（默认尾部并激活；源窗口拖空自动移除）。 */
+  dockTabIntoPanel: (panelId: string, tabId: string, index?: number) => void;
+  /** 拖入：把标签停靠进撕裂窗口（来源 = 树面板或另一撕裂窗口；同窗口 = 组内排序）。 */
   dockTabIntoDetached: (windowId: string, tabId: string, index?: number) => void;
   /** 向撕裂窗口添加新视图标签（视图全局唯一，已占用则忽略；面板窗口「添加视图」入口）。 */
   detachedAddView: (windowId: string, view: ViewKind) => void;
@@ -154,6 +163,8 @@ interface UiStateStore {
   detachedCloseTab: (windowId: string, tabId: string) => void;
   /** 锁定/解锁撕裂窗口中的标签。 */
   detachedSetLocked: (windowId: string, tabId: string, locked: boolean) => void;
+  /** 切换撕裂窗口中某标签的视图（标签右键「切换标签视图」）。 */
+  detachedSetTabView: (windowId: string, tabId: string, view: ViewKind) => void;
   /** 撕裂窗口标签组内排序。 */
   detachedMoveTab: (windowId: string, tabId: string, toIndex: number) => void;
   /** 更新撕裂窗口位置尺寸（面板窗口移动/缩放后上报，防抖落盘）。 */
@@ -168,7 +179,7 @@ interface UiStateStore {
   renameLayout: (id: string, name: string) => void;
   /** 删除布局（最后一个不可删）。 */
   deleteLayout: (id: string) => void;
-  /** 激活布局（切换布局：仅替换面积网格，文件状态与撕裂窗口不动）。 */
+  /** 激活布局（切换布局：仅替换面板网格，文件状态与撕裂窗口不动）。 */
   activateLayout: (id: string) => void;
   /** 调整布局顺序（布局 tab 拖拽排序）。 */
   moveLayout: (fromIndex: number, toIndex: number) => void;
@@ -240,7 +251,7 @@ function toDiskState(get: () => UiStateStore): AppUiState {
     ...(s.lastTableFile ? { lastTableFile: s.lastTableFile } : {}),
     workspaceLayouts: s.workspaceLayouts,
     ...(s.activeLayoutId ? { activeLayoutId: s.activeLayoutId } : {}),
-    ...(s.focusedAreaId ? { focusedAreaId: s.focusedAreaId } : {}),
+    ...(s.focusedPanelId ? { focusedPanelId: s.focusedPanelId } : {}),
     ...(s.detachedWindows.length > 0 ? { detachedWindows: s.detachedWindows } : {}),
   };
 }
@@ -285,7 +296,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
   lastTableFile: null,
   workspaceLayouts: createDefaultLayouts(),
   activeLayoutId: null,
-  focusedAreaId: null,
+  focusedPanelId: null,
   detachedWindows: [],
   loaded: false,
 
@@ -294,13 +305,17 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
     persistCtl.cancel();
     try {
       const disk = await readAppUiState();
-      // 布局恢复：磁盘无/损坏（数组空、项缺 tree 结构）时回退默认布局——
-      // 缺校验会让 WorkspaceGrid 收到 undefined tree 白屏；旧 schema（面积含 view 字段）迁移为标签组
+      // 旧 schema 兼容（v1 前磁盘数据）：树判别值 kind "area"（面板含 view 字段 / 已迁移形状）→ 归一化为 "panel"
+      // （聚焦字段旧名 focusedAreaId 已被 Rust 反序列化剥离，无迁移价值；缺失时兜底聚焦第一个面板）
       const layouts =
         Array.isArray(disk.workspaceLayouts) &&
         disk.workspaceLayouts.length > 0 &&
         disk.workspaceLayouts.every(
-          (l) => l && (l.tree?.kind === "area" || l.tree?.kind === "split"),
+          (l) =>
+            l &&
+            ((l.tree as { kind?: string } | undefined)?.kind === "area" ||
+              (l.tree as { kind?: string } | undefined)?.kind === "panel" ||
+              (l.tree as { kind?: string } | undefined)?.kind === "split"),
         )
           ? disk.workspaceLayouts.map((l) => ({ ...l, tree: migrateLegacyTree(l.tree) }))
           : createDefaultLayouts();
@@ -315,7 +330,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
         lastTableFile: disk.lastTableFile ?? null,
         workspaceLayouts: layouts,
         activeLayoutId,
-        focusedAreaId: disk.focusedAreaId ?? null,
+        focusedPanelId: disk.focusedPanelId ?? null,
         detachedWindows: Array.isArray(disk.detachedWindows)
           ? disk.detachedWindows.filter(isValidDetached)
           : [],
@@ -330,7 +345,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
         lastTableFile: null,
         workspaceLayouts: createDefaultLayouts(),
         activeLayoutId: null,
-        focusedAreaId: null,
+        focusedPanelId: null,
         detachedWindows: [],
         loaded: true,
       });
@@ -444,75 +459,82 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
     persistDebounced();
   },
 
-  setFocusedArea: (areaId) => {
-    if (get().focusedAreaId === areaId) return;
-    set({ focusedAreaId: areaId });
+  setFocusedPanel: (panelId) => {
+    if (get().focusedPanelId === panelId) return;
+    set({ focusedPanelId: panelId });
     persistDebounced();
   },
 
-  addViewToArea: (areaId, view) => {
+  addViewToPanel: (panelId, view) => {
     const layout = activeLayout(get);
-    const area = findArea(layout.tree, areaId);
-    if (!area) return;
-    const existing = area.tabs.find((t) => t.view === view);
+    const panel = findPanel(layout.tree, panelId);
+    if (!panel) return;
+    const existing = panel.tabs.find((t) => t.view === view);
     if (existing) {
-      updateActiveLayout((tree) => setActiveTabOp(tree, areaId, existing.id));
+      updateActiveLayout((tree) => setActiveTabOp(tree, panelId, existing.id));
       return;
     }
-    updateActiveLayout((tree) => addTabToAreaOp(tree, areaId, createTab(view)));
+    updateActiveLayout((tree) => addTabToPanelOp(tree, panelId, createTab(view)));
   },
 
-  setActiveTab: (areaId, tabId) => {
-    updateActiveLayout((tree) => setActiveTabOp(tree, areaId, tabId));
+  setActiveTab: (panelId, tabId) => {
+    updateActiveLayout((tree) => setActiveTabOp(tree, panelId, tabId));
   },
 
-  closeTab: (areaId, tabId) => {
-    const area = findArea(activeLayout(get).tree, areaId);
-    const tab = area?.tabs.find((t) => t.id === tabId);
+  closeTab: (panelId, tabId) => {
+    const panel = findPanel(activeLayout(get).tree, panelId);
+    const tab = panel?.tabs.find((t) => t.id === tabId);
     if (!tab || tab.locked) return;
-    updateActiveLayout((tree) => removeTabFromAreaOp(tree, areaId, tabId));
+    updateActiveLayout((tree) => removeTabFromPanelOp(tree, panelId, tabId));
   },
 
-  setTabLocked: (areaId, tabId, locked) => {
-    updateActiveLayout((tree) => setTabLockedOp(tree, areaId, tabId, locked));
+  setTabLocked: (panelId, tabId, locked) => {
+    updateActiveLayout((tree) => setTabLockedOp(tree, panelId, tabId, locked));
   },
 
-  moveTabWithinArea: (areaId, tabId, toIndex) => {
-    updateActiveLayout((tree) => moveTabWithinAreaOp(tree, areaId, tabId, toIndex));
+  setTabView: (panelId, tabId, view) => {
+    const panel = findPanel(activeLayout(get).tree, panelId);
+    const tab = panel?.tabs.find((t) => t.id === tabId);
+    if (!tab || tab.locked) return;
+    updateActiveLayout((tree) => setTabViewOp(tree, panelId, tabId, view));
   },
 
-  moveTabBetweenAreas: (fromAreaId, toAreaId, tabId, index) => {
+  moveTabWithinPanel: (panelId, tabId, toIndex) => {
+    updateActiveLayout((tree) => moveTabWithinPanelOp(tree, panelId, tabId, toIndex));
+  },
+
+  moveTabBetweenPanels: (fromPanelId, toPanelId, tabId, index) => {
     const hit = findTabInTree(activeLayout(get).tree, tabId);
-    if (!hit || hit.area.id !== fromAreaId) return;
+    if (!hit || hit.panel.id !== fromPanelId) return;
     updateActiveLayout((tree) =>
-      addTabToAreaOp(removeTabFromAreaOp(tree, fromAreaId, tabId), toAreaId, hit.tab, index),
+      addTabToPanelOp(removeTabFromPanelOp(tree, fromPanelId, tabId), toPanelId, hit.tab, index),
     );
   },
 
-  splitArea: (areaId, direction, position = "after") => {
+  splitPanel: (panelId, direction, position = "after") => {
     const layout = activeLayout(get);
-    const { tree, newAreaId } = splitAreaOp(layout.tree, areaId, direction, position);
+    const { tree, newPanelId } = splitPanelOp(layout.tree, panelId, direction, position);
     set({
       workspaceLayouts: get().workspaceLayouts.map((l) =>
         l.id === layout.id ? { ...l, tree } : l,
       ),
     });
     persistDebounced();
-    return newAreaId;
+    return newPanelId;
   },
 
-  closeArea: (areaId) => {
+  closePanel: (panelId) => {
     const layout = activeLayout(get);
-    const tree = closeAreaOp(layout.tree, areaId);
+    const tree = closePanelOp(layout.tree, panelId);
     if (!tree) return false;
     updateActiveLayout(() => tree);
-    set({ focusedAreaId: get().focusedAreaId === areaId ? null : get().focusedAreaId });
+    set({ focusedPanelId: get().focusedPanelId === panelId ? null : get().focusedPanelId });
     return true;
   },
 
-  tearOffTab: (areaId, tabId, bounds) => {
+  tearOffTab: (panelId, tabId, bounds) => {
     const layout = activeLayout(get);
-    const hit = tearOffFromArea(layout.tree, areaId, tabId);
+    const hit = tearOffFromPanel(layout.tree, panelId, tabId);
     if (!hit) return null;
     const win: DetachedWindow = {
       id: crypto.randomUUID(),
@@ -549,11 +571,11 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
     return win;
   },
 
-  dockTabIntoArea: (areaId, tabId, index) => {
+  dockTabIntoPanel: (panelId, tabId, index) => {
     const hit = findTabInDetached(get().detachedWindows, tabId);
     if (!hit) return;
     updateLayoutAndDetached(
-      (tree) => addTabToAreaOp(tree, areaId, hit.tab, index),
+      (tree) => addTabToPanelOp(tree, panelId, hit.tab, index),
       (windows) => pruneEmptyWindows(detachedRemoveTabOp(windows, hit.window.id, tabId)),
     );
   },
@@ -567,11 +589,11 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
       );
       return;
     }
-    // 来源 = 树面积
+    // 来源 = 树面板
     const inTree = findTabInTree(activeLayout(get).tree, tabId);
     if (inTree) {
       updateLayoutAndDetached(
-        (tree) => removeTabFromAreaOp(tree, inTree.area.id, tabId),
+        (tree) => removeTabFromPanelOp(tree, inTree.panel.id, tabId),
         (windows) => detachedAddTabOp(windows, windowId, inTree.tab, index),
       );
       return;
@@ -617,6 +639,13 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
     updateDetachedWindows((windows) => detachedSetLockedOp(windows, windowId, tabId, locked));
   },
 
+  detachedSetTabView: (windowId, tabId, view) => {
+    const win = get().detachedWindows.find((w) => w.id === windowId);
+    const tab = win?.tabs.find((t) => t.id === tabId);
+    if (!tab || tab.locked) return;
+    updateDetachedWindows((windows) => detachedSetTabViewOp(windows, windowId, tabId, view));
+  },
+
   detachedMoveTab: (windowId, tabId, toIndex) => {
     updateDetachedWindows((windows) => detachedMoveTabOp(windows, windowId, tabId, toIndex));
   },
@@ -646,7 +675,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
     set({
       workspaceLayouts: [...get().workspaceLayouts, copy],
       activeLayoutId: copy.id,
-      focusedAreaId: null,
+      focusedPanelId: null,
     });
     persistDebounced();
   },
@@ -670,14 +699,14 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
     set({
       workspaceLayouts: next,
       activeLayoutId: nextActive,
-      focusedAreaId: nextActive === activeLayoutId ? get().focusedAreaId : null,
+      focusedPanelId: nextActive === activeLayoutId ? get().focusedPanelId : null,
     });
     persistDebounced();
   },
 
   activateLayout: (id) => {
     if (!get().workspaceLayouts.some((l) => l.id === id)) return;
-    set({ activeLayoutId: id, focusedAreaId: null });
+    set({ activeLayoutId: id, focusedPanelId: null });
     persistDebounced();
   },
 

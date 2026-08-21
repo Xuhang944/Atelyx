@@ -137,6 +137,8 @@ interface AppState {
   loadList: () => Promise<void>;
   /** 打开画布（树行携带 id + file）：设置全局文件状态并记录「上次打开」（uiState）。 */
   openCanvas: (row: CanvasFileRow) => void;
+  /** 关闭当前画布（标签保留，回到未打开文件状态）：清全局文件状态与「上次打开」，先落盘再清内存态。 */
+  closeCanvas: () => void;
   /** 打开笔记（文件面板/搜索/属性定位等入口）：设置全局文件状态并记录「上次打开」。 */
   openNote: (file: string, title: string) => void;
   /** 关闭笔记窗口：清当前笔记文件状态。 */
@@ -436,6 +438,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ currentCanvasId: row.id, currentCanvasFile: row.file });
     // 记录「上次打开」供下次进入仓库恢复（画布窗口已无标签概念，打开即唯一文件状态）
     useUiStateStore.getState().recordOpenCanvas(row.file);
+  },
+  closeCanvas: () => {
+    set({ currentCanvasId: null, currentCanvasFile: null });
+    useUiStateStore.getState().closeCanvas();
+    // 先落盘（防 debounce 窗口内丢改动）再清内存态；清空后不可写回
+    void useCanvasStore.getState().flush().finally(() => {
+      useCanvasStore.getState().resetCanvasState();
+    });
   },
   openNote: (file, title) => {
     set({ currentNoteFile: file, currentNoteTitle: title });

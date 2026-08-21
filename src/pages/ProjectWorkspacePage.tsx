@@ -2,8 +2,8 @@
  * 工作区页面（Blender 式可自定义布局）。
  *
  * 全局 chrome：标题栏（仓库名 + 布局 tabs + 右操作区（设置/全屏/窗口控制））。
- * 面积网格由 `WorkspaceGrid` 按激活布局渲染，
- * 文件打开/关闭/恢复联动在此层（跨 store 一致性），视图渲染全在面积内部。
+ * 面板网格由 `WorkspaceGrid` 按激活布局渲染，
+ * 文件打开/关闭/恢复联动在此层（跨 store 一致性），视图渲染全在面板内部。
  */
 import { Maximize, Settings } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -28,7 +28,7 @@ export function ProjectWorkspacePage() {
   const toggleMaximizeWindow = useAppStore((s) => s.toggleMaximizeWindow);
   const closeWindow = useAppStore((s) => s.closeWindow);
 
-  // 当前打开文件状态（面积渲染入口；打开动作在 appStore，联动 effect 在此层）
+  // 当前打开文件状态（面板渲染入口；打开动作在 appStore，联动 effect 在此层）
   const currentCanvasFile = useAppStore((s) => s.currentCanvasFile);
   const currentNoteFile = useAppStore((s) => s.currentNoteFile);
   const currentTableFile = useAppStore((s) => s.currentTableFile);
@@ -43,7 +43,7 @@ export function ProjectWorkspacePage() {
   const lastTableFile = useUiStateStore((s) => s.lastTableFile);
   const autoRestoreFiles = useSettingsStore((s) => s.autoRestoreFiles);
 
-  // 当前打开的文件状态与激活布局（面积网格渲染入口）
+  // 当前打开的文件状态与激活布局（面板网格渲染入口）
   const activeLayoutId = useUiStateStore((s) => s.activeLayoutId);
   const activeTree = useUiStateStore((s) => {
     const layout =
@@ -210,7 +210,7 @@ export function ProjectWorkspacePage() {
             />
           </div>
 
-          {/* 面积网格（激活布局；key 保证切布局整树重挂，defaultSize 恢复各面积比例） */}
+          {/* 面板网格（激活布局；key 保证切布局整树重挂，defaultSize 恢复各面板比例） */}
           <div className="flex-1 min-h-0">
             <WorkspaceGrid key={activeLayoutId ?? "default"} tree={activeTree} />
           </div>

@@ -28,7 +28,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useCollabStore } from "@/stores/collabStore";
 import { VIEW_LABELS } from "@/constants/views";
-import { collectAreas, collectTabs, findViewHost } from "@/utils/workspaceLayout";
+import { collectPanels, collectTabs, findViewHost } from "@/utils/workspaceLayout";
 import * as bus from "@/services/windowBus";
 import type { DropTargetInfo, PanelDragStartPayload, WindowRect } from "@/services/windowBus";
 import {
@@ -65,7 +65,7 @@ export interface DragSession {
   view: ViewKind;
   /** 源窗口 label（"main" 或 panel label）。 */
   sourceWindow: string;
-  /** 源宿主：主窗口面积 id 或撕裂窗口 id。 */
+  /** 源宿主：主窗口面板 id 或撕裂窗口 id。 */
   sourceHost: string;
   screenX: number;
   screenY: number;
@@ -142,6 +142,7 @@ interface PanelStore {
   panelSetActive: (tabId: string) => void;
   panelCloseTab: (tabId: string) => void;
   panelSetLocked: (tabId: string, locked: boolean) => void;
+  panelSetTabView: (tabId: string, view: ViewKind) => void;
   panelMoveTab: (tabId: string, toIndex: number) => void;
   panelAddView: (view: ViewKind) => void;
 
@@ -151,8 +152,8 @@ interface PanelStore {
   syncCollabHost: () => void;
   /** 主窗口：恢复持久化的撕裂窗口。 */
   restoreDetachedWindows: () => Promise<void>;
-  /** 主窗口：撕裂（面积来源，含交接 + 建窗）。 */
-  tearOff: (areaId: string, tabId: string, screenX: number, screenY: number) => Promise<void>;
+  /** 主窗口：撕裂（面板来源，含交接 + 建窗）。 */
+  tearOff: (panelId: string, tabId: string, screenX: number, screenY: number) => Promise<void>;
   /** 主窗口：撕裂（撕裂窗口来源，拖到窗外）。 */
   tearOffFromPanel: (sourceWindowId: string, tabId: string, screenX: number, screenY: number) => Promise<void>;
   /** 主窗口：回收撕裂窗口 OS 窗口（条目已移除时调用）。 */
@@ -175,17 +176,17 @@ function pointInRect(x: number, y: number, r: WindowRect | undefined): boolean {
   return x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height;
 }
 
-/** 主窗口 drop 命中：按面积 DOM rect 计算 zone（头部 = tab 排序；四边缘 = 分割；中部 = 加标签）。 */
+/** 主窗口 drop 命中：按面板 DOM rect 计算 zone（头部 = tab 排序；四边缘 = 分割；中部 = 加标签）。 */
 function hitTestMainWindow(
   cx: number,
   cy: number,
   windowId: string,
 ): DropTargetInfo | null {
-  const areas = Array.from(document.querySelectorAll<HTMLElement>("[data-drop-area]"));
-  for (const el of areas) {
+  const panels = Array.from(document.querySelectorAll<HTMLElement>("[data-drop-panel]"));
+  for (const el of panels) {
     const r = el.getBoundingClientRect();
     if (cx < r.left || cx > r.right || cy < r.top || cy > r.bottom) continue;
-    // 头部条（tab 排序区）：面积 header 顶部 28px
+    // 头部条（tab 排序区）：面板 header 顶部 28px
     if (cy <= r.top + 28) {
       const tabEls = Array.from(el.querySelectorAll<HTMLElement>("[data-tab-id]"));
       let idx = tabEls.length;
@@ -196,7 +197,7 @@ function hitTestMainWindow(
           break;
         }
       }
-      return { kind: "area", window: windowId, areaId: el.dataset.dropArea, zone: "tab", tabIndex: idx };
+      return { kind: "panel", window: windowId, panelId: el.dataset.dropPanel, zone: "tab", tabIndex: idx };
     }
     const w = r.width;
     const h = r.height;
@@ -210,7 +211,7 @@ function hitTestMainWindow(
             : r.bottom - cy < h * 0.12
               ? "bottom"
               : "center";
-    return { kind: "area", window: windowId, areaId: el.dataset.dropArea, zone };
+    return { kind: "panel", window: windowId, panelId: el.dataset.dropPanel, zone };
   }
   return null;
 }
@@ -242,9 +243,9 @@ function hitTestPanelWindow(cx: number, cy: number, windowId: string): DropTarge
 
 /** 结构签名（排除 sizes：resize 拖拽不广播 layout-changed 给撕裂窗口）。 */
 function layoutSig(mirror: LayoutMirror): string {
-  const areas = collectAreas(mirror.activeTree);
+  const panels = collectPanels(mirror.activeTree);
   return JSON.stringify({
-    areas: areas.map((a) => ({ id: a.id, tabs: a.tabs.map((t) => `${t.id}:${t.view}:${t.locked ? 1 : 0}`), active: a.activeTabId })),
+    panels: panels.map((p) => ({ id: p.id, tabs: p.tabs.map((t) => `${t.id}:${t.view}:${t.locked ? 1 : 0}`), active: p.activeTabId })),
     splits: (() => {
       const ids: string[] = [];
       const walk = (n: LayoutNode): void => {
@@ -354,42 +355,42 @@ export const usePanelStore = create<PanelStore>((set, get) => {
     const ui = useUiStateStore.getState();
     const { windowPos, windowBounds, lastPanelTarget } = get();
 
-    // 1. 主窗口面积命中
+    // 1. 主窗口面板命中
     const mainHit = hitTestMainWindow(screenX - windowPos.x, screenY - windowPos.y, "main");
     if (mainHit) {
-      const areaId = mainHit.areaId;
-      if (!areaId) return;
-      const fromArea = drag.sourceWindow === "main" ? drag.sourceHost : undefined;
+      const panelId = mainHit.panelId;
+      if (!panelId) return;
+      const fromPanel = drag.sourceWindow === "main" ? drag.sourceHost : undefined;
       if (mainHit.zone === "center") {
         if (drag.sourceWindow === "main") {
-          if (fromArea === areaId) return; // 原面积：无操作
-          ui.moveTabBetweenAreas(fromArea!, areaId, drag.tabId);
+          if (fromPanel === panelId) return; // 原面板：无操作
+          ui.moveTabBetweenPanels(fromPanel!, panelId, drag.tabId);
         } else {
-          ui.dockTabIntoArea(areaId, drag.tabId);
+          ui.dockTabIntoPanel(panelId, drag.tabId);
         }
         return;
       }
       if (mainHit.zone === "tab") {
         const index = mainHit.tabIndex;
         if (drag.sourceWindow === "main") {
-          if (fromArea === areaId) ui.moveTabWithinArea(areaId, drag.tabId, index ?? 0);
-          else ui.moveTabBetweenAreas(fromArea!, areaId, drag.tabId, index);
+          if (fromPanel === panelId) ui.moveTabWithinPanel(panelId, drag.tabId, index ?? 0);
+          else ui.moveTabBetweenPanels(fromPanel!, panelId, drag.tabId, index);
         } else {
-          ui.dockTabIntoArea(areaId, drag.tabId, index);
+          ui.dockTabIntoPanel(panelId, drag.tabId, index);
         }
         return;
       }
-      // 边缘 = 分割出独立面积承载该标签（同级插入：左/上 = 前，右/下 = 后）
+      // 边缘 = 分割出独立面板承载该标签（同级插入：左/上 = 前，右/下 = 后）
       const dir: SplitDirection =
         mainHit.zone === "left" || mainHit.zone === "right" ? "horizontal" : "vertical";
       const position: "before" | "after" =
         mainHit.zone === "left" || mainHit.zone === "top" ? "before" : "after";
-      const newAreaId = ui.splitArea(areaId, dir, position);
-      if (!newAreaId) return;
+      const newPanelId = ui.splitPanel(panelId, dir, position);
+      if (!newPanelId) return;
       if (drag.sourceWindow === "main") {
-        ui.moveTabBetweenAreas(fromArea!, newAreaId, drag.tabId);
+        ui.moveTabBetweenPanels(fromPanel!, newPanelId, drag.tabId);
       } else {
-        ui.dockTabIntoArea(newAreaId, drag.tabId);
+        ui.dockTabIntoPanel(newPanelId, drag.tabId);
       }
       return;
     }
@@ -539,6 +540,9 @@ export const usePanelStore = create<PanelStore>((set, get) => {
             break;
           case "setLocked":
             ui.detachedSetLocked(windowId, op.tabId, op.locked);
+            break;
+          case "setTabView":
+            ui.detachedSetTabView(windowId, op.tabId, op.view);
             break;
           case "moveTab":
             ui.detachedMoveTab(windowId, op.tabId, op.toIndex);
@@ -696,9 +700,9 @@ export const usePanelStore = create<PanelStore>((set, get) => {
         panelReady: true,
         panelTabs: payload.tabs,
         panelActiveTabId: payload.activeTabId,
-        // 撕裂窗口不承载主窗口面积树：activeTree 用空面积（findViewHost 的「main」判定不误命中）
+        // 撕裂窗口不承载主窗口面板树：activeTree 用空面板（findViewHost 的「main」判定不误命中）
         layoutMirror: {
-          activeTree: { kind: "area", id: windowId, tabs: [], activeTabId: null },
+          activeTree: { kind: "panel", id: windowId, tabs: [], activeTabId: null },
           detachedWindows: payload.tabs.length
             ? [{ id: windowId, tabs: payload.tabs, activeTabId: payload.activeTabId, bounds: get().windowBounds[windowId] ?? { x: 0, y: 0, width: 0, height: 0 } }]
             : [],
@@ -861,6 +865,15 @@ export const usePanelStore = create<PanelStore>((set, get) => {
       void bus.emitPanelLayoutOp(windowId, { op: "setLocked", tabId, locked });
     },
 
+    panelSetTabView: (tabId, view) => {
+      const windowId = get().windowId;
+      // 视图交接：原视图（canvas/table/aichat）跨标签切换后不再承载，先 flush/清内存态
+      const tab = get().panelTabs.find((t) => t.id === tabId);
+      if (!tab || tab.locked) return;
+      if (tab.view !== view) void get().releaseView(tab.view);
+      void bus.emitPanelLayoutOp(windowId, { op: "setTabView", tabId, view });
+    },
+
     panelMoveTab: (tabId, toIndex) => {
       const windowId = get().windowId;
       void bus.emitPanelLayoutOp(windowId, { op: "moveTab", tabId, toIndex });
@@ -932,12 +945,12 @@ export const usePanelStore = create<PanelStore>((set, get) => {
       }
     },
 
-    tearOff: async (areaId, tabId, screenX, screenY) => {
+    tearOff: async (panelId, tabId, screenX, screenY) => {
       const drag = get().activeDrag;
       const view = drag?.tabId === tabId ? drag.view : undefined;
       if (view) await get().releaseView(view);
       const bounds = boundsNear(screenX, screenY);
-      const win = useUiStateStore.getState().tearOffTab(areaId, tabId, bounds);
+      const win = useUiStateStore.getState().tearOffTab(panelId, tabId, bounds);
       if (!win) return;
       get().createdPanels.add(win.id);
       await createPanelWindow(win.id, titleOfTabs(win.tabs, win.activeTabId), win.bounds);

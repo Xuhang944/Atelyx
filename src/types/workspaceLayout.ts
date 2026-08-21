@@ -2,24 +2,24 @@
  * 工作区可自定义布局（多叉停靠 + 可撕裂多窗口）。
  *
  * 布局 = 一棵递归多叉树：Split 节点表达「分割方向 + 若干子树 + 各自占比」
- * （左中右等多面板可同级并列），Area 叶子节点表达「一个停靠位置（标签组）」。
- * 全局 chrome（标题栏/最左功能栏）不参与面积网格。任意视图标签可撕裂出主窗口
- * 成为独立 OS 窗口（`DetachedWindow`），原面积保留为空位；也可拖回/拖入其他
+ * （左中右等多面板可同级并列），Panel 叶子节点表达「一个停靠位置（标签组）」。
+ * 全局 chrome（标题栏/最左功能栏）不参与面板网格。任意视图标签可撕裂出主窗口
+ * 成为独立 OS 窗口（`DetachedWindow`），原面板保留为空位；也可拖回/拖入其他
  * 位置组成标签组。
  *
  * 约束（产品决策）：
- * - 每种视图全局最多一处渲染（树内面积 + 撕裂窗口合计；文件状态全局唯一，面积只是渲染入口）
- * - 打开文件与布局解耦：布局中没有对应视图面积时文件照常打开，只是无处显示
+ * - 每种视图全局最多一处渲染（树内面板 + 撕裂窗口合计；文件状态全局唯一，面板只是渲染入口）
+ * - 打开文件与布局解耦：布局中没有对应视图面板时文件照常打开，只是无处显示
  * - 撕裂窗口为应用级（`types/uiState.ts` 的 `AppUiState.detachedWindows`），跨布局共享：
  *   切换布局不动撕裂窗口；被撕裂的视图在主窗口所有布局中均不可再添加
- * - 面积空位（tabs 为空）保留在树中（撕裂/关闭最后一个标签后），渲染空面积占位，
- *   可再添加视图或经 ≡ 菜单「删除面积」移除
+ * - 面板空位（tabs 为空）保留在树中（撕裂/关闭最后一个标签后），渲染空面板占位，
+ *   可再添加视图或经 ≡ 菜单「删除面板」移除
  *
- * 布局列表 + 激活布局 + 聚焦面积 + 撕裂窗口应用级持久化到 `app_data_dir/ui-state.json`
+ * 布局列表 + 激活布局 + 聚焦面板 + 撕裂窗口应用级持久化到 `app_data_dir/ui-state.json`
  * （见 `types/uiState.ts` 的 `AppUiState`，Rust 侧 `commands/global.rs` 同步字段）。
  */
 
-/** 视图类型（面积承载的内容）。 */
+/** 视图类型（面板承载的内容）。 */
 export type ViewKind =
   | "canvas"
   | "note"
@@ -33,7 +33,7 @@ export type ViewKind =
 /** 分割方向：horizontal = 左右并排，vertical = 上下叠放。 */
 export type SplitDirection = "horizontal" | "vertical";
 
-/** 一个标签（停靠的视图实例）；view 恒不为 "empty"（空面积 = tabs 为空数组）。 */
+/** 一个标签（停靠的视图实例）；view 恒不为 "empty"（空面板 = tabs 为空数组）。 */
 export interface TabItem {
   id: string;
   view: ViewKind;
@@ -41,10 +41,10 @@ export interface TabItem {
   locked: boolean;
 }
 
-export interface AreaNode {
-  kind: "area";
+export interface PanelNode {
+  kind: "panel";
   id: string;
-  /** 停靠在此位置的标签组（空 = 空面积占位，仍留在树中）。 */
+  /** 停靠在此位置的标签组（空 = 空面板占位，仍留在树中）。 */
   tabs: TabItem[];
   /** 激活标签 id（tabs 为空时 null）。 */
   activeTabId: string | null;
@@ -60,9 +60,9 @@ export interface SplitNode {
   sizes: number[];
 }
 
-export type LayoutNode = AreaNode | SplitNode;
+export type LayoutNode = PanelNode | SplitNode;
 
-/** 一套命名布局（布局列表的一项；只管主窗口面积树，撕裂窗口见 `DetachedWindow`）。 */
+/** 一套命名布局（布局列表的一项；只管主窗口面板树，撕裂窗口见 `DetachedWindow`）。 */
 export interface WorkspaceLayout {
   id: string;
   name: string;
@@ -95,19 +95,19 @@ export function createTab(view: ViewKind): TabItem {
   return { id: crypto.randomUUID(), view, locked: false };
 }
 
-/** 新建空面积（tabs 空，activeTabId null）。 */
-export function createEmptyArea(): AreaNode {
-  return { kind: "area", id: crypto.randomUUID(), tabs: [], activeTabId: null };
+/** 新建空面板（tabs 空，activeTabId null）。 */
+export function createEmptyPanel(): PanelNode {
+  return { kind: "panel", id: crypto.randomUUID(), tabs: [], activeTabId: null };
 }
 
-/** 新建单标签面积。 */
-export function createArea(view: ViewKind): AreaNode {
+/** 新建单标签面板。 */
+export function createPanel(view: ViewKind): PanelNode {
   const tab = createTab(view);
-  return { kind: "area", id: crypto.randomUUID(), tabs: [tab], activeTabId: tab.id };
+  return { kind: "panel", id: crypto.randomUUID(), tabs: [tab], activeTabId: tab.id };
 }
 
 /**
- * 默认布局（三套：画布/笔记/表格，面积结构 文件 | [主区/副区]，均为单标签面积）。
+ * 默认布局（三套：画布/笔记/表格，面板结构 文件 | [主区/副区]，均为单标签面板）。
  * 首次进入仓库/布局损坏时回退；激活布局缺省 = 列表第一个（画布）。
  */
 export function createDefaultLayouts(): WorkspaceLayout[] {
@@ -119,12 +119,12 @@ export function createDefaultLayouts(): WorkspaceLayout[] {
       id: crypto.randomUUID(),
       direction: "horizontal",
       children: [
-        createArea(left),
+        createPanel(left),
         {
           kind: "split",
           id: crypto.randomUUID(),
           direction: "horizontal",
-          children: [createArea(main), createArea(right)],
+          children: [createPanel(main), createPanel(right)],
           sizes: sizes2,
         },
       ],

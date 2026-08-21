@@ -108,7 +108,7 @@ export function LayoutTabs() {
               data-layout-tab
               className="group flex items-center rounded-t-md text-xs min-w-0 flex-shrink-0"
               style={{
-                // 激活 tab 背景与编辑区同色（bg-primary）+ 同色底边框「顶开」标题栏底边线 → 与面积网格粘连
+                // 激活 tab 背景与编辑区同色（bg-primary）+ 同色底边框「顶开」标题栏底边线 → 与面板网格粘连
                 background: active ? "var(--bg-primary)" : "transparent",
                 borderBottom: active ? "1px solid var(--bg-primary)" : undefined,
                 color: active ? "var(--text-primary)" : "var(--text-muted)",

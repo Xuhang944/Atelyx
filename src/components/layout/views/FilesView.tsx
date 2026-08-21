@@ -1,5 +1,5 @@
 /**
- * 文件面板视图面积（薄包装：把文件面板回调直连 appStore 打开动作）。
+ * 文件面板视图面板（薄包装：把文件面板回调直连 appStore 打开动作）。
  */
 import { FileExplorerPanel } from "@/components/canvas/panels/FileExplorerPanel";
 import { useAppStore } from "@/stores/appStore";

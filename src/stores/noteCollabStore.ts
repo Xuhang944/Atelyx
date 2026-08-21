@@ -5,7 +5,7 @@
  * 以 props 传给 MarkdownEditor 做 y-codemirror 绑定；保存仍走 vaultStore（收敛后全文写盘）。
  * 本 store 只做生命周期与身份登记，网络收发与广播钩子注入在 collabStore（见其 init）。
  *
- * 多面积打开同一笔记共享同一 `Y.Doc`（底层 noteDoc 引用计数），防多 doc 分叉。
+ * 多面板打开同一笔记共享同一 `Y.Doc`（底层 noteDoc 引用计数），防多 doc 分叉。
  */
 import { create } from "zustand";
 import type { Text as YText } from "yjs";
@@ -35,10 +35,10 @@ interface NoteCollabState {
   bindings: Record<string, NoteCollabBinding>;
   /**
    * 绑定笔记协作文档：以磁盘正文 textLF 为基线（首次/无激活时重置），登记身份，返回 binding。
-   * 幂等：同 file 已有激活文档时复用（多面积共享），不重复建 doc。
+   * 幂等：同 file 已有激活文档时复用（多面板共享），不重复建 doc。
    */
   bind: (file: string, textLF: string, identity: NoteCollabIdentity) => NoteCollabBinding;
-  /** 解绑：释放一个引用（多面积各释放一次）；协作文档仍留注册表保留远端状态。 */
+  /** 解绑：释放一个引用（多面板各释放一次）；协作文档仍留注册表保留远端状态。 */
   unbind: (file: string) => void;
   /** 协作态落盘完成通知：驱动磁盘基线收敛（重建 doc 的挂起复位）。 */
   notifyNoteDiskWrite: (file: string) => void;

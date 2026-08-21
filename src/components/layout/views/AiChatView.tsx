@@ -1,6 +1,6 @@
 /**
- * AI 对话面板视图面积。
- * noteFile = 全局当前打开笔记（面积并存下「笔记开着」即注入自动 @，不再要求笔记面积激活）。
+ * AI 对话面板视图面板。
+ * noteFile = 全局当前打开笔记（面板并存下「笔记开着」即注入自动 @，不再要求笔记面板激活）。
  */
 import { AiChatPanel } from "@/components/canvas/panels/AiChatPanel";
 import { useAppStore } from "@/stores/appStore";

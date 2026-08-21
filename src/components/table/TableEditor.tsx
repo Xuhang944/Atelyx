@@ -1,7 +1,7 @@
 /**
  * 多维表格编辑器（表格视图）。
  *
- * 布局：工具条（视图切换 / 导出；冲突/错误/保存状态在面积 header）→ 表格主体（行号列 + 列头 + 类型化单元格）→
+ * 布局：工具条（视图切换 / 导出；冲突/错误/保存状态在面板 header）→ 表格主体（行号列 + 列头 + 类型化单元格）→
  * 行尾「+ 新行」→ 底部横向滑动条 → 状态栏（列自动计算，整格点击选类型 + 实时结果）。
  *
  * 交互要点：
@@ -15,7 +15,7 @@
  *   （`ColumnMenu`/`RowMenu`/`SelectAllMenu`）提供列宽/行高自适应与左右插入字段。
  * - 状态栏：每列整格 hover 高亮可点击（未设置留空），弹出计算类型菜单（固定向上弹出，
  *   底边贴点击位置不遮住点击处）；已设置列居中显示「类型 + 结果」。
- * - 冲突/错误/保存状态在面积 header 展示（`AreaFrame` 读 tableStore）。
+ * - 冲突/错误/保存状态在面板 header 展示（`PanelFrame` 读 tableStore）。
  * - 弹层菜单（字段/列/行/整表/状态栏）见 `TableMenus.tsx`。
  */
 import { GripVertical, MoreHorizontal, MoveDiagonal, Plus, Sigma } from "lucide-react";
@@ -54,8 +54,8 @@ import type { TableField, TableRow } from "@/types";
 /** Ctrl+滚轮缩放灵敏度（指数因子：deltaY px → zoom 倍率，负号 = 上滚放大）。 */
 const ZOOM_SENSITIVITY = 0.0015;
 
-/** 表格编辑器：areaId 用于聚焦判定（撤销/重做快捷键门控，同画布快捷键惯例）。 */
-export function TableEditor({ areaId }: { areaId: string }) {
+/** 表格编辑器：panelId 用于聚焦判定（撤销/重做快捷键门控，同画布快捷键惯例）。 */
+export function TableEditor({ panelId }: { panelId: string }) {
   const fields = useTableStore((s) => s.fields);
   const rows = useTableStore((s) => s.rows);
   const selection = useTableStore((s) => s.selection);
@@ -63,7 +63,7 @@ export function TableEditor({ areaId }: { areaId: string }) {
   const selectCell = useTableStore((s) => s.selectCell);
   const selectField = useTableStore((s) => s.selectField);
   const selectAll = useTableStore((s) => s.selectAll);
-  const focusedAreaId = useUiStateStore((s) => s.focusedAreaId);
+  const focusedPanelId = useUiStateStore((s) => s.focusedPanelId);
   const addRow = useTableStore((s) => s.addRow);
   const view = useTableStore((s) => s.view);
   const setView = useTableStore((s) => s.setView);
@@ -170,10 +170,10 @@ export function TableEditor({ areaId }: { areaId: string }) {
   // ===== Ctrl+Z/Y 撤销/重做 + 选中态焦点兜底导航（全局键盘监听；选中单元格的覆盖输入由常驻输入框承接，不经此监听）=====
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      // 仅表格面积聚焦时生效（同画布快捷键门控惯例）；编辑框聚焦同样接管
+      // 仅表格面板聚焦时生效（同画布快捷键门控惯例）；编辑框聚焦同样接管
       // （受控 input/textarea 原生撤销不可靠，整编辑会话一步撤销与 Esc 放弃编辑互补）
       const ctrl = e.ctrlKey || e.metaKey;
-      if (ctrl && !e.altKey && focusedAreaId === areaId) {
+      if (ctrl && !e.altKey && focusedPanelId === panelId) {
         const key = e.key.toLowerCase();
         if (key === "z" && !e.shiftKey) {
           e.preventDefault();
@@ -187,7 +187,7 @@ export function TableEditor({ areaId }: { areaId: string }) {
         }
       }
       if (ctrl || e.altKey) return;
-      if (focusedAreaId !== areaId) return;
+      if (focusedPanelId !== panelId) return;
       // —— 焦点兜底导航 ——
       // 导航撞上非文本字段单元格（singleSelect/image 无常驻输入框）或点击空白后焦点落 body，
       // 方向键默认行为会滚动表格：此处按选中态语义接管导航；输入框聚焦（编辑态/选中态）时
@@ -232,7 +232,7 @@ export function TableEditor({ areaId }: { areaId: string }) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [focusedAreaId, areaId]);
+  }, [focusedPanelId, panelId]);
 
   // ===== 单元格按下手势：<5px 松手 = 选中（进入隐藏编辑态）；>5px 拖动 = 区域选择/移动手势预留（不进编辑）=====
   const cellPressRef = useRef<{ rowId: string; fieldId: string; x: number; y: number; active: boolean } | null>(null);
@@ -260,20 +260,20 @@ export function TableEditor({ areaId }: { areaId: string }) {
     cellPressRef.current = { rowId, fieldId, x: e.clientX, y: e.clientY, active: false };
   }, []);
 
-  /** 单元格松手（未拖动）→ 选中 + 标记面积聚焦（点 td 不冒泡到面积层，快捷键门控需显式标记）+
+  /** 单元格松手（未拖动）→ 选中 + 标记面板聚焦（点 td 不冒泡到面板层，快捷键门控需显式标记）+
    *  聚焦常驻输入框（已选中单元格的再次点击不触发重渲染，须直接聚焦防失焦后打字失效）。 */
   const releaseCellPress = useCallback(
     (rowId: string, fieldId: string) => {
       const p = cellPressRef.current;
       if (!p || p.active) return;
       cellPressRef.current = null;
-      useUiStateStore.getState().setFocusedArea(areaId);
+      useUiStateStore.getState().setFocusedPanel(panelId);
       selectCell(rowId, fieldId);
       rowsElRef.current
         ?.querySelector<HTMLTextAreaElement | HTMLInputElement>("[data-cell-editor]")
         ?.focus();
     },
-    [areaId, selectCell],
+    [panelId, selectCell],
   );
 
   // ===== 列宽 / 行高拖拽调整（指针模拟，与行拖拽同策略）=====
@@ -460,7 +460,7 @@ export function TableEditor({ areaId }: { areaId: string }) {
 
   return (
     <div className="h-full flex flex-col" style={{ background: "var(--bg-primary)" }}>
-      {/* 工具条（冲突/错误/保存状态均在面积 header） */}
+      {/* 工具条（冲突/错误/保存状态均在面板 header） */}
       <div
         className="flex items-center gap-2 px-3 py-1.5 border-b flex-shrink-0 text-xs"
         style={{ borderColor: "var(--border)", color: "var(--text-secondary)" }}

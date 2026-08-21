@@ -6,7 +6,7 @@
  *
  * 右键预览内任意处（图或遮罩）弹上下文菜单：复制图片（系统剪贴板）/ 下载图片（系统 Downloads 文件夹）——
  * 动作经 `onCopyImage`/`onDownloadImage` 回调（返回 Promise<boolean> 是否成功），
- * 结果在遮罩内底部提示（成功绿/失败红；全屏遮罩盖住面积 header，提示须就地可见）。
+ * 结果在遮罩内底部提示（成功绿/失败红；全屏遮罩盖住面板 header，提示须就地可见）。
  * 菜单打开时 Esc 只关菜单不连关预览；左右切换图片自动关闭菜单（防菜单停留在旧图位置）。
  */
 import { Copy, Download, ChevronLeft, ChevronRight, X } from "lucide-react";
@@ -152,7 +152,7 @@ export function ImageLightbox({
           </div>
         </>
       )}
-      {/* 右键菜单：z-[110] 高过遮罩 z-[100]（全屏遮罩盖住面积 header，错误须就地可见） */}
+      {/* 右键菜单：z-[110] 高过遮罩 z-[100]（全屏遮罩盖住面板 header，错误须就地可见） */}
       {menu && (
         <Menu x={menu.x} y={menu.y} onClose={() => setMenu(null)} zClass="z-[110]" widthClass="w-40">
           <MenuItem

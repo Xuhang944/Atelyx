@@ -4,7 +4,7 @@
  * 占据主编辑区（画布位置）：顶部文件操作条，正文 textarea。
  * - 加载：进入时读笔记正文（切换笔记重读）；加载完成前用户已输入则保留输入（不覆盖正在打的字）。
  * - 保存：输入 debounce 500ms 自动写回 `.md`；卸载/切走时 flush 未落盘输入（不静默丢弃）；
- *   写入完成时若已有更新输入则保持「保存中…」，避免误报「已自动保存」；状态写 vaultStore 由面积 header 展示。
+ *   写入完成时若已有更新输入则保持「保存中…」，避免误报「已自动保存」；状态写 vaultStore 由面板 header 展示。
  * - 分层：走 vaultStore（readNoteContent / saveNoteContent），不直调 service。
  */
 import { Check, MoreHorizontal, Pencil, Wand2 } from "lucide-react";
@@ -43,7 +43,7 @@ export function NoteEditor({ file }: { file: string }) {
   const saveNoteContent = useVaultStore((s) => s.saveNoteContent);
   // 外部修改感知：watcher note 事件 bump 序号（vaultStore.markNoteExternallyEdited），据此重读磁盘
   const externalEditSeq = useVaultStore((s) => s.externalNoteEdits[file] ?? 0);
-  // 保存状态存 vaultStore（面积 header 展示；本组件只写不持）
+  // 保存状态存 vaultStore（面板 header 展示；本组件只写不持）
   const noteSaveStatus = useVaultStore((s) => s.noteSaveStates[file]);
   const loadError = noteSaveStatus?.loadError ?? false;
   /** 协作态判定与应用身份：中转开关已开且已连接时，当前笔记进入 Yjs 协同编辑。 */
@@ -96,7 +96,7 @@ export function NoteEditor({ file }: { file: string }) {
   };
   /** 非用户编辑的 content 更新序号（加载完成/外部刷新/冲突重载时递增），MarkdownEditor 据此同步正文。 */
   const [editorSyncSeq, setEditorSyncSeq] = useState(0);
-  /** 外部修改冲突：本地有未保存改动 + 磁盘已被外部改过。状态存 vaultStore 由面积 header 展示，期间暂停自动保存防覆盖。 */
+  /** 外部修改冲突：本地有未保存改动 + 磁盘已被外部改过。状态存 vaultStore 由面板 header 展示，期间暂停自动保存防覆盖。 */
   const conflictRef = useRef(false);
   const setConflictState = useCallback(
     (v: boolean) => {
@@ -106,7 +106,7 @@ export function NoteEditor({ file }: { file: string }) {
     [file],
   );
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** 保存状态写 store（面积 header 展示；组件不持 state）。 */
+  /** 保存状态写 store（面板 header 展示；组件不持 state）。 */
   const setSaveStatus = useCallback(
     (state: SaveState, isLoadError = false) =>
       useVaultStore.getState().setNoteSaveState(file, { state, loadError: isLoadError }),
@@ -181,7 +181,7 @@ export function NoteEditor({ file }: { file: string }) {
       });
     return () => {
       cancelled = true;
-      // 卸载/切走：清除保存/冲突状态（面积 header 随视图不显示），再 flush 未落盘的输入（debounce 窗口内不静默丢弃）。
+      // 卸载/切走：清除保存/冲突状态（面板 header 随视图不显示），再 flush 未落盘的输入（debounce 窗口内不静默丢弃）。
       // 组件已卸载不能再 setState，fire-and-forget 写盘即可。
       // 冲突未决时跳过：外部已修改且未明确选择，不覆盖外部修改（提示条已告知）
       useVaultStore.getState().setNoteSaveState(file, null);
@@ -321,7 +321,7 @@ export function NoteEditor({ file }: { file: string }) {
       });
   }, [file, saveNoteContent, setConflictState, setSaveStatus]);
 
-  /** 面积 header 冲突条按钮 → vaultStore 序号请求 → 本组件订阅执行（与 externalNoteEdits 同构）。
+  /** 面板 header 冲突条按钮 → vaultStore 序号请求 → 本组件订阅执行（与 externalNoteEdits 同构）。
    * 首帧以当前序号为基线：只响应本实例挂载后发出的请求（防处理卸载前残留请求）。 */
   const resolveReq = useVaultStore((s) => s.noteConflictResolveReq[file]);
   const processedResolveSeqRef = useRef<number | undefined>(undefined);
@@ -415,7 +415,7 @@ export function NoteEditor({ file }: { file: string }) {
   const parsed = useMemo(() => parseFrontmatter(content), [content]);
 
   /** 协作文档绑定：进入协作态且内容已加载时，以正文（body，LF）为基线绑定 Y.Doc；
-   * 绑定幂等——已绑定（collabBinding 非空）不重复建 doc，多面积共享同一实例。
+   * 绑定幂等——已绑定（collabBinding 非空）不重复建 doc，多面板共享同一实例。
    * 身份（昵称/用户色）随设置变化可重设（bind 内部幂等更新 awareness）。 */
   useEffect(() => {
     if (!isCollab || collabBinding || !content) return;
@@ -429,7 +429,7 @@ export function NoteEditor({ file }: { file: string }) {
     );
   }, [isCollab, collabBinding, file, content, parsed.body, collabNickname, collabColor, collabDevice]);
 
-  /** 解绑协作文档：切笔记/卸载时释放一个引用（多面积各释放一次）。 */
+  /** 解绑协作文档：切笔记/卸载时释放一个引用（多面板各释放一次）。 */
   useEffect(() => {
     return () => {
       if (useNoteCollabStore.getState().bindings[file]) {
@@ -520,7 +520,7 @@ export function NoteEditor({ file }: { file: string }) {
       style={{ background: "var(--bg-primary)" }}
       onContextMenu={handleContentContextMenu}
     >
-      {/* 顶部条：右侧编辑/预览切换（保存状态已移至面积 header）。高度与表格/画布工具栏统一（py-1.5）。 */}
+      {/* 顶部条：右侧编辑/预览切换（保存状态已移至面板 header）。高度与表格/画布工具栏统一（py-1.5）。 */}
       <div
         className="px-3 py-1.5 flex items-center gap-1.5 text-xs flex-shrink-0 select-none"
         style={{ borderBottom: "1px solid var(--border)", color: "var(--text-muted)" }}

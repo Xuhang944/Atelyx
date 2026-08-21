@@ -1,17 +1,17 @@
 /**
- * 工作区面积网格：递归二分树渲染。
+ * 工作区面板网格：递归二分树渲染。
  *
  * Split → react-resizable-panels PanelGroup（非受控 + defaultSize，拖拽 onLayout 回写 sizes）；
- * Area → AreaFrame（标签组头部 + 视图承载）。布局操作经 uiStateStore（走既有 debounce 持久化链路）。
+ * Panel → PanelFrame（标签组头部 + 视图承载）。布局操作经 uiStateStore（走既有 debounce 持久化链路）。
  *
- * 分割/合并入口变化：边右键菜单已移除（分割收进面积 ≡ 菜单，面积清理走「关闭标签 → 空面积 →
- * 删除面积」），边回归纯 resize 手柄。
+ * 分割/合并入口变化：边右键菜单已移除（分割收进面板 ≡ 菜单，面板清理走「关闭标签 → 空面板 →
+ * 删除面板」），边回归纯 resize 手柄。
  *
- * 跨窗口拖拽：面积 DOM 标注 data-drop-area，panelStore 拖拽会话按 getBoundingClientRect 命中；
+ * 跨窗口拖拽：面板 DOM 标注 data-drop-panel，panelStore 拖拽会话按 getBoundingClientRect 命中；
  * 本组件渲染 drop 指示器 overlay（中部 = 加标签 / 四边缘 = 分割）。
  *
- * 性能：resize 拖拽每帧更新树 → 本组件重渲染，但 Area 叶子节点引用稳定
- * （utils 纯函数重建 Split 时保留叶子原引用）+ AreaFrame/PanelTabBar memo，
+ * 性能：resize 拖拽每帧更新树 → 本组件重渲染，但 Panel 叶子节点引用稳定
+ * （utils 纯函数重建 Split 时保留叶子原引用）+ PanelFrame/PanelTabBar memo，
  * 画布/编辑器在拖边期间不重渲染。
  */
 import { Fragment, useEffect, type CSSProperties } from "react";
@@ -19,8 +19,8 @@ import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { usePanelStore } from "@/stores/panelStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
-import { collectAreas, collectAllViews, findArea } from "@/utils/workspaceLayout";
-import { AreaFrame } from "@/components/layout/AreaFrame";
+import { collectPanels, collectAllViews, findPanel } from "@/utils/workspaceLayout";
+import { PanelFrame } from "@/components/layout/PanelFrame";
 import { DragGhost } from "@/components/layout/DragGhost";
 import type { LayoutNode, SplitNode } from "@/types";
 
@@ -29,35 +29,35 @@ function GridNode({
   node,
   onFocus,
   usedKey,
-  areaCount,
+  panelCount,
 }: {
   node: LayoutNode;
   onFocus: (id: string) => void;
   usedKey: string;
-  areaCount: number;
+  panelCount: number;
 }) {
-  if (node.kind === "area") {
-    return <AreaFrame node={node} onFocus={onFocus} usedKey={usedKey} areaCount={areaCount} />;
+  if (node.kind === "panel") {
+    return <PanelFrame node={node} onFocus={onFocus} usedKey={usedKey} panelCount={panelCount} />;
   }
-  return <SplitView node={node} onFocus={onFocus} usedKey={usedKey} areaCount={areaCount} />;
+  return <SplitView node={node} onFocus={onFocus} usedKey={usedKey} panelCount={panelCount} />;
 }
 
 function SplitView({
   node,
   onFocus,
   usedKey,
-  areaCount,
+  panelCount,
 }: {
   node: SplitNode;
   onFocus: (id: string) => void;
   usedKey: string;
-  areaCount: number;
+  panelCount: number;
 }) {
   const setLayoutSizes = useUiStateStore((s) => s.setLayoutSizes);
   // 非受控 + defaultSize：sizes 只作为挂载初值与持久化记录（拖拽后内部布局保持，onLayout 回写树）。
-  // key=split.id：布局操作（分割/删除面积/切换布局）产生新节点结构时强制重挂，defaultSize 重新生效。
+  // key=split.id：布局操作（分割/删除面板/切换布局）产生新节点结构时强制重挂，defaultSize 重新生效。
   // id + order 必须稳定且唯一：react-resizable-panels 对动态渲染的面板要求同时提供 id 与 order
-  // 才按 id 关联布局状态——缺一会在面板增删重挂后状态错位（拖边方向反/跨面积联动）。
+  // 才按 id 关联布局状态——缺一会在面板增删重挂后状态错位（拖边方向反/跨面板联动）。
   return (
     <PanelGroup
       key={node.id}
@@ -76,7 +76,7 @@ function SplitView({
             minSize={12}
             className="min-w-0 min-h-0"
           >
-            <GridNode node={child} onFocus={onFocus} usedKey={usedKey} areaCount={areaCount} />
+            <GridNode node={child} onFocus={onFocus} usedKey={usedKey} panelCount={panelCount} />
           </Panel>
         </Fragment>
       ))}
@@ -90,13 +90,13 @@ function SplitHandle() {
   return <PanelResizeHandle className="flex-shrink-0" />;
 }
 
-/** 跨窗口拖拽 drop 指示器：命中面积中部 = 加标签高亮整块；四边缘 = 分割带。 */
+/** 跨窗口拖拽 drop 指示器：命中面板中部 = 加标签高亮整块；四边缘 = 分割带。 */
 function DropIndicatorOverlay() {
   const dropTarget = usePanelStore((s) => s.dropTarget);
-  if (!dropTarget || dropTarget.kind !== "area" || dropTarget.window !== "main" || !dropTarget.areaId) {
+  if (!dropTarget || dropTarget.kind !== "panel" || dropTarget.window !== "main" || !dropTarget.panelId) {
     return null;
   }
-  const el = document.querySelector(`[data-drop-area="${dropTarget.areaId}"]`);
+  const el = document.querySelector(`[data-drop-panel="${dropTarget.panelId}"]`);
   if (!el) return null;
   const r = el.getBoundingClientRect();
   const zone = dropTarget.zone;
@@ -123,26 +123,26 @@ function DropIndicatorOverlay() {
   return <div style={style} />;
 }
 
-/** 工作区面积网格根：聚焦兜底 + 派发渲染。 */
+/** 工作区面板网格根：聚焦兜底 + 派发渲染。 */
 export function WorkspaceGrid({ tree }: { tree: LayoutNode }) {
-  const focusedAreaId = useUiStateStore((s) => s.focusedAreaId);
-  const setFocusedArea = useUiStateStore((s) => s.setFocusedArea);
+  const focusedPanelId = useUiStateStore((s) => s.focusedPanelId);
+  const setFocusedPanel = useUiStateStore((s) => s.setFocusedPanel);
   const detachedWindows = useUiStateStore((s) => s.detachedWindows);
 
-  // 聚焦兜底：聚焦面积被关闭/布局切换后失效 → 聚焦第一个面积
+  // 聚焦兜底：聚焦面板被关闭/布局切换后失效 → 聚焦第一个面板
   useEffect(() => {
-    if (!focusedAreaId || !findArea(tree, focusedAreaId)) {
-      const first = collectAreas(tree)[0];
-      if (first) setFocusedArea(first.id);
+    if (!focusedPanelId || !findPanel(tree, focusedPanelId)) {
+      const first = collectPanels(tree)[0];
+      if (first) setFocusedPanel(first.id);
     }
-  }, [focusedAreaId, tree, setFocusedArea]);
+  }, [focusedPanelId, tree, setFocusedPanel]);
 
-  const areas = collectAreas(tree);
-  // 稳定键（全局已占用视图集合的排序拼接，含撕裂窗口）：resize 拖拽时不变，AreaFrame memo 可跳过
+  const panels = collectPanels(tree);
+  // 稳定键（全局已占用视图集合的排序拼接，含撕裂窗口）：resize 拖拽时不变，PanelFrame memo 可跳过
   const usedKey = [...new Set(collectAllViews(tree, detachedWindows))].sort().join(",");
 
-  // 布局中无画布面积时清属性面板选中（画布未渲染，InspectorPanel 的 setCenter 定位无实例）
-  const hasCanvas = areas.some((a) => a.tabs.some((t) => t.view === "canvas"));
+  // 布局中无画布面板时清属性面板选中（画布未渲染，InspectorPanel 的 setCenter 定位无实例）
+  const hasCanvas = panels.some((p) => p.tabs.some((t) => t.view === "canvas"));
   useEffect(() => {
     if (!hasCanvas) useCanvasStore.getState().selectNode(null);
   }, [hasCanvas]);
@@ -151,9 +151,9 @@ export function WorkspaceGrid({ tree }: { tree: LayoutNode }) {
     <div className="h-full w-full" style={{ background: "var(--bg-primary)" }}>
       <GridNode
         node={tree}
-        onFocus={setFocusedArea}
+        onFocus={setFocusedPanel}
         usedKey={usedKey}
-        areaCount={areas.length}
+        panelCount={panels.length}
       />
       <DropIndicatorOverlay />
       <DragGhost />

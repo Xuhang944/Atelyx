@@ -356,7 +356,7 @@ async function applyFileDuplicate(file: string): Promise<string> {
   return newFile;
 }
 
-/** 笔记编辑器保存状态（面积 header 展示用；仅挂载中的编辑器写入、卸载清除）。 */
+/** 笔记编辑器保存状态（面板 header 展示用；仅挂载中的编辑器写入、卸载清除）。 */
 export type NoteSaveStatus = {
   state: "idle" | "edited" | "saving" | "saved" | "error";
   loadError: boolean;
@@ -485,15 +485,15 @@ interface VaultFileState {
   externalNoteEdits: Record<string, number>;
   /** watcher 收到 `.md` 外部变化事件时 bump 序号（软件内重命名旧路径事件由调用方跳过）。 */
   markNoteExternallyEdited: (file: string) => void;
-  /** 笔记编辑器保存状态（file → 状态；面积 header 读取，编辑器卸载/切文件时清除）。 */
+  /** 笔记编辑器保存状态（file → 状态；面板 header 读取，编辑器卸载/切文件时清除）。 */
   noteSaveStates: Record<string, NoteSaveStatus>;
   /** 更新笔记编辑器保存状态（null = 清除）。 */
   setNoteSaveState: (file: string, status: NoteSaveStatus | null) => void;
-  /** 笔记编辑器冲突状态（file → 是否冲突；面积 header 读取，编辑器卸载/切文件时清除）。 */
+  /** 笔记编辑器冲突状态（file → 是否冲突；面板 header 读取，编辑器卸载/切文件时清除）。 */
   noteConflicts: Record<string, boolean>;
   /** 更新笔记编辑器冲突状态（false = 清除）。 */
   setNoteConflict: (file: string, conflict: boolean) => void;
-  /** 笔记冲突解决请求（file → 递增序号 + 解决方式；面积 header 按钮发请求，NoteEditor 订阅执行）。 */
+  /** 笔记冲突解决请求（file → 递增序号 + 解决方式；面板 header 按钮发请求，NoteEditor 订阅执行）。 */
   noteConflictResolveReq: Record<string, { seq: number; keepLocal: boolean }>;
   /** 请求解决笔记冲突（keepLocal = 保留本地并保存；false = 重新加载丢弃本地）。 */
   resolveNoteConflict: (file: string, keepLocal: boolean) => void;

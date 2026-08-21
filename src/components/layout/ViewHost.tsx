@@ -1,9 +1,9 @@
 /**
- * 视图承载（主窗口面积与撕裂窗口共用）：按视图类型分派渲染 + 头部状态指示。
+ * 视图承载（主窗口面板与撕裂窗口共用）：按视图类型分派渲染 + 头部状态指示。
  *
- * hostId = 面积 id 或撕裂窗口 id（画布/表格聚焦门控用）。各视图内容由全局 store
+ * hostId = 面板 id 或撕裂窗口 id（画布/表格聚焦门控用）。各视图内容由全局 store
  * 驱动（画布/表格/笔记打开文件状态），本组件只做分派；`ViewStatusIndicator` 供
- * 面积头/撕裂窗口头渲染保存/冲突/错误状态。
+ * 面板头/撕裂窗口头渲染保存/冲突/错误状态。
  */
 import {
   FileText,
@@ -39,18 +39,18 @@ export const VIEW_META: Record<ViewKind, { label: string; icon: ReactNode }> = {
   search: { label: "搜索", icon: <Search size={13} /> },
   inspector: { label: "属性", icon: <Info size={13} /> },
   aichat: { label: "AI 对话", icon: <Sparkles size={13} /> },
-  empty: { label: "空面积", icon: <LayoutTemplate size={13} /> },
+  empty: { label: "空面板", icon: <LayoutTemplate size={13} /> },
 };
 
 /** 按视图类型分派渲染（空视图 = 占位引导）。 */
 export function ViewHost({ view, hostId }: { view: ViewKind; hostId: string }) {
   switch (view) {
     case "canvas":
-      return <CanvasView areaId={hostId} />;
+      return <CanvasView panelId={hostId} />;
     case "note":
       return <NoteView />;
     case "table":
-      return <TableView areaId={hostId} />;
+      return <TableView panelId={hostId} />;
     case "files":
       return <FilesView />;
     case "search":
@@ -60,7 +60,7 @@ export function ViewHost({ view, hostId }: { view: ViewKind; hostId: string }) {
     case "aichat":
       return <AiChatView />;
     default:
-      // 空面积：不渲染占位提示（右键头部/内容区可添加视图，≡ 菜单可分割/删除面积）
+      // 空面板：不渲染占位提示（右键头部/内容区可添加视图，≡ 菜单可分割/删除面板）
       return <div className="h-full w-full" style={{ background: "var(--bg-primary)" }} />;
   }
 }

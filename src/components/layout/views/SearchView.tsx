@@ -1,5 +1,5 @@
 /**
- * 搜索面板视图面积（薄包装：打开回调直连 appStore）。
+ * 搜索面板视图面板（薄包装：打开回调直连 appStore）。
  */
 import { SearchPanel } from "@/components/canvas/panels/SearchPanel";
 import { useAppStore } from "@/stores/appStore";

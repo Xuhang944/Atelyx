@@ -2,7 +2,7 @@
  * 撕裂窗口根（label `panel-<id>` 的独立窗口）。
  *
  * 与主窗口同代码入口，但只渲染单面板：自定义标题栏（窗口控制 + 拖动区）+ 标签头
- * （PanelTabBar，可多标签）+ 视图承载（ViewHost）。
+ * （PanelTabBar，可多标签）+ 视图承载（ViewHost）。≡ 菜单锁定 = 整块窗口锁定。
  *
  * - 启动：panelStore.initPanel 握手（panel-init-request → panel-init），未就绪前渲染占位
  * - 状态：标签组镜像在 panelStore（layout-changed 广播同步）；本地操作乐观应用 + 请求主窗口
@@ -21,7 +21,7 @@ import { PanelTabBar } from "@/components/layout/PanelTabBar";
 import { ViewHost, ViewStatusIndicator } from "@/components/layout/ViewHost";
 import { DragGhost } from "@/components/layout/DragGhost";
 import { TitleBarControls } from "@/components/common/TitleBarControls";
-import { AreaPlaceholder } from "@/components/layout/AreaPlaceholder";
+import { PanelPlaceholder } from "@/components/layout/PanelPlaceholder";
 import { LoadingScreen } from "@/components/common/LoadingScreen";
 import { useAppearance } from "@/hooks/useAppearance";
 import { VIEW_LABELS } from "@/constants/views";
@@ -70,7 +70,7 @@ export function PanelWindowRoot() {
 
   // 聚焦门控（画布/表格快捷键）：激活标签即聚焦本窗口（面板窗口不持久化聚焦）
   useEffect(() => {
-    useUiStateStore.getState().setFocusedArea(windowId);
+    useUiStateStore.getState().setFocusedPanel(windowId);
   }, [activeTabId, windowId]);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0] ?? null;
@@ -124,24 +124,33 @@ export function PanelWindowRoot() {
         tabs={tabs}
         activeTabId={activeTabId}
         usedViews={usedViews}
-        canDeleteArea={false}
+        canDeletePanel
         status={activeTab ? <ViewStatusIndicator view={activeTab.view} /> : null}
         onPickView={(view) => usePanelStore.getState().panelAddView(view)}
         onActivate={(tabId) => usePanelStore.getState().panelSetActive(tabId)}
         onCloseTab={(tabId) => usePanelStore.getState().panelCloseTab(tabId)}
-        onToggleLock={(tabId) => {
-          const t = tabs.find((x) => x.id === tabId);
-          if (t) usePanelStore.getState().panelSetLocked(tabId, !t.locked);
+        onCloseFile={(view) => {
+          // 关闭文件（标签保留）：文件状态全局唯一，按视图清全局当前文件状态
+          const app = useAppStore.getState();
+          if (view === "canvas") app.closeCanvas();
+          else if (view === "note") app.closeNote();
+          else if (view === "table") app.closeTable();
+        }}
+        onSetTabView={(tabId, view) => usePanelStore.getState().panelSetTabView(tabId, view)}
+        onTogglePanelLock={() => {
+          // 整块锁定/解锁撕裂窗口：所有标签统一设同一锁定值（空窗口无标签，无操作）
+          const target = !(tabs.length > 0 && tabs.every((t) => t.locked));
+          tabs.forEach((t) => usePanelStore.getState().panelSetLocked(t.id, target));
         }}
         onSplit={() => undefined}
-        onDeleteArea={() => undefined}
-        onFocusHost={() => useUiStateStore.getState().setFocusedArea(windowId)}
+        onDeletePanel={() => void closeWindow()}
+        onFocusHost={() => useUiStateStore.getState().setFocusedPanel(windowId)}
       />
       <div className="flex-1 min-h-0">
         {activeTab ? (
           <ViewHost view={activeTab.view} hostId={windowId} />
         ) : (
-          <AreaPlaceholder
+          <PanelPlaceholder
             icon={<LayoutTemplate size={64} strokeWidth={1.5} />}
             title="空面板"
             description="右键头部添加视图，或从主窗口拖入标签。"
