@@ -7,154 +7,199 @@
   <rect width="1280" height="720" fill="#1C1C1E"/>
   <rect width="1280" height="720" fill="url(#dots)"/>
   <rect x="24" y="24" width="1232" height="672" rx="14" fill="none" stroke="#D4AF37" stroke-opacity="0.4" stroke-width="1.5"/>
-  <text x="60" y="78" font-family="'Segoe UI', Arial, sans-serif" font-size="24" font-weight="700" fill="#D4AF37" letter-spacing="2">ATELYX</text>
-  <text x="1220" y="78" text-anchor="end" font-family="'Segoe UI', 'PingFang SC', Arial, sans-serif" font-size="16" fill="#8b8b8b">多维表格 · 时间线与预演</text>
+  <text x="60" y="70" font-family="'Segoe UI', Arial, sans-serif" font-size="24" font-weight="700" fill="#D4AF37" letter-spacing="2">ATELYX</text>
+  <text x="1220" y="70" text-anchor="end" font-family="'Segoe UI', 'PingFang SC', Arial, sans-serif" font-size="16" fill="#8b8b8b">多维表格 · 时间线与预演</text>
 
   <g font-family="'Segoe UI', 'PingFang SC', Arial, sans-serif">
-    <rect x="80" y="120" width="1080" height="36" rx="8" fill="#17171a" stroke="#2a2a2e"/>
-    <text x="104" y="143" font-size="13" fill="#7a9a7a">已保存</text>
-    <rect x="170" y="126" width="88" height="24" rx="12" fill="#D4AF37"/>
-    <text x="214" y="142" text-anchor="middle" font-size="12.5" font-weight="600" fill="#1C1C1E">表格视图</text>
-    <rect x="266" y="126" width="88" height="24" rx="12" fill="none" stroke="#5a5a5e"/>
-    <text x="310" y="142" text-anchor="middle" font-size="12.5" fill="#9a9a9e">时间线</text>
-    <rect x="1040" y="126" width="96" height="24" rx="12" fill="none" stroke="#5a5a5e"/>
-    <text x="1088" y="142" text-anchor="middle" font-size="12.5" fill="#9a9a9e">导出 xlsx</text>
+    <!-- file explorer sidebar -->
+    <rect x="54" y="120" width="236" height="508" rx="8" fill="#17171a" stroke="#2a2a2e"/>
+    <rect x="66" y="132" width="52" height="24" rx="6" fill="#D4AF37"/>
+    <text x="92" y="148" text-anchor="middle" font-size="12" font-weight="600" fill="#1C1C1E">文件</text>
+    <rect x="126" y="132" width="52" height="24" rx="6" fill="none" stroke="#5a5a5e"/>
+    <text x="152" y="148" text-anchor="middle" font-size="12" fill="#9a9a9e">搜索</text>
 
-    <rect x="120" y="176" width="44" height="34" fill="#222226" stroke="#2e2e32"/>
-    <rect x="164" y="176" width="200" height="34" fill="#222226" stroke="#2e2e32"/>
-    <rect x="364" y="176" width="84" height="34" fill="#222226" stroke="#2e2e32"/>
-    <rect x="448" y="176" width="96" height="34" fill="#222226" stroke="#2e2e32"/>
-    <rect x="544" y="176" width="120" height="34" fill="#222226" stroke="#2e2e32"/>
-    <rect x="664" y="176" width="220" height="34" fill="#222226" stroke="#2e2e32"/>
-    <rect x="884" y="176" width="196" height="34" fill="#222226" stroke="#2e2e32"/>
-    <text x="142" y="197" text-anchor="middle" font-size="13" font-weight="600" fill="#D4AF37">#</text>
-    <text x="264" y="197" text-anchor="middle" font-size="13" font-weight="600" fill="#D4AF37">名称</text>
-    <text x="406" y="197" text-anchor="middle" font-size="13" font-weight="600" fill="#D4AF37">镜号</text>
-    <text x="496" y="197" text-anchor="middle" font-size="13" font-weight="600" fill="#D4AF37">景别</text>
-    <text x="604" y="197" text-anchor="middle" font-size="13" font-weight="600" fill="#D4AF37">时长</text>
-    <text x="774" y="197" text-anchor="middle" font-size="13" font-weight="600" fill="#D4AF37">分镜图</text>
-    <text x="982" y="197" text-anchor="middle" font-size="13" font-weight="600" fill="#D4AF37">备注</text>
+    <rect x="74" y="184" width="92" height="22" rx="11" fill="#26262a"/>
+    <text x="120" y="200" text-anchor="middle" font-size="11.5" fill="#dcdcdc">项目A</text>
+    <rect x="74" y="212" width="164" height="26" rx="5" fill="#2b2b30" stroke="#D4AF37" stroke-opacity="0.6"/>
+    <circle cx="88" cy="225" r="3" fill="#D4AF37"/>
+    <text x="100" y="230" font-size="12.5" fill="#E5E0D5">分镜脚本.atlx</text>
+    <circle cx="88" cy="257" r="3" fill="#6a6a6e"/>
+    <text x="100" y="262" font-size="12.5" fill="#8b8b8b">台词表.atb</text>
+    <circle cx="88" cy="287" r="3" fill="#6a6a6e"/>
+    <text x="100" y="292" font-size="12.5" fill="#8b8b8b">大纲.md</text>
 
-    <rect x="120" y="210" width="44" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="164" y="210" width="200" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="364" y="210" width="84" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="448" y="210" width="96" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="544" y="210" width="120" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="664" y="210" width="220" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="884" y="210" width="196" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <text x="142" y="241" text-anchor="middle" font-size="12.5" fill="#8b8b8b">1</text>
-    <text x="178" y="241" font-size="13" fill="#dcdcdc">开场雨夜</text>
-    <text x="406" y="241" text-anchor="middle" font-size="13" fill="#dcdcdc">1</text>
-    <text x="496" y="241" text-anchor="middle" font-size="13" fill="#dcdcdc">全景</text>
-    <text x="604" y="241" text-anchor="middle" font-size="13" fill="#dcdcdc">00:05</text>
-    <rect x="682" y="219" width="64" height="36" rx="4" fill="#1f1f21" stroke="#2a2a2e"/>
-    <path d="M 686 255 L 700 229 L 712 245 L 720 236 L 742 255 Z" fill="none" stroke="#6a6a6e" stroke-width="1.6" stroke-linejoin="round"/>
-    <text x="896" y="241" font-size="13" fill="#dcdcdc">雨声 + 雷</text>
+    <rect x="74" y="314" width="92" height="22" rx="11" fill="#26262a"/>
+    <text x="120" y="330" text-anchor="middle" font-size="11.5" fill="#dcdcdc">素材</text>
+    <circle cx="88" cy="356" r="3" fill="#6a6a6e"/>
+    <text x="100" y="361" font-size="12.5" fill="#8b8b8b">参考图_01.jpg</text>
+    <circle cx="88" cy="386" r="3" fill="#6a6a6e"/>
+    <text x="100" y="391" font-size="12.5" fill="#8b8b8b">参考图_02.png</text>
 
-    <rect x="120" y="264" width="44" height="54" fill="#24242a" stroke="#2e2e32"/>
-    <rect x="164" y="264" width="200" height="54" fill="#24242a" stroke="#2e2e32"/>
-    <rect x="364" y="264" width="84" height="54" fill="#24242a" stroke="#2e2e32"/>
-    <rect x="448" y="264" width="96" height="54" fill="#24242a" stroke="#2e2e32"/>
-    <rect x="544" y="264" width="120" height="54" fill="#24242a" stroke="#2e2e32"/>
-    <rect x="664" y="264" width="220" height="54" fill="#24242a" stroke="#2e2e32"/>
-    <rect x="884" y="264" width="196" height="54" fill="#24242a" stroke="#2e2e32"/>
-    <rect x="120" y="264" width="4" height="54" fill="#D4AF37"/>
-    <text x="142" y="295" text-anchor="middle" font-size="12.5" fill="#8b8b8b">2</text>
-    <text x="178" y="295" font-size="13" fill="#dcdcdc">推进特写</text>
-    <text x="406" y="295" text-anchor="middle" font-size="13" fill="#dcdcdc">2</text>
-    <text x="496" y="295" text-anchor="middle" font-size="13" fill="#dcdcdc">特写</text>
-    <text x="604" y="295" text-anchor="middle" font-size="13" fill="#dcdcdc">00:12</text>
-    <rect x="682" y="273" width="64" height="36" rx="4" fill="#1f1f21" stroke="#2a2a2e"/>
-    <circle cx="704" cy="283" r="6" fill="none" stroke="#8a7440" stroke-width="1.6"/>
-    <path d="M 690 309 L 704 296 L 714 303 L 726 293 L 742 309 Z" fill="none" stroke="#6a6a6e" stroke-width="1.6" stroke-linejoin="round"/>
-    <text x="896" y="295" font-size="13" fill="#dcdcdc">脚步声逼近</text>
+    <rect x="74" y="414" width="92" height="22" rx="11" fill="#26262a"/>
+    <text x="120" y="430" text-anchor="middle" font-size="11.5" fill="#dcdcdc">笔记</text>
+    <circle cx="88" cy="456" r="3" fill="#6a6a6e"/>
+    <text x="100" y="461" font-size="12.5" fill="#8b8b8b">灵感速记.md</text>
 
-    <rect x="120" y="318" width="44" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="164" y="318" width="200" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="364" y="318" width="84" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="448" y="318" width="96" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="544" y="318" width="120" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="664" y="318" width="220" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="884" y="318" width="196" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <text x="142" y="349" text-anchor="middle" font-size="12.5" fill="#8b8b8b">3</text>
-    <text x="178" y="349" font-size="13" fill="#dcdcdc">手持跟拍</text>
-    <text x="406" y="349" text-anchor="middle" font-size="13" fill="#dcdcdc">3</text>
-    <text x="496" y="349" text-anchor="middle" font-size="13" fill="#dcdcdc">中景</text>
-    <text x="604" y="349" text-anchor="middle" font-size="13" fill="#dcdcdc">00:08</text>
-    <rect x="682" y="327" width="64" height="36" rx="4" fill="#1f1f21" stroke="#2a2a2e"/>
-    <circle cx="704" cy="345" r="8" fill="none" stroke="#8a7440" stroke-width="1.6"/>
-    <rect x="686" y="359" width="56" height="2" fill="#4a4a4e"/>
-    <text x="896" y="349" font-size="13" fill="#dcdcdc">晃动感</text>
+    <rect x="74" y="484" width="92" height="22" rx="11" fill="#26262a"/>
+    <text x="120" y="500" text-anchor="middle" font-size="11.5" fill="#dcdcdc">模板</text>
+    <circle cx="88" cy="526" r="3" fill="#6a6a6e"/>
+    <text x="100" y="531" font-size="12.5" fill="#8b8b8b">分镜模板.atb</text>
 
-    <rect x="120" y="372" width="44" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="164" y="372" width="200" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="364" y="372" width="84" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="448" y="372" width="96" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="544" y="372" width="120" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="664" y="372" width="220" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="884" y="372" width="196" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <text x="142" y="403" text-anchor="middle" font-size="12.5" fill="#8b8b8b">4</text>
-    <text x="178" y="403" font-size="13" fill="#dcdcdc">黑场转场</text>
-    <text x="406" y="403" text-anchor="middle" font-size="13" fill="#dcdcdc">4</text>
-    <text x="496" y="403" text-anchor="middle" font-size="13" fill="#dcdcdc">空镜</text>
-    <text x="604" y="403" text-anchor="middle" font-size="13" fill="#dcdcdc">00:03</text>
-    <text x="896" y="403" font-size="13" fill="#8b8b8b">静默</text>
+    <!-- main panel -->
+    <rect x="302" y="120" width="924" height="508" rx="8" fill="#1a1a1d" stroke="#2a2a2e"/>
+    <!-- tab chip -->
+    <rect x="302" y="120" width="188" height="30" rx="8" fill="#202024"/>
+    <text x="322" y="140" font-size="12.5" font-weight="600" fill="#E5E0D5">故事板 · 分镜表</text>
+    <text x="476" y="140" font-size="13" fill="#8b8b8b">×</text>
+    <text x="1200" y="140" text-anchor="end" font-size="12" fill="#6a6a6e">已自动保存</text>
 
-    <rect x="120" y="426" width="44" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="164" y="426" width="200" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="364" y="426" width="84" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="448" y="426" width="96" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="544" y="426" width="120" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="664" y="426" width="220" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <rect x="884" y="426" width="196" height="54" fill="#1e1e21" stroke="#2e2e32"/>
-    <text x="142" y="457" text-anchor="middle" font-size="12.5" fill="#8b8b8b">5</text>
-    <text x="178" y="457" font-size="13" fill="#dcdcdc">对峙</text>
-    <text x="406" y="457" text-anchor="middle" font-size="13" fill="#dcdcdc">5</text>
-    <text x="496" y="457" text-anchor="middle" font-size="13" fill="#dcdcdc">双人</text>
-    <text x="604" y="457" text-anchor="middle" font-size="13" fill="#dcdcdc">00:14</text>
-    <rect x="682" y="435" width="64" height="36" rx="4" fill="#1f1f21" stroke="#2a2a2e"/>
-    <rect x="758" y="435" width="64" height="36" rx="4" fill="#1f1f21" stroke="#2a2a2e"/>
-    <circle cx="700" cy="447" r="6" fill="none" stroke="#8a7440" stroke-width="1.6"/>
-    <path d="M 688 471 L 700 460 L 708 465 L 742 471 Z" fill="none" stroke="#6a6a6e" stroke-width="1.6" stroke-linejoin="round"/>
-    <circle cx="776" cy="447" r="6" fill="none" stroke="#8a7440" stroke-width="1.6"/>
-    <text x="812" y="456" font-size="11.5" font-weight="600" fill="#D4AF37">2/3</text>
-    <text x="896" y="457" font-size="13" fill="#dcdcdc">对话戏</text>
+    <!-- toolbar -->
+    <rect x="320" y="160" width="88" height="26" rx="13" fill="#D4AF37"/>
+    <text x="364" y="178" text-anchor="middle" font-size="12" font-weight="600" fill="#1C1C1E">表格</text>
+    <rect x="416" y="160" width="88" height="26" rx="13" fill="none" stroke="#5a5a5e"/>
+    <text x="460" y="178" text-anchor="middle" font-size="12" fill="#9a9a9e">时间线</text>
+    <line x1="524" y1="164" x2="524" y2="182" stroke="#3a3a3e"/>
+    <text x="544" y="178" font-size="12.5" fill="#8b8b8b">100%</text>
+    <text x="628" y="178" font-size="12.5" fill="#8b8b8b">5 行 · 7 列</text>
+    <text x="1210" y="178" text-anchor="end" font-size="13" fill="#8b8b8b">▾</text>
 
-    <rect x="120" y="492" width="44" height="34" fill="#17171a" stroke="#2e2e32"/>
-    <rect x="164" y="492" width="200" height="34" fill="#17171a" stroke="#2e2e32"/>
-    <rect x="364" y="492" width="84" height="34" fill="#17171a" stroke="#2e2e32"/>
-    <rect x="448" y="492" width="96" height="34" fill="#17171a" stroke="#2e2e32"/>
-    <rect x="544" y="492" width="120" height="34" fill="#17171a" stroke="#2e2e32"/>
-    <rect x="664" y="492" width="220" height="34" fill="#17171a" stroke="#2e2e32"/>
-    <rect x="884" y="492" width="196" height="34" fill="#17171a" stroke="#2e2e32"/>
-    <text x="142" y="514" text-anchor="middle" font-size="12.5" font-weight="600" fill="#D4AF37">Σ</text>
-    <text x="264" y="514" text-anchor="middle" font-size="12.5" fill="#8b8b8b">计数 5</text>
-    <text x="406" y="514" text-anchor="middle" font-size="12.5" fill="#8b8b8b">计数 5</text>
-    <text x="496" y="514" text-anchor="middle" font-size="12.5" fill="#8b8b8b">—</text>
-    <text x="604" y="514" text-anchor="middle" font-size="12.5" font-weight="600" fill="#D4AF37">求和 00:42</text>
-    <text x="774" y="514" text-anchor="middle" font-size="12.5" fill="#8b8b8b">计数 5</text>
-    <text x="982" y="514" text-anchor="middle" font-size="12.5" fill="#8b8b8b">—</text>
+    <!-- table header -->
+    <rect x="312" y="196" width="36" height="34" fill="#202024"/>
+    <rect x="348" y="196" width="72" height="34" fill="#202024"/>
+    <rect x="420" y="196" width="205" height="34" fill="#202024"/>
+    <rect x="625" y="196" width="180" height="34" fill="#202024"/>
+    <rect x="805" y="196" width="62" height="34" fill="#202024"/>
+    <rect x="867" y="196" width="62" height="34" fill="#202024"/>
+    <rect x="929" y="196" width="60" height="34" fill="#202024"/>
+    <rect x="989" y="196" width="210" height="34" fill="#202024"/>
+    <text x="330" y="218" text-anchor="middle" font-size="12.5" font-weight="600" fill="#D4AF37">#</text>
+    <text x="384" y="218" text-anchor="middle" font-size="12.5" font-weight="600" fill="#D4AF37">参考图片</text>
+    <text x="522" y="218" text-anchor="middle" font-size="12.5" font-weight="600" fill="#D4AF37">画面描述</text>
+    <text x="715" y="218" text-anchor="middle" font-size="12.5" font-weight="600" fill="#D4AF37">台词</text>
+    <text x="836" y="218" text-anchor="middle" font-size="12.5" font-weight="600" fill="#D4AF37">景别</text>
+    <text x="898" y="218" text-anchor="middle" font-size="12.5" font-weight="600" fill="#D4AF37">摄法</text>
+    <text x="959" y="218" text-anchor="middle" font-size="12.5" font-weight="600" fill="#D4AF37">机位</text>
+    <text x="1094" y="218" text-anchor="middle" font-size="12.5" font-weight="600" fill="#D4AF37">音效</text>
 
-    <text x="120" y="566" font-size="15" font-weight="600" fill="#E5E0D5">时间线视图</text>
-    <circle cx="136" cy="626" r="14" fill="#D4AF37"/>
-    <path d="M 131 620 L 131 632 L 142 626 Z" fill="#1C1C1E"/>
-    <text x="160" y="631" font-size="13" fill="#8b8b8b">00:05 / 00:42</text>
-    <rect x="280" y="606" width="900" height="48" rx="8" fill="#17171a" stroke="#2a2a2e"/>
-    <rect x="290" y="616" width="100" height="28" rx="4" fill="#252528" stroke="#8a7440"/>
-    <rect x="400" y="616" width="240" height="28" rx="4" fill="#2b2822" stroke="#B8962E"/>
-    <rect x="650" y="616" width="160" height="28" rx="4" fill="#252528" stroke="#8a7440"/>
-    <rect x="820" y="616" width="60" height="28" rx="4" fill="#252528" stroke="#8a7440"/>
-    <rect x="890" y="616" width="280" height="28" rx="4" fill="#252528" stroke="#8a7440"/>
-    <text x="340" y="634" text-anchor="middle" font-size="12" fill="#9a9a9e">1</text>
-    <text x="520" y="634" text-anchor="middle" font-size="12" fill="#9a9a9e">2</text>
-    <text x="730" y="634" text-anchor="middle" font-size="12" fill="#9a9a9e">3</text>
-    <text x="850" y="634" text-anchor="middle" font-size="12" fill="#9a9a9e">4</text>
-    <text x="1030" y="634" text-anchor="middle" font-size="12" fill="#9a9a9e">5</text>
-    <line x1="390" y1="602" x2="390" y2="658" stroke="#D4AF37" stroke-width="2"/>
-    <circle cx="390" cy="598" r="5" fill="#D4AF37"/>
-    <text x="290" y="680" font-size="11.5" fill="#6a6a6e">0s</text>
-    <text x="530" y="680" font-size="11.5" fill="#6a6a6e">12s</text>
-    <text x="770" y="680" font-size="11.5" fill="#6a6a6e">24s</text>
-    <text x="1010" y="680" font-size="11.5" fill="#6a6a6e">36s</text>
+    <!-- row 1 (selected) -->
+    <rect x="312" y="230" width="36" height="56" fill="#24242a"/>
+    <rect x="348" y="230" width="72" height="56" fill="#24242a"/>
+    <rect x="420" y="230" width="205" height="56" fill="#24242a"/>
+    <rect x="625" y="230" width="180" height="56" fill="#24242a"/>
+    <rect x="805" y="230" width="62" height="56" fill="#24242a"/>
+    <rect x="867" y="230" width="62" height="56" fill="#24242a"/>
+    <rect x="929" y="230" width="60" height="56" fill="#24242a"/>
+    <rect x="989" y="230" width="210" height="56" fill="#24242a"/>
+    <rect x="312" y="230" width="3" height="56" fill="#D4AF37"/>
+    <rect x="356" y="238" width="56" height="40" rx="4" fill="#1f1f21" stroke="#3a3a3e"/>
+    <path d="M 362 274 L 376 250 L 386 265 L 394 256 L 408 274 Z" fill="none" stroke="#6a6a6e" stroke-width="1.5" stroke-linejoin="round"/>
+    <circle cx="398" cy="246" r="3.5" fill="none" stroke="#8a7440" stroke-width="1.4"/>
+    <text x="330" y="263" text-anchor="middle" font-size="12" fill="#8b8b8b">1</text>
+    <text x="432" y="263" font-size="12.5" fill="#dcdcdc">角色低头，指尖攥紧衣角</text>
+    <text x="640" y="263" font-size="12.5" fill="#dcdcdc">（沉默）……就这样吧。</text>
+    <text x="836" y="263" text-anchor="middle" font-size="12.5" fill="#dcdcdc">近景</text>
+    <text x="898" y="263" text-anchor="middle" font-size="12.5" fill="#dcdcdc">固定</text>
+    <text x="959" y="263" text-anchor="middle" font-size="12.5" fill="#dcdcdc">正面</text>
+    <text x="1006" y="263" font-size="12.5" fill="#dcdcdc">雨声渐弱</text>
+
+    <!-- row 2 -->
+    <rect x="312" y="286" width="36" height="56" fill="#1e1e21"/>
+    <rect x="348" y="286" width="72" height="56" fill="#1e1e21"/>
+    <rect x="420" y="286" width="205" height="56" fill="#1e1e21"/>
+    <rect x="625" y="286" width="180" height="56" fill="#1e1e21"/>
+    <rect x="805" y="286" width="62" height="56" fill="#1e1e21"/>
+    <rect x="867" y="286" width="62" height="56" fill="#1e1e21"/>
+    <rect x="929" y="286" width="60" height="56" fill="#1e1e21"/>
+    <rect x="989" y="286" width="210" height="56" fill="#1e1e21"/>
+    <rect x="356" y="294" width="56" height="40" rx="4" fill="#1f1f21" stroke="#2a2a2e"/>
+    <circle cx="384" cy="310" r="7" fill="#1c1c1e" stroke="#8a7440" stroke-width="1.5"/>
+    <path d="M 362 334 L 376 316 L 386 326 L 396 318 L 408 334 Z" fill="none" stroke="#6a6a6e" stroke-width="1.5" stroke-linejoin="round"/>
+    <text x="330" y="319" text-anchor="middle" font-size="12" fill="#8b8b8b">2</text>
+    <text x="432" y="319" font-size="12.5" fill="#dcdcdc">两人隔桌而坐，目光交汇</text>
+    <text x="640" y="319" font-size="12.5" fill="#dcdcdc">（轻声）你还回来吗。</text>
+    <text x="836" y="319" text-anchor="middle" font-size="12.5" fill="#dcdcdc">中景</text>
+    <text x="898" y="319" text-anchor="middle" font-size="12.5" fill="#dcdcdc">固定</text>
+    <text x="959" y="319" text-anchor="middle" font-size="12.5" fill="#dcdcdc">侧面</text>
+    <text x="1006" y="319" font-size="12.5" fill="#dcdcdc">钟表滴答</text>
+
+    <!-- row 3 -->
+    <rect x="312" y="342" width="36" height="56" fill="#1e1e21"/>
+    <rect x="348" y="342" width="72" height="56" fill="#1e1e21"/>
+    <rect x="420" y="342" width="205" height="56" fill="#1e1e21"/>
+    <rect x="625" y="342" width="180" height="56" fill="#1e1e21"/>
+    <rect x="805" y="342" width="62" height="56" fill="#1e1e21"/>
+    <rect x="867" y="342" width="62" height="56" fill="#1e1e21"/>
+    <rect x="929" y="342" width="60" height="56" fill="#1e1e21"/>
+    <rect x="989" y="342" width="210" height="56" fill="#1e1e21"/>
+    <rect x="356" y="350" width="56" height="40" rx="4" fill="#1f1f21" stroke="#2a2a2e"/>
+    <path d="M 362 390 L 376 364 L 386 378 L 396 368 L 408 390 Z" fill="none" stroke="#6a6a6e" stroke-width="1.5" stroke-linejoin="round"/>
+    <text x="330" y="375" text-anchor="middle" font-size="12" fill="#8b8b8b">3</text>
+    <text x="432" y="375" font-size="12.5" fill="#dcdcdc">人物转身走向门口，背影</text>
+    <text x="640" y="375" font-size="12.5" fill="#dcdcdc">……再见。</text>
+    <text x="836" y="375" text-anchor="middle" font-size="12.5" fill="#dcdcdc">全景</text>
+    <text x="898" y="375" text-anchor="middle" font-size="12.5" fill="#dcdcdc">手持跟拍</text>
+    <text x="959" y="375" text-anchor="middle" font-size="12.5" fill="#dcdcdc">背面</text>
+    <text x="1006" y="375" font-size="12.5" fill="#dcdcdc">关门声</text>
+
+    <!-- row 4 -->
+    <rect x="312" y="398" width="36" height="56" fill="#1e1e21"/>
+    <rect x="348" y="398" width="72" height="56" fill="#1e1e21"/>
+    <rect x="420" y="398" width="205" height="56" fill="#1e1e21"/>
+    <rect x="625" y="398" width="180" height="56" fill="#1e1e21"/>
+    <rect x="805" y="398" width="62" height="56" fill="#1e1e21"/>
+    <rect x="867" y="398" width="62" height="56" fill="#1e1e21"/>
+    <rect x="929" y="398" width="60" height="56" fill="#1e1e21"/>
+    <rect x="989" y="398" width="210" height="56" fill="#1e1e21"/>
+    <rect x="356" y="406" width="56" height="40" rx="4" fill="#1f1f21" stroke="#2a2a2e"/>
+    <path d="M 362 446 L 376 420 L 386 434 L 396 424 L 408 446 Z" fill="none" stroke="#6a6a6e" stroke-width="1.5" stroke-linejoin="round"/>
+    <circle cx="384" cy="414" r="4" fill="none" stroke="#8a7440" stroke-width="1.4"/>
+    <text x="330" y="431" text-anchor="middle" font-size="12" fill="#8b8b8b">4</text>
+    <text x="432" y="431" font-size="12.5" fill="#dcdcdc">手部特写，指节微微发抖</text>
+    <text x="640" y="431" font-size="12.5" fill="#dcdcdc">（独白）我早该开口</text>
+    <text x="836" y="431" text-anchor="middle" font-size="12.5" fill="#dcdcdc">特写</text>
+    <text x="898" y="431" text-anchor="middle" font-size="12.5" fill="#dcdcdc">缓推</text>
+    <text x="959" y="431" text-anchor="middle" font-size="12.5" fill="#dcdcdc">过肩</text>
+    <text x="1006" y="431" font-size="12.5" fill="#dcdcdc">心跳声</text>
+
+    <!-- row 5 -->
+    <rect x="312" y="454" width="36" height="56" fill="#1e1e21"/>
+    <rect x="348" y="454" width="72" height="56" fill="#1e1e21"/>
+    <rect x="420" y="454" width="205" height="56" fill="#1e1e21"/>
+    <rect x="625" y="454" width="180" height="56" fill="#1e1e21"/>
+    <rect x="805" y="454" width="62" height="56" fill="#1e1e21"/>
+    <rect x="867" y="454" width="62" height="56" fill="#1e1e21"/>
+    <rect x="929" y="454" width="60" height="56" fill="#1e1e21"/>
+    <rect x="989" y="454" width="210" height="56" fill="#1e1e21"/>
+    <rect x="356" y="462" width="56" height="40" rx="4" fill="#1f1f21" stroke="#2a2a2e"/>
+    <path d="M 362 502 L 376 476 L 386 490 L 396 480 L 408 502 Z" fill="none" stroke="#6a6a6e" stroke-width="1.5" stroke-linejoin="round"/>
+    <text x="330" y="487" text-anchor="middle" font-size="12" fill="#8b8b8b">5</text>
+    <text x="432" y="487" font-size="12.5" fill="#dcdcdc">街灯下，雨点落在肩头</text>
+    <text x="640" y="487" font-size="12.5" fill="#dcdcdc">（默念）又是这样的夜</text>
+    <text x="836" y="487" text-anchor="middle" font-size="12.5" fill="#dcdcdc">空镜</text>
+    <text x="898" y="487" text-anchor="middle" font-size="12.5" fill="#dcdcdc">摇拍</text>
+    <text x="959" y="487" text-anchor="middle" font-size="12.5" fill="#dcdcdc">俯拍</text>
+    <text x="1006" y="487" font-size="12.5" fill="#dcdcdc">电流声</text>
+
+    <!-- timeline / preview -->
+    <text x="330" y="534" font-size="14" font-weight="600" fill="#E5E0D5">时间线视图</text>
+    <circle cx="344" cy="570" r="13" fill="#D4AF37"/>
+    <path d="M 339 564 L 339 576 L 350 570 Z" fill="#1C1C1E"/>
+    <text x="368" y="575" font-size="12" fill="#8b8b8b">00:08 / 00:28</text>
+    <rect x="480" y="550" width="730" height="42" rx="8" fill="#17171a" stroke="#2a2a2e"/>
+    <rect x="490" y="557" width="108" height="25" rx="4" fill="#252528" stroke="#8a7440"/>
+    <rect x="606" y="557" width="172" height="25" rx="4" fill="#2b2822" stroke="#B8962E"/>
+    <rect x="786" y="557" width="108" height="25" rx="4" fill="#252528" stroke="#8a7440"/>
+    <rect x="902" y="557" width="80" height="25" rx="4" fill="#252528" stroke="#8a7440"/>
+    <rect x="990" y="557" width="210" height="25" rx="4" fill="#252528" stroke="#8a7440"/>
+    <text x="544" y="574" text-anchor="middle" font-size="11.5" fill="#9a9a9e">1</text>
+    <text x="692" y="574" text-anchor="middle" font-size="11.5" fill="#9a9a9e">2</text>
+    <text x="840" y="574" text-anchor="middle" font-size="11.5" fill="#9a9a9e">3</text>
+    <text x="942" y="574" text-anchor="middle" font-size="11.5" fill="#9a9a9e">4</text>
+    <text x="1095" y="574" text-anchor="middle" font-size="11.5" fill="#9a9a9e">5</text>
+    <line x1="616" y1="546" x2="616" y2="596" stroke="#D4AF37" stroke-width="2"/>
+    <circle cx="616" cy="542" r="4.5" fill="#D4AF37"/>
+    <text x="480" y="614" font-size="11.5" fill="#6a6a6e">0s</text>
+    <text x="732" y="614" font-size="11.5" fill="#6a6a6e">14s</text>
+    <text x="984" y="614" font-size="11.5" fill="#6a6a6e">28s</text>
   </g>
 </svg>
