@@ -256,6 +256,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tauri-plugin-store",
  "tauri-plugin-updater",
+ "winapi",
 ]
 
 [[package]]

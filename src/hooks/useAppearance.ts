@@ -1,0 +1,54 @@
+/**
+ * 应用外观应用（主题/字号/字体/强调色 + 系统主题跟随）。
+ * 主窗口（App）与撕裂窗口（PanelWindowRoot）共用：撕裂窗口是独立 webview，
+ * 需要自行应用同一套外观（settingsStore 应用级配置，两窗口各自读盘）。
+ */
+import { useEffect, useState } from "react";
+import { useSettingsStore } from "@/stores/settingsStore";
+import { darkenHex, foregroundFor } from "@/utils/color";
+
+export function useAppearance(): void {
+  const theme = useSettingsStore((s) => s.theme);
+  const fontSize = useSettingsStore((s) => s.fontSize);
+  const fontFamily = useSettingsStore((s) => s.fontFamily);
+  const accentColor = useSettingsStore((s) => s.accentColor);
+
+  // 跟随系统主题：监听 prefers-color-scheme 变化（theme === "system" 时实时生效）
+  const [systemDark, setSystemDark] = useState(() =>
+    window.matchMedia("(prefers-color-scheme: dark)").matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  const effectiveTheme = theme === "system" ? (systemDark ? "dark" : "light") : theme;
+
+  // 主题 class 应用（分层：store 只存状态，DOM 副作用归 hook）
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", effectiveTheme === "dark");
+  }, [effectiveTheme]);
+
+  // 字体（应用级）：覆盖 :root font-size / font-family，空值回默认（CSS 默认）
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.fontSize = fontSize ? `${fontSize}px` : "";
+    root.style.fontFamily = fontFamily ?? "";
+  }, [fontSize, fontFamily]);
+
+  // 强调色（应用级）：覆盖 --accent 系列变量，空值回默认金色；深/浅主题共用同一份
+  // （:root 与 :root.dark 均不单独定义 accent，inline style 优先级最高对两主题同时生效）
+  useEffect(() => {
+    const root = document.documentElement;
+    if (accentColor && /^#[0-9a-fA-F]{6}$/.test(accentColor)) {
+      root.style.setProperty("--accent", accentColor);
+      root.style.setProperty("--accent-hover", darkenHex(accentColor));
+      root.style.setProperty("--accent-fg", foregroundFor(accentColor));
+    } else {
+      root.style.removeProperty("--accent");
+      root.style.removeProperty("--accent-hover");
+      root.style.removeProperty("--accent-fg");
+    }
+  }, [accentColor]);
+}

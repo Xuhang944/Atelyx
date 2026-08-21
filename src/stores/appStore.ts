@@ -448,9 +448,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   openTable: (file, title) => {
     set({ currentTableFile: file, currentTableTitle: title });
     useUiStateStore.getState().recordOpenTable(file);
-    if (useTableStore.getState().tableFile !== file) {
-      void useTableStore.getState().load(file);
-    }
+    // 内容加载由 TableView 自载（同 CanvasView：openCanvas 不加载，视图挂载时按文件读盘）——
+    // 撕裂窗口只镜像文件路径，须由视图统一承担加载；此处不 load 防主窗口切表时重复读盘
   },
   closeTable: () => {
     set({ currentTableFile: null, currentTableTitle: "" });

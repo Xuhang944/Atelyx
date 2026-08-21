@@ -84,12 +84,17 @@ export { UI_STATE_SCHEMA, type AppUiState } from "./uiState";
 export {
   VIEW_KINDS,
   createDefaultLayouts,
+  createTab,
+  createArea,
+  createEmptyArea,
   type ViewKind,
   type SplitDirection,
+  type TabItem,
   type AreaNode,
   type SplitNode,
   type LayoutNode,
   type WorkspaceLayout,
+  type DetachedWindow,
 } from "./workspaceLayout";
 
 export type {

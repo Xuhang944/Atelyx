@@ -105,6 +105,10 @@ pub fn run() {
             // 联网搜索代理（Tavily/SearXNG，Rust 侧请求绕 CORS + key 不进 WebView）
             commands::search::search_web,
             commands::web::fetch_web,
+            // 撕裂面板窗口（多窗口面板体系：可停靠标签组 + 可撕裂多窗口）
+            commands::windows::create_panel_window,
+            // 跨窗口拖拽释放检测（物理左键状态轮询，见 commands/windows.rs）
+            commands::windows::is_mouse_left_down,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

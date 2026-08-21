@@ -3,6 +3,8 @@
  */
 import { getCurrentWindow, type Window } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/dpi";
+import { invoke } from "@tauri-apps/api/core";
+import type { WindowRect } from "@/services/windowBus";
 
 /** 启动页窗口尺寸（固定、不可调整）。 */
 const STARTUP_WINDOW = { width: 960, height: 640 };
@@ -82,4 +84,79 @@ export async function applyWorkspaceWindow(): Promise<void> {
   // 先 resize 再设最小尺寸：窗口已到默认尺寸，setMinSize 不触发强制拉大
   // （Windows 上 min > 当前尺寸会立即左上锚定放大，导致跳变）
   await win.setMinSize(minSize);
+}
+
+/** 创建撕裂面板窗口（Rust `commands/windows.rs::create_panel_window`）。
+ * label = `panel-<id>`，与 ui-state 的 DetachedWindow.id 对应；url 同主入口，前端按 label 分流渲染。 */
+export async function createPanelWindow(
+  windowId: string,
+  title: string,
+  bounds: WindowRect,
+): Promise<boolean> {
+  try {
+    return await invoke<boolean>("create_panel_window", {
+      label: `panel-${windowId}`,
+      title,
+      bounds,
+    });
+  } catch (e) {
+    console.error("创建撕裂窗口失败", e);
+    return false;
+  }
+}
+
+/** 读取当前窗口屏幕位置（logical px；拖拽屏幕坐标换算用）。 */
+export async function getCurrentOuterPosition(): Promise<{ x: number; y: number }> {
+  const win = getCurrentWindow();
+  const pos = await win.outerPosition();
+  return pos.toLogical(await win.scaleFactor());
+}
+
+/** 监听当前窗口移动（缓存窗口位置用；返回取消订阅函数）。 */
+export async function onWindowMoved(handler: () => void): Promise<() => void> {
+  return getCurrentWindow().onMoved(handler);
+}
+
+/** 设置当前窗口标题（撕裂窗口随激活标签更新）。 */
+export async function setWindowTitle(title: string): Promise<void> {
+  await getCurrentWindow().setTitle(title);
+}
+
+/** 读取当前窗口外框尺寸（logical px）。 */
+export async function getCurrentOuterSize(): Promise<{ width: number; height: number }> {
+  const win = getCurrentWindow();
+  const size = await win.outerSize();
+  return size.toLogical(await win.scaleFactor());
+}
+
+/** 当前窗口 label（主窗口 "main"；撕裂窗口 "panel-<id>"；App 入口分流用）。 */
+export function getCurrentWindowLabel(): string {
+  return getCurrentWindow().label;
+}
+
+/** 鼠标左键当前是否按下（跨窗口拖拽释放检测；仅 Windows 支持，其他平台返回 null）。
+ * 标签拖出窗口后 webview 收不到窗口外 pointerup，前端拖拽活跃期间轮询本命令物理判定释放。 */
+export async function isMouseLeftDown(): Promise<boolean | null> {
+  try {
+    const down = await invoke<boolean | null>("is_mouse_left_down");
+    return down ?? null;
+  } catch (e) {
+    console.error("查询鼠标左键状态失败", e);
+    return null;
+  }
+}
+
+/** 按 label 关闭其他窗口（主窗口回收被拖空/移除的撕裂窗口用；窗口不存在时静默跳过）。 */
+export async function closeWindowByLabel(label: string): Promise<void> {
+  try {
+    const { getAllWindows } = await import("@tauri-apps/api/window");
+    for (const win of await getAllWindows()) {
+      if (win.label === label) {
+        await win.close();
+        return;
+      }
+    }
+  } catch (e) {
+    console.error(`关闭窗口 ${label} 失败`, e);
+  }
 }

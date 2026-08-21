@@ -3,9 +3,12 @@ import { ReactFlowProvider } from "@xyflow/react";
 import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useVaultStore } from "@/stores/vaultStore";
-import { useCollabStore } from "@/stores/collabStore";
-import { darkenHex, foregroundFor } from "@/utils/color";
+import { PanelWindowRoot } from "@/components/layout/PanelWindowRoot";
+import { ErrorBoundary } from "@/components/common/ErrorBoundary";
 import { LoadingScreen } from "@/components/common/LoadingScreen";
+import { useAppearance } from "@/hooks/useAppearance";
+import { getCurrentWindowLabel } from "@/services/window";
+import { PANEL_LABEL_PREFIX } from "@/stores/panelStore";
 
 // 页面 lazy 分割：主包不含 CodeMirror/KaTeX/高亮语言包等重库，LoadingScreen 更快出现。
 // ReactFlowProvider 留在 App 层（页面组件自身的 useReactFlow hooks 需要它在组件外；
@@ -29,56 +32,16 @@ function applyWindowShape(): Promise<void> {
   windowShapeQueue = windowShapeQueue.then(() => apply().catch(() => {}));
   return windowShapeQueue;
 }
-export default function App() {
+
+/** 主窗口应用主体（启动页 + 工作区 + booting 流程）。 */
+function MainWorkspaceApp() {
   const view = useAppStore((s) => s.view);
   const init = useAppStore((s) => s.init);
   const loadSettings = useSettingsStore((s) => s.load);
-  const theme = useSettingsStore((s) => s.theme);
-  const fontSize = useSettingsStore((s) => s.fontSize);
-  const fontFamily = useSettingsStore((s) => s.fontFamily);
-  const accentColor = useSettingsStore((s) => s.accentColor);
+  useAppearance();
 
   /** 初始化未完成前渲染加载屏（循环扫光进度条），完成后按 view 渲染启动页/工作区。 */
   const [booting, setBooting] = useState(true);
-
-  // 跟随系统主题：监听 prefers-color-scheme 变化（theme === "system" 时实时生效）
-  const [systemDark, setSystemDark] = useState(() =>
-    window.matchMedia("(prefers-color-scheme: dark)").matches
-  );
-  useEffect(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
-  const effectiveTheme = theme === "system" ? (systemDark ? "dark" : "light") : theme;
-
-  // 主题 class 应用（分层：store 只存状态，DOM 副作用归页面层）
-  useEffect(() => {
-    document.documentElement.classList.toggle("dark", effectiveTheme === "dark");
-  }, [effectiveTheme]);
-
-  // 字体（应用级）：覆盖 :root font-size / font-family，空值回默认（CSS 默认）
-  useEffect(() => {
-    const root = document.documentElement;
-    root.style.fontSize = fontSize ? `${fontSize}px` : "";
-    root.style.fontFamily = fontFamily ?? "";
-  }, [fontSize, fontFamily]);
-
-  // 强调色（应用级）：覆盖 --accent 系列变量，空值回默认金色；深/浅主题共用同一份
-  // （:root 与 :root.dark 均不单独定义 accent，inline style 优先级最高对两主题同时生效）
-  useEffect(() => {
-    const root = document.documentElement;
-    if (accentColor && /^#[0-9a-fA-F]{6}$/.test(accentColor)) {
-      root.style.setProperty("--accent", accentColor);
-      root.style.setProperty("--accent-hover", darkenHex(accentColor));
-      root.style.setProperty("--accent-fg", foregroundFor(accentColor));
-    } else {
-      root.style.removeProperty("--accent");
-      root.style.removeProperty("--accent-hover");
-      root.style.removeProperty("--accent-fg");
-    }
-  }, [accentColor]);
 
   // 全局屏蔽浏览器默认右键菜单：未定义自定义菜单的区域无任何反应。
   // 已定义自定义菜单的区域（画布空白/节点/消息区/文件面板行等）自行 preventDefault，不受影响。
@@ -122,18 +85,14 @@ export default function App() {
     void (async () => {
       const autoEnterRoot = await init();
       await loadSettings();
-      // 协作中转：按应用级配置初始化连接（开关关/无地址 = 不连；切仓库由 appStore 订阅自动换房间）
-      const st = useSettingsStore.getState();
-      useCollabStore.getState().init({
-        enabled: st.collabEnabled,
-        url: st.collabRelayUrl,
-        nickname: st.collabNickname,
-        color: st.collabColor,
-        deviceName: st.deviceName,
-      });
+      // 面板运行时初始化（协作连接改由 panelStore.syncCollabHost 按视图归属驱动）
+      const { usePanelStore } = await import("@/stores/panelStore");
+      await usePanelStore.getState().initMain();
       if (autoEnterRoot) {
         await useAppStore.getState().selectVault(autoEnterRoot);
       }
+      // 撕裂窗口恢复：在仓库打开之后重建（面板握手需仓库信息，见 panel-init 协议）
+      await usePanelStore.getState().restoreDetachedWindows();
       // 自动更新（应用级，global.json）：开启时启动静默检查一次，失败静默跳过。
       // 走 store 包装（runAutoUpdate 内部先 flush 全部 pending 改动再检查安装，重启不丢数据；
       // 协作连接收尾不随 flush 执行，见 appStore.flushAllPending 注释）
@@ -150,16 +109,44 @@ export default function App() {
   }, [init, loadSettings]);
 
   return (
+    <Suspense fallback={<LoadingScreen />}>
+      {booting ? (
+        <LoadingScreen />
+      ) : view === "workspace" ? (
+        <ProjectWorkspacePage />
+      ) : (
+        <VaultSelectPage />
+      )}
+    </Suspense>
+  );
+}
+
+/** 应用入口：按窗口 label 分流——主窗口走完整启动流程；撕裂窗口只渲染单面板。
+ * 撕裂窗口不执行 init/selectVault/自动更新等主窗口专属逻辑（面板角色由 panelStore 管理）。
+ * label 读取失败（IPC/init 脚本异常）时降级为主窗口角色并打日志，绝不白屏。 */
+export default function App() {
+  const [isPanel] = useState(() => {
+    try {
+      return getCurrentWindowLabel().startsWith(PANEL_LABEL_PREFIX);
+    } catch (e) {
+      console.error("读取窗口 label 失败", e);
+      return false;
+    }
+  });
+
+  // 全局屏蔽浏览器默认右键菜单（两窗口角色都需要）
+  useEffect(() => {
+    const suppress = (e: MouseEvent) => e.preventDefault();
+    document.addEventListener("contextmenu", suppress);
+    return () => document.removeEventListener("contextmenu", suppress);
+  }, []);
+
+  return (
     <ReactFlowProvider>
-      <Suspense fallback={<LoadingScreen />}>
-        {booting ? (
-          <LoadingScreen />
-        ) : view === "workspace" ? (
-          <ProjectWorkspacePage />
-        ) : (
-          <VaultSelectPage />
-        )}
-      </Suspense>
+      {/* 错误边界：渲染崩溃显示错误面板（可读可关窗），不白屏 */}
+      <ErrorBoundary>
+        {isPanel ? <PanelWindowRoot /> : <MainWorkspaceApp />}
+      </ErrorBoundary>
     </ReactFlowProvider>
   );
 }

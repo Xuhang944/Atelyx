@@ -9,7 +9,7 @@
  * 与全局配置（global.json）分离：global.json 只保存低频配置（最近仓库列表 +
  * 自动更新开关），本文件保存高频「使用数据」——写入抖动不进配置，损坏只影响恢复。
  */
-import type { WorkspaceLayout } from "@/types/workspaceLayout";
+import type { DetachedWindow, WorkspaceLayout } from "@/types/workspaceLayout";
 
 /** `ui-state.json` 文件 schema 版本（Rust 侧 `commands/global.rs` 有同名常量，两端须保持一致）。 */
 export const UI_STATE_SCHEMA = "atelyx-ui-state/v1" as const;
@@ -31,4 +31,6 @@ export interface AppUiState {
   activeLayoutId?: string;
   /** 聚焦面积 id（画布快捷键门控；缺省 = 布局第一个面积）。 */
   focusedAreaId?: string;
+  /** 撕裂出去的独立窗口（应用级、跨布局共享；缺省 = 无）。 */
+  detachedWindows?: DetachedWindow[];
 }

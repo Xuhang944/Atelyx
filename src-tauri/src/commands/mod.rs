@@ -8,3 +8,4 @@ pub mod search;
 pub mod table;
 pub mod vault;
 pub mod web;
+pub mod windows;

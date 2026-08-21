@@ -1,14 +1,21 @@
 /**
- * 工作区可自定义布局（Blender 式面积网格）。
+ * 工作区可自定义布局（多叉停靠 + 可撕裂多窗口）。
  *
- * 布局 = 一棵递归二分树：Split 节点表达「分割方向 + 两子树 + 各自占比」，
- * Area 叶子节点表达「一个视图面积」。全局 chrome（标题栏/最左功能栏）不参与面积网格。
+ * 布局 = 一棵递归多叉树：Split 节点表达「分割方向 + 若干子树 + 各自占比」
+ * （左中右等多面板可同级并列），Area 叶子节点表达「一个停靠位置（标签组）」。
+ * 全局 chrome（标题栏/最左功能栏）不参与面积网格。任意视图标签可撕裂出主窗口
+ * 成为独立 OS 窗口（`DetachedWindow`），原面积保留为空位；也可拖回/拖入其他
+ * 位置组成标签组。
  *
  * 约束（产品决策）：
- * - 任一布局内每种视图最多一个面积（文件状态全局唯一，面积只是渲染入口）
+ * - 每种视图全局最多一处渲染（树内面积 + 撕裂窗口合计；文件状态全局唯一，面积只是渲染入口）
  * - 打开文件与布局解耦：布局中没有对应视图面积时文件照常打开，只是无处显示
+ * - 撕裂窗口为应用级（`types/uiState.ts` 的 `AppUiState.detachedWindows`），跨布局共享：
+ *   切换布局不动撕裂窗口；被撕裂的视图在主窗口所有布局中均不可再添加
+ * - 面积空位（tabs 为空）保留在树中（撕裂/关闭最后一个标签后），渲染空面积占位，
+ *   可再添加视图或经 ≡ 菜单「删除面积」移除
  *
- * 布局列表 + 激活布局 + 聚焦面积应用级持久化到 `app_data_dir/ui-state.json`
+ * 布局列表 + 激活布局 + 聚焦面积 + 撕裂窗口应用级持久化到 `app_data_dir/ui-state.json`
  * （见 `types/uiState.ts` 的 `AppUiState`，Rust 侧 `commands/global.rs` 同步字段）。
  */
 
@@ -26,29 +33,50 @@ export type ViewKind =
 /** 分割方向：horizontal = 左右并排，vertical = 上下叠放。 */
 export type SplitDirection = "horizontal" | "vertical";
 
+/** 一个标签（停靠的视图实例）；view 恒不为 "empty"（空面积 = tabs 为空数组）。 */
+export interface TabItem {
+  id: string;
+  view: ViewKind;
+  /** 锁定（固定）：禁拖/禁撕裂/禁关闭，需先解锁。 */
+  locked: boolean;
+}
+
 export interface AreaNode {
   kind: "area";
   id: string;
-  view: ViewKind;
+  /** 停靠在此位置的标签组（空 = 空面积占位，仍留在树中）。 */
+  tabs: TabItem[];
+  /** 激活标签 id（tabs 为空时 null）。 */
+  activeTabId: string | null;
 }
 
 export interface SplitNode {
   kind: "split";
   id: string;
   direction: SplitDirection;
-  /** 恰好两棵子树（二分树）。 */
-  children: [LayoutNode, LayoutNode];
-  /** 两子树的相对尺寸（百分比，和 = 100；相对各自父 Split，随拖拽实时回写）。 */
-  sizes: [number, number];
+  /** 至少两棵子树（多叉：左中右等 ≥2 同级面板；子树自身可为 Split，允许嵌套）。 */
+  children: LayoutNode[];
+  /** 各子树的相对尺寸（百分比，和 = 100；长度 = children 长度，相对父 Split，随拖拽实时回写）。 */
+  sizes: number[];
 }
 
 export type LayoutNode = AreaNode | SplitNode;
 
-/** 一套命名布局（布局列表的一项）。 */
+/** 一套命名布局（布局列表的一项；只管主窗口面积树，撕裂窗口见 `DetachedWindow`）。 */
 export interface WorkspaceLayout {
   id: string;
   name: string;
   tree: LayoutNode;
+}
+
+/** 撕裂出去的独立窗口（应用级，存 `AppUiState.detachedWindows`，跨布局共享）。 */
+export interface DetachedWindow {
+  id: string;
+  /** 停靠在本窗口的标签组（拖空后窗口自动关闭，无空窗口概念）。 */
+  tabs: TabItem[];
+  activeTabId: string | null;
+  /** 窗口屏幕位置与尺寸（logical px，创建/恢复/移动/缩放时更新）。 */
+  bounds: { x: number; y: number; width: number; height: number };
 }
 
 /** 视图类型清单（视图选择器选项顺序）。 */
@@ -62,80 +90,50 @@ export const VIEW_KINDS: ViewKind[] = [
   "aichat",
 ];
 
+/** 新建标签（锁定恒 false；视图恒非 empty）。 */
+export function createTab(view: ViewKind): TabItem {
+  return { id: crypto.randomUUID(), view, locked: false };
+}
+
+/** 新建空面积（tabs 空，activeTabId null）。 */
+export function createEmptyArea(): AreaNode {
+  return { kind: "area", id: crypto.randomUUID(), tabs: [], activeTabId: null };
+}
+
+/** 新建单标签面积。 */
+export function createArea(view: ViewKind): AreaNode {
+  const tab = createTab(view);
+  return { kind: "area", id: crypto.randomUUID(), tabs: [tab], activeTabId: tab.id };
+}
+
 /**
- * 默认布局（三套：画布/笔记/表格，面积结构 文件 | [主区/副区]）。
+ * 默认布局（三套：画布/笔记/表格，面积结构 文件 | [主区/副区]，均为单标签面积）。
  * 首次进入仓库/布局损坏时回退；激活布局缺省 = 列表第一个（画布）。
  */
 export function createDefaultLayouts(): WorkspaceLayout[] {
+  const build = (name: string, left: ViewKind, main: ViewKind, right: ViewKind, sizes1: [number, number], sizes2: [number, number]): WorkspaceLayout => ({
+    id: crypto.randomUUID(),
+    name,
+    tree: {
+      kind: "split",
+      id: crypto.randomUUID(),
+      direction: "horizontal",
+      children: [
+        createArea(left),
+        {
+          kind: "split",
+          id: crypto.randomUUID(),
+          direction: "horizontal",
+          children: [createArea(main), createArea(right)],
+          sizes: sizes2,
+        },
+      ],
+      sizes: sizes1,
+    },
+  });
   return [
-    {
-      id: crypto.randomUUID(),
-      name: "画布",
-      tree: {
-        kind: "split",
-        id: crypto.randomUUID(),
-        direction: "horizontal",
-        children: [
-          { kind: "area", id: crypto.randomUUID(), view: "files" },
-          {
-            kind: "split",
-            id: crypto.randomUUID(),
-            direction: "horizontal",
-            children: [
-              { kind: "area", id: crypto.randomUUID(), view: "canvas" },
-              { kind: "area", id: crypto.randomUUID(), view: "inspector" },
-            ],
-            sizes: [74, 26],
-          },
-        ],
-        sizes: [17, 83],
-      },
-    },
-    {
-      id: crypto.randomUUID(),
-      name: "笔记",
-      tree: {
-        kind: "split",
-        id: crypto.randomUUID(),
-        direction: "horizontal",
-        children: [
-          { kind: "area", id: crypto.randomUUID(), view: "files" },
-          {
-            kind: "split",
-            id: crypto.randomUUID(),
-            direction: "horizontal",
-            children: [
-              { kind: "area", id: crypto.randomUUID(), view: "note" },
-              { kind: "area", id: crypto.randomUUID(), view: "aichat" },
-            ],
-            sizes: [72, 28],
-          },
-        ],
-        sizes: [19, 81],
-      },
-    },
-    {
-      id: crypto.randomUUID(),
-      name: "表格",
-      tree: {
-        kind: "split",
-        id: crypto.randomUUID(),
-        direction: "horizontal",
-        children: [
-          { kind: "area", id: crypto.randomUUID(), view: "files" },
-          {
-            kind: "split",
-            id: crypto.randomUUID(),
-            direction: "horizontal",
-            children: [
-              { kind: "area", id: crypto.randomUUID(), view: "table" },
-              { kind: "area", id: crypto.randomUUID(), view: "note" },
-            ],
-            sizes: [77, 23],
-          },
-        ],
-        sizes: [18, 82],
-      },
-    },
+    build("画布", "files", "canvas", "inspector", [17, 83], [74, 26]),
+    build("笔记", "files", "note", "aichat", [19, 81], [72, 28]),
+    build("表格", "files", "table", "note", [18, 82], [77, 23]),
   ];
 }
