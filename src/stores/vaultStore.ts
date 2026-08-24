@@ -48,10 +48,10 @@ import {
 import { subscribeVaultFileChanges } from "@/services/watcher";
 import { isSelfSaveEcho, markSelfSave } from "@/utils/selfSave";
 import { isCollabCanvasRenamePath } from "@/utils/canvasCollab";
-import { useCanvasStore } from "@/stores/canvasStore";
+import { useCanvasStore, hasCollabPeerOnCanvas } from "@/stores/canvasStore";
 import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { useTableStore } from "@/stores/tableStore";
+import { useTableStore, hasCollabPeerOnTable } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import { baseName, dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename } from "@/utils/filename";
 import { tableToSnapshotText, tablesEqual } from "@/utils/table";
@@ -863,29 +863,33 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
           // 按文件路径匹配当前画布（画布任意文件夹存放，路径即磁盘身份）；
           // 文件夹重命名期间旧路径删除事件：canvasFile 尚未 remap（Rust 移动目录可能慢于 300ms debounce），
           // 跳过重读防误触 reloadFromDisk 读已不存在的旧路径
-          if (
-            c.path === store.canvasFile &&
-            !isSelfSaveEcho(c.path) &&
-            !isPendingFolderRenameOldPath(c.path) &&
-            // 协作重命名的回波（对端 title 补丁已同步新路径 + 内容已应用）跳过 reload/conflict，
-            // 防本地脏编辑被重载打断；下次保存走乐观锁自动三方合并收敛
-            !isCollabCanvasRenamePath(c.path)
-          ) {
-            if (store.dirty) {
-              // 本地有未保存改动：自动重载会丢改动，改为冲突提示让用户决策
-              useCanvasStore.setState({ conflictPending: true });
-            } else {
-              // 无未保存改动：安全自动重载磁盘最新内容
-              void useCanvasStore.getState().reloadFromDisk();
+          if (c.path === store.canvasFile && !isPendingFolderRenameOldPath(c.path)) {
+            // 当前画布内容事件：自写回波 / 协作重命名回波 / 协作对端在场 → 内容已由本端写盘或
+            // 广播应用进内存，跳过重载——对端在场时磁盘合法落后于广播（500ms 防抖落盘 + 300ms
+            // watcher 延迟），重载会用陈旧盘回退已应用内容，且 reloadFromDisk→load 杀进行中
+            // AI 流/清锁/清撤销（画布版闪烁/运行态破坏根因）；磁盘收敛由下次保存的乐观锁自动
+            // 三方合并负责（canvasStore.handleSaveConflict）。真实外部修改（无对端在场）才重载。
+            if (
+              !isSelfSaveEcho(c.path) &&
+              !isCollabCanvasRenamePath(c.path) &&
+              !hasCollabPeerOnCanvas(c.path)
+            ) {
+              if (store.dirty) {
+                // 本地有未保存改动：自动重载会丢改动，改为冲突提示让用户决策
+                useCanvasStore.setState({ conflictPending: true });
+              } else {
+                // 无未保存改动：安全自动重载磁盘最新内容
+                void useCanvasStore.getState().reloadFromDisk();
+              }
+              // 当前画布内容被外部改写：仅列表行 updatedAt 排序可能变化，刷新列表即可
+              void useAppStore.getState().loadList();
             }
-            // 当前画布内容被外部改写：仅列表行 updatedAt 排序可能变化，刷新列表即可；
-            // 文件树不含内容变化（外部改名/增删走下方未命中分支），免全仓库重扫
-            void useAppStore.getState().loadList();
+            // 当前画布事件一律不落入下方 CRUD 分支（纯内容写不改文件树；协作重命名的旧路径
+            // 删除事件经下方分支触发树刷新）
             return;
           }
-          // 外部新建/删除/重命名画布：刷新画布列表 + 文件树（.atlx 行随文件变化增删改名）。
-          // 自写回放（isSelfSaveEcho）跳过：画布 CRUD 已在 appStore 内主动刷新两数据源，
-          // 纯自动保存只改 mtime、树行不显示时间，无需重扫全仓库
+          // 非当前画布：外部新建/删除/重命名画布（含协作重命名的旧路径删除事件）→ 刷新列表 + 文件树。
+          // 自写回放（isSelfSaveEcho）跳过：画布 CRUD 已在 appStore 内主动刷新两数据源
           if (!isSelfSaveEcho(c.path)) {
             void useAppStore.getState().loadList();
             void get().loadFiles();
@@ -916,6 +920,10 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
           // tablesEqual 深比（大表图片多时 .atb 可达数十 MB，JS 主线程开销显著，保存后卡顿主因）；
           // 自写窗口内（markSelfSave 2s）的外部编辑可能漏检，乐观锁 + 自动三方合并兜底收敛
           // （与 canvas 分支同语义）。软件内重命名旧路径的删除事件跳过（file 引用已同步）。
+          // 协作对端同表在场 → 跳过读比重载：广播比落盘先到（编辑即达 vs 500ms 防抖落盘 +
+          // 300ms watcher 延迟），磁盘合法落后于内存，重载会用陈旧磁盘回退已应用的对端补丁
+          // （闪烁/永久回退根因）；磁盘收敛由下次保存的乐观锁自动三方合并负责（tableStore
+          // retryMergePersist），与「无对端 = 真实外部修改仍重载」路径互不干扰。
           const store = useTableStore.getState();
           const selfEcho = isSelfSaveEcho(c.path);
           if (
@@ -923,6 +931,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
             !isPendingRenameOldPath(c.path) &&
             !isPendingFolderRenameOldPath(c.path) &&
             !selfEcho &&
+            !hasCollabPeerOnTable(c.path) &&
             !store.dirty
           ) {
             void maybeReloadTableIfChanged(c.path);

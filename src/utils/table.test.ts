@@ -5,7 +5,7 @@
  * 与 `summarizeTableSnapshot`（人话摘要，列表展示）。
  */
 import { describe, it, expect } from "vitest";
-import { diffTableVersions, summarizeTableSnapshot } from "./table";
+import { diffTableVersions, summarizeTableSnapshot, tablesEqual } from "./table";
 import type { TableField, TableRow } from "@/types";
 
 const field = (id: string, name: string): TableField => ({ id, name, type: "text" });
@@ -89,5 +89,48 @@ describe("summarizeTableSnapshot", () => {
 
   it("损坏快照 → 空串（不崩）", () => {
     expect(summarizeTableSnapshot("not-json", "also-not-json")).toBe("");
+  });
+});
+
+describe("tablesEqual（watcher 回放判别：磁盘 vs 内存）", () => {
+  const fields = [field("f1", "镜号"), field("f2", "状态")];
+  const rows = [row("r1", { f1: "01", f2: "待拍" })];
+
+  it("一致 → true（自写回放/已广播应用的对端写入，跳过重载）", () => {
+    expect(tablesEqual({ fields, rows }, { fields, rows })).toBe(true);
+  });
+
+  it("磁盘落后于内存（对端陈旧保存缺最新单元格）→ false——这正是协作闪烁的触发条件，watcher 靠协作对端守卫跳过重载", () => {
+    // 内存已应用对端广播（f2 已改为「已拍」），磁盘还是对端保存捕获的旧值（「待拍」）
+    const disk = { fields, rows: [row("r1", { f1: "01", f2: "待拍" })] };
+    const memory = { fields, rows: [row("r1", { f1: "01", f2: "已拍" })] };
+    expect(tablesEqual(disk, memory)).toBe(false);
+  });
+
+  it("磁盘新于内存（漏收广播/外部修改新增单元格）→ false——仍需重载收敛", () => {
+    const disk = { fields, rows: [row("r1", { f1: "01", f2: "已拍" })] };
+    const memory = { fields, rows: [row("r1", { f1: "01", f2: "待拍" })] };
+    expect(tablesEqual(disk, memory)).toBe(false);
+  });
+
+  it("行序变化 → false（顺序是数组属性，引用 diff 不可见，须显式比对）", () => {
+    const disk = { fields, rows: [row("r2", { f1: "02" }), row("r1", { f1: "01" })] };
+    const memory = { fields, rows: [row("r1", { f1: "01" }), row("r2", { f1: "02" })] };
+    expect(tablesEqual(disk, memory)).toBe(false);
+  });
+
+  it("undefined 键 ≈ 缺失键 → true（序列化丢空/缺省键不误判为外部修改）", () => {
+    const disk = { fields, rows: [{ id: "r1", values: { f1: "01", f2: undefined } }] };
+    const memory = { fields, rows: [row("r1", { f1: "01" })] };
+    expect(tablesEqual(disk, memory)).toBe(true);
+  });
+
+  it("行高/列宽缺省 ≈ 显式 undefined → true；实际不同 → false", () => {
+    const disk = { fields, rows: [{ id: "r1", values: { f1: "01" }, height: 40 }] };
+    const memory = { fields, rows: [{ id: "r1", values: { f1: "01" } }] };
+    expect(tablesEqual(disk, memory)).toBe(false);
+    const disk2 = { fields: [field("f1", "镜号")], rows: [] };
+    const memory2 = { fields: [{ ...field("f1", "镜号"), width: undefined }], rows: [] };
+    expect(tablesEqual(disk2, memory2)).toBe(true);
   });
 });

@@ -505,8 +505,9 @@ function syncBroadcastBaseline(): void {
 }
 
 /** 协作对端是否同表在线：其内存/撤销栈可能仍引用附件文件（共享盘文件多人共用），
- * 本端单方回收会使其破图——有对端在线时跳过回收（磁盘堆积可接受，数据安全优先）。 */
-function hasCollabPeerOnTable(file: string): boolean {
+ * 本端单方回收会使其破图——有对端在线时跳过回收（磁盘堆积可接受，数据安全优先）；
+ * 亦用于 watcher 判别「磁盘写入是对端保存的广播回放（内容已应用，不得重载回退）」。 */
+export function hasCollabPeerOnTable(file: string): boolean {
   return useCollabStore.getState().peers.some((p) => p.presence?.file === file);
 }
 
@@ -1007,6 +1008,12 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
     });
     // 核心：远端已应用内容对房间已知，推进广播基线，避免被当作本地增量重发全房
     syncBroadcastBaseline();
+    // 版本守卫洞加固：本端有未保存改动（dirty）时重挂一次保存调度——在途保存捕获的是
+    // 「未含远端补丁」的旧状态，写盘后 finish() 会因 persistCtl.version 未变而标干净并
+    // 把 lastSaved 推进到磁盘之前（污染磁盘，经对端 watcher 重载使对端丢内容）。
+    // 重挂使版本变化 → 保持 dirty，由下一轮 timer 带上远端内容重写。仅 dirty 时重挂：
+    // 干净接收端不触发保存（无广播回环，与「接收端不落盘」约定一致）。
+    if (get().dirty) persistCtl.schedule();
   },
 
   tableHistoryLoad: (file) => loadTableHistory("table", file),

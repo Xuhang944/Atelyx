@@ -425,8 +425,9 @@ function isConversationLockedByPeer(conversationId: string): boolean {
 }
 
 /** 协作对端是否同画布在线（presence.file 命中当前画布 + view=canvas）：共享盘保存竞争时据此
- * 自动三方合并（与表格 hasCollabPeerOnTable 同策略）；无对端 = 外部编辑 → 保持冲突条。 */
-function hasCollabPeerOnCanvas(file: string): boolean {
+ * 自动三方合并（与表格 hasCollabPeerOnTable 同策略）；无对端 = 外部编辑 → 保持冲突条；
+ * 亦用于 watcher 判别「磁盘写入是对端保存的广播回放（内容已应用，不得重载破坏运行态）」。 */
+export function hasCollabPeerOnCanvas(file: string): boolean {
   return useCollabStore
     .getState()
     .peers.some((p) => p.presence?.file === file && p.presence?.view === "canvas");
@@ -2586,8 +2587,26 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       const nodes = st.nodes.filter((n) => !removedNodeIds.has(n.id));
       for (const { node } of deserialized) {
         const i = nodes.findIndex((x) => x.id === node.id);
-        if (i >= 0) nodes[i] = node;
-        else nodes.push(node);
+        if (i >= 0) {
+          // 远端结构补丁省略、由接收端自行补读的内容，覆盖前保留本端既有值防瞬时空白：
+          // - 文件型 text 节点：正文在共享盘 `.md`，补丁只带 { title, file } 不带 bodyMd。
+          //   直接剥离会让接收端节点空白，且 stripped 空值会被 refreshTextContent 的 keep
+          //   判定误认为「用户清空过正文」而跳过刷新（持久空白）；保留后 refreshTextContent
+          //   以「补丁前正文」与磁盘比对：一致跳过 / 磁盘更新则刷新。
+          // - table 节点：快照摘要不在补丁（在共享盘 `.atb`），保留本端既有 snapshot 防画布
+          //   节点空白，后续由表格 watcher 分支 refreshTableContent 补读最新。
+          if (node.type === "text" || node.type === "table") {
+            const nodeData = node.data as Record<string, unknown>;
+            const localData = nodes[i].data as Record<string, unknown>;
+            const field = node.type === "text" ? "bodyMd" : "snapshot";
+            if (nodeData[field] === undefined && localData[field] !== undefined) {
+              node.data = { ...nodeData, [field]: localData[field] } as unknown as Node["data"];
+            }
+          }
+          nodes[i] = node;
+        } else {
+          nodes.push(node);
+        }
       }
       const edges = st.edges.filter((e) => !removedEdgeIds.has(e.id));
       for (const e of patch.upsertEdges) {
