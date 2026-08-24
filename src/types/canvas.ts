@@ -195,6 +195,8 @@ export interface DirNames {
 export interface VaultConfig {
   /** 仓库级默认模型（从仓库内已配置供应商的全部模型中选择；缺省 = 未指定，跟随默认的对话请求报错提示）。 */
   model?: string;
+  /** 仓库级默认模型所属供应商（与 model 配对固定供应商；旧配置缺省 = 按 model 名反查首个命中，重选后落盘）。 */
+  modelProviderId?: string;
   /** 文件面板排序方式（缺省 = 前端默认 mtime-desc）。 */
   fileExplorerSort?: FileExplorerSortKey;
   /** 兼容字段：仓库三根目录名（自由文件夹结构不使用；仅兼容读取旧配置）。 */

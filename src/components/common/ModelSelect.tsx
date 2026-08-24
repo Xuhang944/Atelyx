@@ -11,7 +11,7 @@ import { useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { PopupLayer } from "@/components/common/PopupLayer";
 import { usePopupAnchor } from "@/hooks/usePopupAnchor";
 import { REASONING_EFFORT_OPTIONS, reasoningEffortLabel } from "@/constants/ai";
-import { modelNameAcrossProviders } from "@/utils/text";
+import { modelDisplayLabel } from "@/utils/text";
 import type { ProviderConfig, ReasoningEffort } from "@/types";
 
 type Pane = "root" | "model" | "effort";
@@ -130,8 +130,13 @@ export function ModelSelect({
   const [pane, setPane] = useState<Pane>("root");
 
   const hasOverride = !!(providerId && model);
+  const overrideProvider = providers.find((p) => p.id === providerId);
+  // 触发器：override 态按真实供应商作用域显示（同名模型跨供应商时带「供应商名 · 」前缀消歧；
+  // 供应商已删回退裸 ID）；跟随默认用调用方传入的默认生效模型显示
   const modelLabel = hasOverride
-    ? modelNameAcrossProviders(providers, model!) || model!
+    ? overrideProvider
+      ? modelDisplayLabel(providers, overrideProvider, model!)
+      : model!
     : defaultModelDisplay || "模型";
   const effortValue = effort ?? "";
 

@@ -817,6 +817,9 @@ pub struct VaultConfig {
     /// 仓库级默认模型（模型服务 tab 配置；缺省 = 未指定，跟随默认的对话请求报错提示）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// 仓库级默认模型所属供应商（与 model 配对固定供应商；旧配置缺省 = 前端按 model 名反查首个命中，重选后落盘）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_provider_id: Option<String>,
     /// 仓库级 AI 供应商列表（默认无 key；key 走 keychain 条目 `provider-<vaultId>-<id>`，
     /// `syncKeys` 开启时随仓库落盘 apiKey）。
     #[serde(default, skip_serializing_if = "Option::is_none")]

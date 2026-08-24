@@ -30,9 +30,8 @@ import { ProviderSettingsSection } from "@/components/settings/ProviderSettingsS
 import { AgentSettingsSection } from "@/components/settings/AgentSettingsSection";
 import { AboutSection } from "@/components/settings/AboutSection";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
-import { DropdownSelect } from "@/components/common/DropdownSelect";
+import { DropdownSelect, type DropdownOption } from "@/components/common/DropdownSelect";
 import { ToggleSwitch } from "@/components/common/ToggleSwitch";
-import { modelNameAcrossProviders } from "@/utils/text";
 import { DEFAULT_ACCENT, foregroundFor } from "@/utils/color";
 
 type Tab =
@@ -71,6 +70,36 @@ const FONT_OPTIONS: { label: string; value: string }[] = [
 ];
 /** 话题自动命名下拉「跟随默认模型」哨兵值（与任何模型 id 区分；空串 = 不启用）。 */
 const AUTO_NAMING_DEFAULT = "__default__";
+/** DropdownSelect value 编码 (providerId, model) 对的分隔符（模型/供应商 ID 不含该字符，跨供应商同名模型不合并）。 */
+const MODEL_PAIR_SEP = "\u0000";
+/** 编码 (providerId, model) 对为下拉 value。 */
+const modelPairValue = (providerId: string, model: string) => `${providerId}${MODEL_PAIR_SEP}${model}`;
+
+/** 模型下拉选项条目（每 (provider, model) 一条，跨供应商同名不合并）。 */
+interface ModelChoiceEntry {
+  providerId: string;
+  model: string;
+  label: string;
+  group: string;
+}
+
+/** 构建模型下拉选项：存活项 + 存量值兼容（当前值不在存活项中时前置「已失效」项，使当前值可显示、可改选）。 */
+function buildModelChoices(
+  entries: ModelChoiceEntry[],
+  currentKey: string,
+  staleLabel: string,
+): DropdownOption[] {
+  const opts: DropdownOption[] = entries.map((e) => ({
+    value: modelPairValue(e.providerId, e.model),
+    label: e.label,
+    group: e.group,
+  }));
+  if (currentKey && !opts.some((o) => o.value === currentKey)) {
+    opts.unshift({ value: currentKey, label: staleLabel, group: "已失效" });
+  }
+  return opts;
+}
+
 /** 强调色预设色板（600/700 阶深色系：白字对比 ≥ 5:1，金色默认由「恢复默认」按钮回归；取色器可自由选色）。 */
 const ACCENT_PRESETS = [
   "#2563eb",
@@ -157,8 +186,10 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const softLineBreak = vaultConfig?.softLineBreak ?? true;
   /** 话题自动命名：缺省不启用（下拉「不启用」项）。 */
   const autoNamingEnabled = vaultConfig?.autoNamingEnabled ?? false;
-  /** 话题自动命名模型（缺省 = 跟随默认模型）。 */
-  const autoNamingModelValue = vaultConfig?.autoNamingModel?.model ?? "";
+  /** 话题自动命名模型（缺省 = 跟随默认模型）；编码为 (providerId, model) 对，供下拉 value 匹配。 */
+  const autoNamingModelValue = vaultConfig?.autoNamingModel
+    ? modelPairValue(vaultConfig.autoNamingModel.providerId, vaultConfig.autoNamingModel.model)
+    : "";
 
   // 排除文件夹/附件文件夹用本地草稿 + blur 提交（与字号同模式：避免每键一次 IPC）
   const [excludeDraft, setExcludeDraft] = useDraftSync(
@@ -216,23 +247,44 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   );
 
   const config = useSettingsStore((s) => s.config);
-  // 仓库默认模型选项：仓库内已配置供应商的全部模型去重；存量值（供应商被删/改模型）兼容展示
-  const modelOptions = Array.from(
-    new Set(config.providers.flatMap((p) => p.models.map((m) => m.id))),
+  /** 供应商名可重名（用户自定义）：重名时在分组头补短 id 后缀，避免同名供应商的模型在视觉上合并。 */
+  const nameCounts = new Map<string, number>();
+  for (const p of config.providers) {
+    nameCounts.set(p.name, (nameCounts.get(p.name) ?? 0) + 1);
+  }
+  const groupLabel = (p: { id: string; name: string }) =>
+    (nameCounts.get(p.name) ?? 0) > 1 ? `${p.name}（${p.id.slice(0, 6)}）` : p.name;
+  /** 模型选项：每个供应商的每个模型各一条（同名模型跨供应商**不合并**；仅单供应商内部去重），
+   * 供默认模型 / 话题自动命名下拉共用——同一 model ID 不同供应商是不同可选项。 */
+  const modelEntries: ModelChoiceEntry[] = config.providers.flatMap((p) =>
+    Array.from(new Map(p.models.map((m) => [m.id, m])).values()).map((m) => ({
+      providerId: p.id,
+      model: m.id,
+      label: m.nickname ?? m.id,
+      group: groupLabel(p),
+    })),
   );
-  const staleModel =
-    vaultConfig?.model !== undefined &&
-    vaultConfig.model !== "" &&
-    !modelOptions.includes(vaultConfig.model);
-  const modelChoices =
-    staleModel && vaultConfig?.model
-      ? [vaultConfig.model, ...modelOptions]
-      : modelOptions;
-  /** 话题自动命名模型下拉选项：与默认模型同源（去重 model 列表 + 存量值兼容展示）。 */
-  const autoNamingChoices =
-    autoNamingModelValue && !modelOptions.includes(autoNamingModelValue)
-      ? [autoNamingModelValue, ...modelOptions]
-      : modelOptions;
+  /** 默认模型当前值编码：优先固定供应商（modelProviderId），旧配置按 model 名反查首个命中；无默认 = 空串。 */
+  const defaultModelKey = (() => {
+    const model = vaultConfig?.model;
+    if (!model) return "";
+    const pinnedId = vaultConfig?.modelProviderId;
+    const entry = modelEntries.find(
+      (e) => e.model === model && (pinnedId ? e.providerId === pinnedId : true),
+    );
+    return modelPairValue(entry?.providerId ?? pinnedId ?? "", model);
+  })();
+  /** 默认模型下拉选项：先「不指定」，再接存活模型项（含存量值兼容的「已失效」前置项）。 */
+  const defaultModelChoices: DropdownOption[] = [
+    { value: "", label: "不指定" },
+    ...buildModelChoices(modelEntries, defaultModelKey, vaultConfig?.model ?? defaultModelKey),
+  ];
+  /** 话题自动命名模型下拉选项：与默认模型同源（每供应商每模型一条 + 存量值兼容展示）。 */
+  const autoNamingChoices = buildModelChoices(
+    modelEntries,
+    autoNamingModelValue,
+    vaultConfig?.autoNamingModel?.model ?? autoNamingModelValue,
+  );
 
   return (
     <div
@@ -611,15 +663,16 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                     </div>
                   </div>
                   <DropdownSelect
-                    value={vaultConfig?.model ?? ""}
-                    onChange={(v) => setVaultModel(v || null)}
-                    options={[
-                      { value: "", label: "不指定" },
-                      ...modelChoices.map((m) => ({
-                        value: m,
-                        label: modelNameAcrossProviders(config.providers, m),
-                      })),
-                    ]}
+                    value={defaultModelKey}
+                    onChange={(v) => {
+                      if (!v) {
+                        void setVaultModel(null);
+                        return;
+                      }
+                      const [providerId, model] = v.split(MODEL_PAIR_SEP);
+                      void setVaultModel({ providerId, model });
+                    }}
+                    options={defaultModelChoices}
                     className="text-sm rounded px-2 py-1 w-[200px] flex-shrink-0"
                     style={{
                       color: "var(--text-secondary)",
@@ -664,23 +717,17 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                         );
                         return;
                       }
-                      // 存量值（供应商被删/改模型）选不到 → 清空回退跟随默认模型
-                      const p = config.providers.find((x) =>
-                        x.models.some((mm) => mm.id === v),
-                      );
+                      const [providerId, model] = v.split(MODEL_PAIR_SEP);
                       void setAutoNamingEnabled(true).then(() =>
                         setAutoNamingModel(
-                          p ? { providerId: p.id, model: v } : null,
+                          providerId ? { providerId, model } : null,
                         ),
                       );
                     }}
                     options={[
                       { value: "", label: "不启用" },
                       { value: AUTO_NAMING_DEFAULT, label: "跟随默认模型" },
-                      ...autoNamingChoices.map((m) => ({
-                        value: m,
-                        label: modelNameAcrossProviders(config.providers, m),
-                      })),
+                      ...autoNamingChoices,
                     ]}
                     className="text-sm rounded px-2 py-1 w-[200px] flex-shrink-0"
                     style={{

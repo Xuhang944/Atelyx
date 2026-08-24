@@ -9,16 +9,20 @@ export function modelDisplayName(provider: ProviderConfig, modelId: string): str
   return provider.models.find((m) => m.id === modelId)?.nickname ?? modelId;
 }
 
-/** 跨供应商按模型 ID 反查显示名（下拉/占位显示用；未找到回退 ID）。 */
-export function modelNameAcrossProviders(
+/**
+ * 按所属供应商作用域的模型显示名：该模型 ID 跨供应商同名（不同供应商混用）时带「供应商名 · 」前缀消歧，
+ * 否则仅模型名（单供应商场景无噪音）。供模型触发器/默认生效模型显示用（区分同一 ID 的不同供应商实例）。
+ */
+export function modelDisplayLabel(
   providers: ProviderConfig[],
+  provider: ProviderConfig,
   modelId: string,
 ): string {
-  for (const p of providers) {
-    const name = modelDisplayName(p, modelId);
-    if (name !== modelId) return name;
-  }
-  return modelId;
+  const name = modelDisplayName(provider, modelId) || modelId;
+  const shared = providers.some(
+    (p) => p.id !== provider.id && p.models.some((m) => m.id === modelId),
+  );
+  return shared ? `${provider.name} · ${name}` : name;
 }
 
 /** 截取内容前缀作为 @chip 显示名（约 12 字 + 省略号）。 */

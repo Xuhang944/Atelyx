@@ -37,7 +37,8 @@ import { createPersistController } from "@/utils/persist";
  *
  * 解析链（画布对话节点 / AI 对话面板共用 `resolveChatTarget`）：
  * 选定 {providerId, model}（无 = 跟随仓库默认）→ 供应商缺失报错不静默回落；
- * 未选定 = 仓库默认模型（vaultConfig.model，反查所属供应商），未配置默认模型报错；
+ * 未选定 = 仓库默认模型（vaultConfig.model + 固定供应商 modelProviderId：固定供应商含该模型则用之、
+ * 失效判定未配置；仅旧配置无固定供应商时按 model 名反查），未配置默认模型报错；
  * 选定供应商但未选模型 = 供应商首个模型（models[0]）。
  *
  * 加载时机：应用挂载 load（读 global.json 填充应用级外观）；
@@ -93,12 +94,14 @@ interface SettingsState {
   setTavilyKey: (key: string) => Promise<void>;
   /** 开关「API key 随仓库保存」（多设备同步）：开启 = 当前 key 全量写入 config.json；关闭 = 剥离 config key + 回写 keychain。 */
   setSyncKeys: (enabled: boolean) => Promise<void>;
-  /** 解析仓库默认模型及其所属供应商：默认模型可来自任意供应商（模型服务 tab 从全部供应商的 models 中选），按模型名定位；未配置返回 null。 */
+  /** 解析仓库默认模型及其所属供应商：默认模型可来自任意供应商（模型服务 tab 从全部供应商的 models 中选），
+   * 优先按存储的固定供应商（modelProviderId）定位，缺失/失效回退按模型名反查；未配置返回 null。 */
   resolveDefaultModel: () => { provider: ProviderConfig; model: string } | null;
   /**
    * 解析一次对话请求的目标 {provider, model}（画布对话节点 / AI 对话面板共用）：
    * 选定 {providerId, model}（null = 跟随仓库默认）优先，**不回退默认**；选定供应商已删 → 报错不静默回落；
-   * 未选定 = 仓库默认模型（vaultConfig.model，可来自任意供应商按 model 名反查），未配置默认模型 → 报错；
+   * 未选定 = 仓库默认模型（vaultConfig.model + 固定供应商 modelProviderId：固定供应商含该模型则用之、
+   * 失效判定未配置；仅旧配置无固定供应商时按 model 名反查），未配置默认模型 → 报错；
    * 选定供应商但未选模型 → 供应商首个模型（models[0]）。
    * 失败返回 {ok:false, reason, error}，调用方负责提示。
    */
@@ -118,7 +121,7 @@ interface SettingsState {
   /** 删除 provider（同步删 keychain 条目）。 */
   removeProvider: (id: string) => Promise<void>;
   /** 设仓库级默认模型（null = 未配置——跟随默认的对话请求会报错提示）。 */
-  setVaultModel: (model: string | null) => Promise<void>;
+  setVaultModel: (model: { providerId: string; model: string } | null) => Promise<void>;
   /** 开关话题自动命名（仓库级；缺省不启用）。 */
   setAutoNamingEnabled: (enabled: boolean) => Promise<void>;
   /** 设话题自动命名模型（null = 跟随默认模型；话题命名一般用小模型）。 */
@@ -250,6 +253,7 @@ function persistDebounced(): void {
 function cleanVaultConfig(vc: VaultConfig): VaultConfig {
   const out: VaultConfig = {};
   if (vc.model !== undefined) out.model = vc.model;
+  if (vc.modelProviderId !== undefined) out.modelProviderId = vc.modelProviderId;
   if (vc.fileExplorerSort !== undefined) out.fileExplorerSort = vc.fileExplorerSort;
   if (vc.excludeFolders !== undefined) out.excludeFolders = vc.excludeFolders;
   if (vc.attachmentFolder !== undefined) out.attachmentFolder = vc.attachmentFolder;
@@ -276,6 +280,24 @@ async function commitVault(patch: Partial<VaultConfig>): Promise<void> {
   } catch (e) {
     console.error("保存仓库级配置失败", e);
   }
+}
+
+/**
+ * 反查 model 所属供应商：已固定供应商（preferredProviderId）仍含该模型则用之；
+ * 固定供应商缺失/不含该模型 = 判定失效返回 undefined（**不跨供应商静默替换同名模型**——
+ * 否则会把固定给 A 的默认模型无声切到 B 的同名模型，重蹈混用；设置页此时以「已失效」提示重选）。
+ * 仅旧配置（无固定供应商）回退按模型名反查首个命中。
+ */
+function findProviderByModel(
+  providers: ProviderConfig[],
+  modelId: string,
+  preferredProviderId?: string,
+): ProviderConfig | undefined {
+  if (preferredProviderId) {
+    const pinned = providers.find((p) => p.id === preferredProviderId);
+    return pinned && pinned.models.some((m) => m.id === modelId) ? pinned : undefined;
+  }
+  return providers.find((p) => p.models.some((m) => m.id === modelId));
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
@@ -450,10 +472,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const named = vault?.autoNamingModel;
     const modelId = named?.model || vault?.model;
     if (!modelId) return null;
-    const provider =
-      (named?.providerId
-        ? s.config.providers.find((p) => p.id === named.providerId)
-        : undefined) ?? s.config.providers.find((p) => p.models.some((m) => m.id === modelId));
+    // 固定供应商：命名指定模型优先 named.providerId；跟随默认模型时用默认模型的固定供应商；
+    // 固定供应商失效（供应商被删/模型被移除）= 判定未配置，不跨供应商替换同名模型
+    const preferred = named?.providerId || (!named ? vault?.modelProviderId : undefined);
+    const provider = findProviderByModel(s.config.providers, modelId, preferred);
     if (!provider) return null;
     return { provider, model: modelId };
   },
@@ -467,8 +489,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const { config, vaultConfig } = get();
     const vaultModel = vaultConfig?.model;
     if (!vaultModel) return null;
-    // 默认模型可来自任意供应商：按模型名反查所属供应商
-    const owner = config.providers.find((p) => p.models.some((m) => m.id === vaultModel));
+    // 默认模型可来自任意供应商：优先固定供应商（modelProviderId，重选后落盘）且其仍含该模型则用之，
+    // 否则判定未配置；仅旧配置（无固定供应商）按模型名反查
+    const owner = findProviderByModel(
+      config.providers,
+      vaultModel,
+      vaultConfig?.modelProviderId,
+    );
     if (!owner) return null;
     return { provider: owner, model: vaultModel };
   },
@@ -565,7 +592,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   setVaultModel: async (model) => {
-    await commitVault({ model: model ?? undefined });
+    await commitVault(
+      model
+        ? { model: model.model, modelProviderId: model.providerId || undefined }
+        : { model: undefined, modelProviderId: undefined },
+    );
   },
 
   setAutoNamingEnabled: async (enabled) => {
