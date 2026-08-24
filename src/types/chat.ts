@@ -1,23 +1,26 @@
 /**
  * AI 对话面板（右侧边栏）的消息与会话类型。
- * 持久化：会话元数据索引存 `.atelyx/editor-chats.json`，消息正文存 `.atelyx/对话历史/<会话 id>.jsonl`
- * （JSON Lines：一行一条消息记录，追加式写；单一全局历史，不按笔记归属）。
+ * 持久化：以 `.atelyx/对话历史/` 文件夹为真相——每会话一个消息 `.jsonl`（追加式写）+ 可选
+ * `.meta.json` 元数据侧车（title/agentId）；会话清单 = 扫目录（无整文件索引，多设备共享文件夹
+ * 实时互见）；面板级覆盖存 `.atelyx/editor-chats-meta.json`。单一全局历史，不按笔记归属。
  *
  * 与画布对话（types/message.ts）的差异：面板是纯文本对话，
  * 无 attachments/refs/system 消息——错误占位用 content 的 `[错误]` 前缀标记（同 runStream 约定）。
  */
 import {
-  EDITOR_CHATS_SCHEMA,
+  EDITOR_CHATS_META_SCHEMA,
   CHAT_HISTORY_DIR,
   CHAT_MESSAGE_EXT,
+  CHAT_META_EXT,
 } from "@/constants/editorChats";
 import type { AgentStep, ToolRun } from "./message";
 import type { ReasoningEffort } from "./provider";
 
 export {
-  EDITOR_CHATS_SCHEMA,
+  EDITOR_CHATS_META_SCHEMA,
   CHAT_HISTORY_DIR,
   CHAT_MESSAGE_EXT,
+  CHAT_META_EXT,
 };
 
 export type EditorChatRole = "user" | "assistant";
@@ -79,23 +82,37 @@ export interface EditorChatMessage {
   createdAt: number;
 }
 
-/** 会话索引条目（editor-chats.json 的 sessions 项：只存索引，消息正文在消息 .jsonl）。 */
-export interface EditorChatIndexEntry {
+/** 会话元数据侧车（`.atelyx/对话历史/<会话 id>.meta.json`）：仅可变会话级字段。 */
+export interface ChatSessionMeta {
+  id: string;
+  /** 会话标题（首条 user 消息前缀 / LLM 自动命名 / 手动重命名；历史会话列表展示）。 */
+  title?: string;
+  /** 引用的 Agent 配置 id（仓库级 `.atelyx/agents.json`；发送时实时解析系统提示词/工具；缺省 = 按预置「对话」Agent 处理）。 */
+  agentId?: string;
+}
+
+/** list_chat_sessions 返回行（Rust 扫 `.atelyx/对话历史/` 目录结果）。 */
+export interface ChatSessionRow {
+  id: string;
+  /** 消息正文 .jsonl 相对仓库根路径（`.atelyx/对话历史/<会话 id>.jsonl`）。 */
+  file: string;
+  /** 元数据侧车（缺省 = 缺省标题/Agent，由前端按首条消息派生标题）。 */
+  meta: ChatSessionMeta | null;
+}
+
+/** 运行时会话（内存态：会话元数据 + 消息正文；createdAt/updatedAt 由消息派生，不落盘）。 */
+export interface EditorChatSession {
   id: string;
   /** 会话标题（首条 user 消息前缀，历史会话列表展示）。 */
   title?: string;
-  /** 引用的 Agent 配置 id（仓库级 `.atelyx/agents.json`；发送时实时解析系统提示词/工具；缺省（未设置）= 按预置「对话」Agent 处理）。 */
+  /** 引用的 Agent 配置 id（同 ChatSessionMeta.agentId）。 */
   agentId?: string;
-  /** 系统提示词笔记引用（遗留字段：仅兼容读取，不再注入，见 agentId）。 */
-  systemPromptFile?: string;
   /** 消息正文 .jsonl 相对仓库根路径（`.atelyx/对话历史/<会话 id>.jsonl`）。 */
   file: string;
+  /** 首条消息创建时间（运行时派生，不持久化）。 */
   createdAt: number;
+  /** 末条消息创建时间（最近对话排序，运行时派生，不持久化）。 */
   updatedAt: number;
-}
-
-/** 运行时会话（内存态 = 索引 + 消息正文）。 */
-export interface EditorChatSession extends EditorChatIndexEntry {
   messages: EditorChatMessage[];
 }
 
@@ -105,13 +122,23 @@ export interface EditorChatModelOverride {
   model: string;
 }
 
-/** `.atelyx/editor-chats.json` 文件结构（单一全局历史：会话索引 + 全局面板状态）。 */
-export interface EditorChatsFile {
-  schema: typeof EDITOR_CHATS_SCHEMA;
-  sessions: EditorChatIndexEntry[];
-  /** 当前激活会话 id（新对话态 = null，load 不恢复）。 */
-  activeSessionId: string | null;
+/** `.atelyx/editor-chats-meta.json` 文件结构（面板级覆盖，设备偏好）。 */
+export interface ChatMetaFile {
+  schema: typeof EDITOR_CHATS_META_SCHEMA;
   modelOverride: EditorChatModelOverride | null;
   /** 面板级推理等级覆盖（null = 不指定/跟随默认；与模型覆盖正交，跟随仓库默认时也可单独设置）。 */
+  effortOverride: ReasoningEffort | null;
+}
+
+/** 旧 `.atelyx/editor-chats.json` 结构（一次性迁移读取用，见 chatPanelStore.load）。 */
+export interface LegacyEditorChatsFile {
+  schema: string;
+  sessions: {
+    id: string;
+    title?: string;
+    agentId?: string;
+    file: string;
+  }[];
+  modelOverride: EditorChatModelOverride | null;
   effortOverride: ReasoningEffort | null;
 }

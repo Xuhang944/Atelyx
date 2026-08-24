@@ -50,6 +50,7 @@ import { isSelfSaveEcho, markSelfSave } from "@/utils/selfSave";
 import { isCollabCanvasRenamePath } from "@/utils/canvasCollab";
 import { useCanvasStore, hasCollabPeerOnCanvas } from "@/stores/canvasStore";
 import { useAppStore } from "@/stores/appStore";
+import { useChatPanelStore } from "@/stores/chatPanelStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTableStore, hasCollabPeerOnTable } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
@@ -947,6 +948,14 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
           }
           // 纯内容写（自写回波）不改变文件树结构：跳过全仓库重扫（与 canvas 分支同语义）
           if (!selfEcho) void get().loadFiles();
+          return;
+        }
+
+        if (c.kind === "chat") {
+          // AI 对话历史（.atelyx/对话历史/*.jsonl|*.meta.json）：外部变更内容比对合并，
+          // 新会话/新消息/改名/删除经此实时互见（自写回波由 chatPanelStore 内容比对判别）。
+          // 不刷新文件树——.atelyx/ 不在文件树。
+          useChatPanelStore.getState().applyExternalChatChange(c.path);
           return;
         }
 

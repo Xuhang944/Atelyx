@@ -969,37 +969,39 @@ pub fn write_folder_colors_file(
     atomic_write(&path, &json)
 }
 
-// ===== AI 对话面板会话（.atelyx/editor-chats.json）=====
-// 单一全局历史：全部会话扁平存放，不按笔记归属；不含 API key（key 只进全局 keychain）。
-// 该文件不在 watcher 监听范围（watcher 只监听 画布/笔记/附件 三目录），自写无回环问题。
+// ===== AI 对话面板会话（.atelyx/对话历史/*.jsonl + *.meta.json）=====
+// 以对话历史文件夹为真相：每会话 = 一个消息 .jsonl（真追加式）+ 可选 .meta.json 元数据侧车，
+// 会话清单 = 扫目录（无整文件索引）——多设备并发新建/删除/改名互不覆盖、经 watcher 实时互见。
+// 元数据侧车只在改名/换 Agent 时写；消息正文文件为纯追加（截断场景除外）。
+// 不含 API key（key 只进全局 keychain）。.atelyx/ 为隐藏目录（文件树不显示），
+// watcher 仅放行 对话历史/*.jsonl 与 *.meta.json（见 watcher.rs），其余自写无回环。
 
-/// editor-chats.json 的 schema 版本（与前端 types/chat.ts 的 EDITOR_CHATS_SCHEMA 对齐）。
-pub const EDITOR_CHATS_SCHEMA: &str = "atelyx-editor-chats/v3";
-
-/// 会话消息正文 .jsonl 目录（相对仓库根；位于 `.atelyx/` 下——watcher 不监听、文件面板不显示，无自写回环）。
+/// 会话消息正文 .jsonl 目录（相对仓库根）。
 pub const CHAT_HISTORY_DIR: &str = ".atelyx/对话历史";
 
-/// 单个会话（首条 user 消息前缀作标题，历史列表展示）。
+/// 会话消息正文文件扩展名（JSON Lines：一行一条消息记录，追加式写）。
+pub const CHAT_MESSAGE_EXT: &str = ".jsonl";
+
+/// 会话元数据侧车扩展名（`<会话 id>.meta.json`）。
+pub const CHAT_META_EXT: &str = ".meta.json";
+
+/// 面板级覆盖文件（相对仓库根；设备偏好，不跨设备传播、不监听）。
+pub const EDITOR_CHATS_META_FILE: &str = ".atelyx/editor-chats-meta.json";
+
+/// editor-chats-meta.json 的 schema 版本（与前端 constants/editorChats.ts 的 EDITOR_CHATS_META_SCHEMA 对齐）。
+pub const EDITOR_CHATS_META_SCHEMA: &str = "atelyx-editor-chats-meta/v1";
+
+/// 会话元数据侧车（.atelyx/对话历史/<会话 id>.meta.json）：仅可变会话级字段。
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct EditorChatSession {
+pub struct ChatSessionMeta {
     pub id: String,
+    /// 会话标题（首条 user 消息前缀 / LLM 自动命名 / 手动重命名；历史列表展示）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// 引用的 Agent 配置 id（仓库级 `.atelyx/agents.json`；发送时实时解析系统提示词/工具）
+    /// 引用的 Agent 配置 id（仓库级 `.atelyx/agents.json`；发送时实时解析系统提示词/工具）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
-    /// 系统提示词笔记引用（遗留字段：仅兼容读取，不再注入；缺省按预置「对话」Agent 处理）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub system_prompt_file: Option<String>,
-    /// 已注入上下文的笔记（防重复注入：同一笔记只注入一次，更换笔记才再次注入；仅会话运行期内有效，不落盘）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub injected_note_file: Option<String>,
-    /// 消息正文 .jsonl 相对仓库根路径（`.atelyx/对话历史/<会话 id>.jsonl`）
-    #[serde(default)]
-    pub file: String,
-    pub created_at: i64,
-    pub updated_at: i64,
 }
 
 /// 面板级模型覆盖（优先于仓库默认模型）。
@@ -1010,16 +1012,11 @@ pub struct EditorChatModelOverride {
     pub model: String,
 }
 
-/// editor-chats.json 根结构。
+/// .atelyx/editor-chats-meta.json 根结构（面板级覆盖）。
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct EditorChatsFile {
+pub struct ChatMetaFile {
     pub schema: String,
-    #[serde(default)]
-    pub sessions: Vec<EditorChatSession>,
-    /// 当前激活会话 id（重启后恢复；null = 由前端建空会话）。
-    #[serde(default)]
-    pub active_session_id: Option<String>,
     #[serde(default)]
     pub model_override: Option<EditorChatModelOverride>,
     /// 面板级推理等级覆盖（off/low/medium/high；null = 不指定/跟随默认；与模型覆盖正交）。
@@ -1027,26 +1024,82 @@ pub struct EditorChatsFile {
     pub effort_override: Option<String>,
 }
 
-/// 读 AI 对话面板会话文件（不存在/解析失败返回默认——手编辑损坏不阻塞面板）。
-pub fn read_editor_chats_file(root: &Path) -> Result<EditorChatsFile, String> {
-    let path = root.join(".atelyx").join("editor-chats.json");
+/// 读面板级覆盖（.atelyx/editor-chats-meta.json；不存在/解析失败返回默认）。
+pub fn read_editor_chats_meta_file(root: &Path) -> Result<ChatMetaFile, String> {
+    let path = root.join(EDITOR_CHATS_META_FILE);
     if !path.exists() {
-        return Ok(EditorChatsFile::default());
+        return Ok(ChatMetaFile::default());
     }
     let json = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let file = serde_json::from_str::<EditorChatsFile>(&json).unwrap_or_default();
-    // schema 校验：只认 v3——旧版存量（v1/v2）开发阶段不迁移，视为空历史（不报错）
-    if file.schema != EDITOR_CHATS_SCHEMA {
-        return Ok(EditorChatsFile::default());
+    let file = serde_json::from_str::<ChatMetaFile>(&json).unwrap_or_default();
+    // schema 校验：只认 v1——旧版存量视为空覆盖（不报错）
+    if file.schema != EDITOR_CHATS_META_SCHEMA {
+        return Ok(ChatMetaFile::default());
     }
     Ok(file)
 }
 
-/// 写 AI 对话面板会话文件（原子写 .atelyx/editor-chats.json）。
-pub fn write_editor_chats_file(root: &Path, file: &EditorChatsFile) -> Result<(), String> {
-    let path = root.join(".atelyx").join("editor-chats.json");
+/// 写面板级覆盖（原子写 .atelyx/editor-chats-meta.json）。
+pub fn write_editor_chats_meta_file(root: &Path, file: &ChatMetaFile) -> Result<(), String> {
+    let path = root.join(EDITOR_CHATS_META_FILE);
     let json = serde_json::to_string_pretty(file).map_err(|e| e.to_string())?;
     atomic_write(&path, &json)
+}
+
+// ===== 旧 editor-chats.json（迁移专用，仅读取）=====
+
+/// 旧 editor-chats.json 的 schema 版本（与前端 constants/editorChats.ts 的 EDITOR_CHATS_SCHEMA 对齐）。
+pub const EDITOR_CHATS_SCHEMA: &str = "atelyx-editor-chats/v3";
+
+/// 旧索引单条会话（迁移读取用：仅取 title/agentId 下沉到侧车）。
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyEditorChatSession {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// 消息正文 .jsonl 相对仓库根路径（`.atelyx/对话历史/<会话 id>.jsonl`）
+    #[serde(default)]
+    pub file: String,
+}
+
+/// 旧 editor-chats.json 根结构（迁移读取用）。
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyEditorChatsFile {
+    pub schema: String,
+    #[serde(default)]
+    pub sessions: Vec<LegacyEditorChatSession>,
+    #[serde(default)]
+    pub model_override: Option<EditorChatModelOverride>,
+    #[serde(default)]
+    pub effort_override: Option<String>,
+}
+
+/// 读旧 AI 对话面板会话索引（迁移专用：不存在/解析失败返回默认——手编辑损坏不阻塞）。
+pub fn read_editor_chats_file(root: &Path) -> Result<LegacyEditorChatsFile, String> {
+    let path = root.join(".atelyx").join("editor-chats.json");
+    if !path.exists() {
+        return Ok(LegacyEditorChatsFile::default());
+    }
+    let json = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let file = serde_json::from_str::<LegacyEditorChatsFile>(&json).unwrap_or_default();
+    // schema 校验：只认 v3——旧版存量（v1/v2）开发阶段不迁移，视为空历史（不报错）
+    if file.schema != EDITOR_CHATS_SCHEMA {
+        return Ok(LegacyEditorChatsFile::default());
+    }
+    Ok(file)
+}
+
+/// 删旧索引 editor-chats.json（迁移完成后调用；不存在视为成功——幂等）。
+pub fn delete_editor_chats_file(root: &Path) -> Result<(), String> {
+    let path = root.join(".atelyx").join("editor-chats.json");
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 // ===== 会话消息正文（.atelyx/对话历史/*.jsonl）=====
@@ -1066,11 +1119,16 @@ pub fn read_chat_messages_file(root: &Path, file: &str) -> Result<String, String
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
 }
 
-/// 写会话消息正文 .jsonl（自动建 `.atelyx/对话历史/` 目录 + 原子写）。
+/// 写会话消息正文 .jsonl（自动建 `.atelyx/对话历史/` 目录 + 原子写；末尾补 `\n`，维持「文件以 `\n` 结尾」不变量）。
 pub fn write_chat_messages_file(root: &Path, file: &str, content: &str) -> Result<(), String> {
     std::fs::create_dir_all(root.join(CHAT_HISTORY_DIR)).map_err(|e| e.to_string())?;
     let path = chat_messages_path(root, file)?;
-    atomic_write(&path, content)
+    let normalized = if content.ends_with('\n') {
+        content.to_string()
+    } else {
+        format!("{content}\n")
+    };
+    atomic_write(&path, &normalized)
 }
 
 /// 追加记录：消息 .jsonl 的增量（一行一条消息记录，与前端 serializeChatMessages 字段对齐；
@@ -1095,29 +1153,49 @@ pub struct ChatMessageRecord {
 }
 
 /// 追加式写会话消息正文 .jsonl（消息增长场景：前端只传新增记录，每记录一行紧凑 JSON，省全量重拼与 IPC 载荷）。
+/// 真 OS 追加（open append + fsync）而非读-改-写全量重写：多设备并发追加同一会话互不覆盖
+/// （两写皆落、行交错，每行完整 JSON 可独立解析）。写前校验文件以 `\n` 结尾，缺则补 `\n`——
+/// 崩溃残尾（不完整行）与新记录保持分隔，残尾由前端解析时跳过（降级不丢已提交记录）。
 /// 文件缺失直接报错（前端回落全量重写重建历史——新建会话首次落盘走全量写路径，追加永不该建新文件）。
 /// 截断场景（回到此处/重新生成删消息）仍走 write_chat_messages_file 全量重写。
-/// 读旧内容 + 拼接 + 原子写：失败时文件保持原状，前端按「写成功才推进基线」重试。
 pub fn append_chat_messages_file(
     root: &Path,
     file: &str,
     records: &[ChatMessageRecord],
 ) -> Result<(), String> {
-    std::fs::create_dir_all(root.join(CHAT_HISTORY_DIR)).map_err(|e| e.to_string())?;
+    use std::io::{Read, Seek, Write};
     let path = chat_messages_path(root, file)?;
     if !path.exists() {
         return Err("会话消息文件缺失，请重写".to_string());
     }
-    let mut content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    if !content.ends_with('\n') {
-        content.push('\n');
+    // 崩溃残尾分隔：末尾非 `\n` 时先补一个，避免残尾与新记录粘成一行。
+    // 用独立只读句柄查尾（O_APPEND 写句柄在 Windows 下不可读）。
+    let needs_sep = {
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if size == 0 {
+            false
+        } else {
+            let mut r = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+            r.seek(std::io::SeekFrom::End(-1)).map_err(|e| e.to_string())?;
+            let mut last = [0u8; 1];
+            r.read_exact(&mut last).map_err(|e| e.to_string())?;
+            last[0] != b'\n'
+        }
+    };
+    let mut handle = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    if needs_sep {
+        handle.write_all(b"\n").map_err(|e| e.to_string())?;
     }
     for record in records {
         let line = serde_json::to_string(record).map_err(|e| e.to_string())?;
-        content.push_str(&line);
-        content.push('\n');
+        handle.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+        handle.write_all(b"\n").map_err(|e| e.to_string())?;
     }
-    atomic_write(&path, &content)
+    handle.sync_all().map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// 删会话消息正文 .jsonl（不存在视为成功——幂等，删除会话时调用）。
@@ -1127,6 +1205,85 @@ pub fn delete_chat_messages_file(root: &Path, file: &str) -> Result<(), String> 
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// 校验并定位会话元数据侧车路径：必须位于 `.atelyx/对话历史/` 下且以 .meta.json 结尾（防越权）。
+fn chat_meta_path(root: &Path, file: &str) -> Result<PathBuf, String> {
+    let prefix = format!("{}/", CHAT_HISTORY_DIR);
+    if !file.starts_with(&prefix) || !file.ends_with(CHAT_META_EXT) {
+        return Err(format!("非法会话元数据路径：{}", file));
+    }
+    safe_join(root, file, false)
+}
+
+/// 读会话元数据侧车（不存在/损坏返回 None——缺省标题/Agent）。
+pub fn read_chat_session_meta_file(
+    root: &Path,
+    file: &str,
+) -> Result<Option<ChatSessionMeta>, String> {
+    let path = chat_meta_path(root, file)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let json = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    Ok(serde_json::from_str(&json).ok())
+}
+
+/// 写会话元数据侧车（自动建目录 + 原子写）。
+pub fn write_chat_session_meta_file(
+    root: &Path,
+    file: &str,
+    meta: &ChatSessionMeta,
+) -> Result<(), String> {
+    let path = chat_meta_path(root, file)?;
+    let json = serde_json::to_string_pretty(meta).map_err(|e| e.to_string())?;
+    atomic_write(&path, &json)
+}
+
+/// 删会话元数据侧车（不存在视为成功——幂等）。
+pub fn delete_chat_session_meta_file(root: &Path, file: &str) -> Result<(), String> {
+    let path = chat_meta_path(root, file)?;
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// 会话清单行（扫目录结果：一个会话 = 一个消息 .jsonl + 可选元数据侧车）。
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSessionRow {
+    pub id: String,
+    /// 消息正文 .jsonl 相对仓库根路径（`.atelyx/对话历史/<会话 id>.jsonl`）
+    pub file: String,
+    /// 元数据侧车（缺省 = 缺省标题/Agent，由前端按首条消息派生标题）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<ChatSessionMeta>,
+}
+
+/// 扫 `.atelyx/对话历史/` 列出全部会话（以 `.jsonl` 为存在性真相；孤儿 `.meta.json` 忽略）。
+pub fn list_chat_sessions_file(root: &Path) -> Result<Vec<ChatSessionRow>, String> {
+    let dir = root.join(CHAT_HISTORY_DIR);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut rows = Vec::new();
+    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(CHAT_MESSAGE_EXT) {
+            continue;
+        }
+        let id = name
+            .strip_suffix(CHAT_MESSAGE_EXT)
+            .unwrap_or(&name)
+            .to_string();
+        let file = format!("{CHAT_HISTORY_DIR}/{name}");
+        let meta = read_chat_session_meta_file(root, &file).ok().flatten();
+        rows.push(ChatSessionRow { id, file, meta });
+    }
+    rows.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(rows)
 }
 
 // ===== 工具 =====

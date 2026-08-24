@@ -8,7 +8,8 @@
 //! 递归监听 + 路径段过滤（隐藏 `.` 开头 / 排除文件夹）保证：
 //! - 仓库内任意路径的移动/增删/编辑都能实时推送（修复旧版「外部编辑器移动笔记不刷新」——
 //!   旧版只监听三目录且按前缀分类，仓库根/其他文件夹的移动事件无法正确命中）；
-//! - `.atelyx/` 等隐藏目录与用户排除目录不产生事件（自写 editor-chats.json/config.json 无回环）。
+//! - `.atelyx/` 等隐藏目录与用户排除目录不产生事件（自写 config.json 等无回环）——
+//!   例外：`.atelyx/对话历史/*.jsonl` 与 `*.meta.json`（AI 对话历史）放行，多设备共享文件夹实时互见。
 //!
 //! 不做智能重命名匹配（附录 A 待评审）：外部重命名按「旧文件删除 + 新文件创建」降解，
 //! 旧引用由前端 `canvasStore.markFileMissing` 标「文件缺失」。
@@ -27,7 +28,7 @@ use notify_debouncer_mini::{new_debouncer, DebouncedEvent, Debouncer};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::vault::is_excluded_rel;
+use crate::vault::{is_excluded_rel, CHAT_HISTORY_DIR, CHAT_MESSAGE_EXT, CHAT_META_EXT};
 
 /// 持有当前仓库的 debouncer；切仓库时整体替换（drop 旧的后存新的）。
 /// `Debouncer<W>` 在 `W: Send` 时 `Send`，`RecommendedWatcher` 各平台均 Send，可入 Mutex。
@@ -47,7 +48,7 @@ impl Default for WatcherState {
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct VaultFileChange {
-    /// `"note"` | `"attachment"` | `"canvas"` | `"table"`，由扩展名判定（`.md` / 其余 / `.atlx` / `.atb`）
+    /// `"note"` | `"attachment"` | `"canvas"` | `"table"` | `"chat"`，由扩展名判定（`.md` / 其余 / `.atlx` / `.atb` / `.atelyx/对话历史/*.jsonl|*.meta.json`）
     pub kind: &'static str,
     /// 相对仓库根路径，如 `"笔记/foo.md"`（Windows 分隔符已统一为 `/`）
     pub path: String,
@@ -108,6 +109,17 @@ fn dispatch(app: &AppHandle, root: &Path, exclude: &[String], evt: DebouncedEven
         Ok(r) => r.to_string_lossy().replace('\\', "/"),
         Err(_) => return,
     };
+    // AI 对话历史放行：`.atelyx/对话历史/*.jsonl` 与 `*.meta.json`（多设备共享文件夹实时互见）。
+    // 其余 `.atelyx/` 隐藏内容（config/agents 等）仍走下方过滤，防自写回环。
+    if rel.starts_with(&format!("{}/", CHAT_HISTORY_DIR))
+        && (rel.ends_with(CHAT_MESSAGE_EXT) || rel.ends_with(CHAT_META_EXT))
+    {
+        let _ = app.emit(
+            "vault-file-changed",
+            VaultFileChange { kind: "chat", path: rel },
+        );
+        return;
+    }
     // 过滤隐藏目录（`.atelyx`/`.git`/`.obsidian` 等）与用户排除文件夹（含自写配置回环抑制）
     if is_excluded_rel(&rel, exclude) {
         return;

@@ -36,7 +36,10 @@ import {
   type ConversationFileData,
   type DeleteFolderResult,
   type EditorChatMessage,
-  type EditorChatsFile,
+  type ChatMetaFile,
+  type ChatSessionMeta,
+  type ChatSessionRow,
+  type LegacyEditorChatsFile,
   type FileTreeNode,
   type Message,
   type TableData,
@@ -220,14 +223,50 @@ export async function writeFolderColors(colors: Record<string, string>): Promise
   await invoke("write_folder_colors", { colors });
 }
 
-/** 读 AI 对话面板会话索引（.atelyx/editor-chats.json，不存在/损坏返回默认空文件；消息正文在消息 .jsonl）。 */
-export async function readEditorChats(): Promise<EditorChatsFile> {
-  return invoke<EditorChatsFile>("read_editor_chats");
+/** 读旧 AI 对话面板会话索引（.atelyx/editor-chats.json，一次性迁移用；不存在/损坏返回默认空文件；消息正文在消息 .jsonl）。 */
+export async function readLegacyEditorChats(): Promise<LegacyEditorChatsFile> {
+  return invoke<LegacyEditorChatsFile>("read_editor_chats");
 }
 
-/** 写 AI 对话面板会话索引（原子写 .atelyx/editor-chats.json，单一全局历史；消息正文在消息 .jsonl）。 */
-export async function writeEditorChats(file: EditorChatsFile): Promise<void> {
-  await invoke("write_editor_chats", { file });
+/** 删旧 AI 对话面板会话索引（.atelyx/editor-chats.json，迁移完成后调用；幂等）。 */
+export async function deleteLegacyEditorChats(): Promise<void> {
+  await invoke("delete_legacy_editor_chats");
+}
+
+/** 扫 .atelyx/对话历史/ 列出全部会话（消息 .jsonl + 可选元数据侧车；会话清单 = 扫目录，无整文件索引）。
+ * 消息正文在消息 .jsonl，标题/Agent 在 .meta.json 侧车（缺省 = 由前端按首条消息派生标题）。 */
+export async function listChatSessions(): Promise<ChatSessionRow[]> {
+  return invoke<ChatSessionRow[]>("list_chat_sessions");
+}
+
+/** 读会话元数据侧车（.atelyx/对话历史/<会话 id>.meta.json；不存在/损坏返回 null）。 */
+export async function readChatSessionMeta(
+  file: string,
+): Promise<ChatSessionMeta | null> {
+  return invoke<ChatSessionMeta | null>("read_chat_session_meta", { file });
+}
+
+/** 写会话元数据侧车（原子写；路径已校验）。 */
+export async function writeChatSessionMeta(
+  file: string,
+  meta: ChatSessionMeta,
+): Promise<void> {
+  await invoke("write_chat_session_meta", { file, meta });
+}
+
+/** 删会话元数据侧车（幂等；删除会话时调用）。 */
+export async function deleteChatSessionMeta(file: string): Promise<void> {
+  await invoke("delete_chat_session_meta", { file });
+}
+
+/** 读面板级覆盖（.atelyx/editor-chats-meta.json，不存在/损坏返回默认）。 */
+export async function readEditorChatsMeta(): Promise<ChatMetaFile> {
+  return invoke<ChatMetaFile>("read_editor_chats_meta");
+}
+
+/** 写面板级覆盖（原子写 .atelyx/editor-chats-meta.json）。 */
+export async function writeEditorChatsMeta(file: ChatMetaFile): Promise<void> {
+  await invoke("write_editor_chats_meta", { file });
 }
 
 /** 读会话消息正文 .jsonl（.atelyx/对话历史/ 下，路径已校验；文件缺失报错由调用方降级）。 */

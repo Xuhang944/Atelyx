@@ -23,16 +23,19 @@ export type {
 } from "./message";
 
 export {
-  EDITOR_CHATS_SCHEMA,
+  EDITOR_CHATS_META_SCHEMA,
   CHAT_HISTORY_DIR,
   CHAT_MESSAGE_EXT,
+  CHAT_META_EXT,
   type EditorChatRole,
   type EditorChatMessage,
   type EditorChatMessageRef,
-  type EditorChatIndexEntry,
+  type ChatSessionMeta,
+  type ChatSessionRow,
   type EditorChatSession,
   type EditorChatModelOverride,
-  type EditorChatsFile,
+  type ChatMetaFile,
+  type LegacyEditorChatsFile,
   type NoteRewriteRequest,
 } from "./chat";
 

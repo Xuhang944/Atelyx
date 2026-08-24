@@ -30,13 +30,17 @@ use crate::vault::{
     rename_folder as rename_folder_impl, rename_note_file, rel_with_new_title,
     resolve_link_target, rewrite_internal_links, safe_join, same_physical_file,
     sanitize_filename, walk_md_in, write_canvas_file, write_note as write_note_file, write_vault_config as write_vault_config_file,
-    read_editor_chats_file, read_prompt_notes_file, write_prompt_notes_file,
+    read_editor_chats_file, delete_editor_chats_file, list_chat_sessions_file,
+    read_chat_session_meta_file, write_chat_session_meta_file, delete_chat_session_meta_file,
+    read_editor_chats_meta_file, write_editor_chats_meta_file,
+    read_prompt_notes_file, write_prompt_notes_file,
     read_folder_colors_file, write_folder_colors_file,
     read_agents_file, write_agents_file,
-    write_editor_chats_file, read_chat_messages_file, write_chat_messages_file,
+    read_chat_messages_file, write_chat_messages_file,
     delete_chat_messages_file, read_dir_filtered, regenerate_file_id, cache_evict_canvas,
     BacklinkRow, CanvasFile, CanvasFileRow, CanvasPatch, AgentConfig,
-    ChatMessageRecord, DeleteFolderResult, EditorChatsFile, FileTreeNode, VaultConfig, VaultState,
+    ChatMessageRecord, ChatMetaFile, ChatSessionMeta, ChatSessionRow, DeleteFolderResult,
+    LegacyEditorChatsFile, FileTreeNode, VaultConfig, VaultState,
     WikiIndex, CANVAS_SCHEMA, query_wiki_backlinks,
 };
 
@@ -866,21 +870,70 @@ pub fn write_folder_colors(
     write_folder_colors_file(&root, &colors)
 }
 
-/// 读 AI 对话面板会话（.atelyx/editor-chats.json，不存在/损坏返回默认）。
+/// 读旧 AI 对话面板会话索引（迁移专用：.atelyx/editor-chats.json，不存在/损坏返回默认；迁移完成后删除）。
 #[tauri::command]
-pub fn read_editor_chats(state: State<'_, VaultState>) -> Result<EditorChatsFile, String> {
+pub fn read_editor_chats(state: State<'_, VaultState>) -> Result<LegacyEditorChatsFile, String> {
     let root = state.root()?;
     read_editor_chats_file(&root)
 }
 
-/// 写 AI 对话面板会话（原子写 .atelyx/editor-chats.json；类型层不含 api_key）。
+/// 删旧 AI 对话面板会话索引（.atelyx/editor-chats.json，迁移完成后调用；幂等）。
 #[tauri::command]
-pub fn write_editor_chats(
-    file: EditorChatsFile,
+pub fn delete_legacy_editor_chats(state: State<'_, VaultState>) -> Result<(), String> {
+    let root = state.root()?;
+    delete_editor_chats_file(&root)
+}
+
+/// 扫 .atelyx/对话历史/ 列出全部会话（消息 .jsonl + 可选元数据侧车；会话清单 = 扫目录，无整文件索引）。
+#[tauri::command]
+pub fn list_chat_sessions(state: State<'_, VaultState>) -> Result<Vec<ChatSessionRow>, String> {
+    let root = state.root()?;
+    list_chat_sessions_file(&root)
+}
+
+/// 读会话元数据侧车（.atelyx/对话历史/<会话 id>.meta.json；不存在返回 None）。
+#[tauri::command]
+pub fn read_chat_session_meta(
     state: State<'_, VaultState>,
+    file: String,
+) -> Result<Option<ChatSessionMeta>, String> {
+    let root = state.root()?;
+    read_chat_session_meta_file(&root, &file)
+}
+
+/// 写会话元数据侧车（原子写；路径已校验）。
+#[tauri::command]
+pub fn write_chat_session_meta(
+    state: State<'_, VaultState>,
+    file: String,
+    meta: ChatSessionMeta,
 ) -> Result<(), String> {
     let root = state.root()?;
-    write_editor_chats_file(&root, &file)
+    write_chat_session_meta_file(&root, &file, &meta)
+}
+
+/// 删会话元数据侧车（幂等；删除会话时调用）。
+#[tauri::command]
+pub fn delete_chat_session_meta(state: State<'_, VaultState>, file: String) -> Result<(), String> {
+    let root = state.root()?;
+    delete_chat_session_meta_file(&root, &file)
+}
+
+/// 读面板级覆盖（.atelyx/editor-chats-meta.json，不存在/损坏返回默认）。
+#[tauri::command]
+pub fn read_editor_chats_meta(state: State<'_, VaultState>) -> Result<ChatMetaFile, String> {
+    let root = state.root()?;
+    read_editor_chats_meta_file(&root)
+}
+
+/// 写面板级覆盖（原子写 .atelyx/editor-chats-meta.json）。
+#[tauri::command]
+pub fn write_editor_chats_meta(
+    state: State<'_, VaultState>,
+    file: ChatMetaFile,
+) -> Result<(), String> {
+    let root = state.root()?;
+    write_editor_chats_meta_file(&root, &file)
 }
 
 /// 读会话消息正文 .jsonl（.atelyx/对话历史/ 下，路径已校验；文件缺失报错由前端 catch 降级）。
