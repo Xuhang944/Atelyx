@@ -297,6 +297,21 @@ export function markNoteDiskWrite(file: string): void {
 }
 
 /**
+ * 协作态本地正文同步：把调用方 content 的正文（LF）写回该笔记的 `Y.Text`。
+ * 源码模式编辑只走 content（不经 yCollab 绑定），不写回 ytext 会让 ytext 陈旧——切回实时预览
+ * 时 MarkdownEditor 以陈旧 ytext 为编辑模型源并回传 content，源码编辑被回退。实时预览编辑的
+ * ytext 已由 yCollab 同步，`toString` 一致即 no-op（无回环）；写回触发 ytext update 广播，对端实时可见。
+ */
+export function applyLocalBody(file: string, bodyLF: string): void {
+  const e = entries.get(file);
+  if (!e) return;
+  const y = e.doc.ytext;
+  if (y.toString() === bodyLF) return;
+  y.delete(0, y.length);
+  y.insert(0, bodyLF);
+}
+
+/**
  * 合入远端 sync 消息。
  * - `MESSAGE_BASELINE_RESET`：解析权威基线全文，收敛到磁盘基线（见 handleBaselineReset）。
  * - 普通 y-protocols 消息：按既有逻辑经 readSyncMessage 合入。本实现依赖「重开端在握手前先广播

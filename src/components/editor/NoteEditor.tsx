@@ -341,6 +341,14 @@ export function NoteEditor({ file }: { file: string }) {
     dirtyRef.current = true;
     contentRef.current = v;
     setContent(v);
+    // 协作态源码编辑同步：源码模式改动只更新 content（不经 yCollab），把正文写回 ytext 防切回
+    // 实时预览被陈旧 ytext 回退（实时预览编辑 ytext 已由 yCollab 同步、frontmatter 面板不改正文，
+    // 均无需在此同步；绑定残留期间持续同步，协作重开时 ytext 即当前正文）
+    if (collabBinding && sourceMode) {
+      useNoteCollabStore
+        .getState()
+        .syncLocalBody(file, parseFrontmatter(v).body.replace(/\r\n/g, "\n"));
+    }
     // 冲突中：仅更新本地内容，暂停自动保存（等用户选「重新加载」或「保留本地并保存」，防静默覆盖外部修改）
     if (conflictRef.current) return;
     // 输入即有未落盘改动：显示「未保存」；真正写盘时才切「保存中…」
@@ -708,7 +716,9 @@ export function NoteEditor({ file }: { file: string }) {
           <MarkdownEditor
             body={parsed.body}
             syncSeq={editorSyncSeq}
-            collab={collabBinding}
+            // 协作态门控：仅协作激活时进入 Yjs 编辑（collabBinding 可能因协作关闭/断线残留，若不过滤，
+            // 残留绑定的陈旧 ytext 会成为编辑模型源，源码模式编辑（只改 content）切回实时预览被回退）
+            collab={isCollab ? collabBinding : undefined}
             onBodyChange={(md) => {
               // CRLF 文件：编辑器统一输出 LF，拼回前转回文件原有换行，防 frontmatter/正文混用
               const body = parsed.body.includes("\r\n") ? md.replace(/\n/g, "\r\n") : md;

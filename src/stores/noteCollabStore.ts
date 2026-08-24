@@ -11,6 +11,7 @@ import { create } from "zustand";
 import type { Text as YText } from "yjs";
 import type { Awareness } from "y-protocols/awareness";
 import {
+  applyLocalBody,
   bindNoteDoc,
   unbindNoteDoc,
   setNoteCollabIdentity,
@@ -40,6 +41,8 @@ interface NoteCollabState {
   bind: (file: string, textLF: string, identity: NoteCollabIdentity) => NoteCollabBinding;
   /** 解绑：释放一个引用（多面板各释放一次）；协作文档仍留注册表保留远端状态。 */
   unbind: (file: string) => void;
+  /** 协作态本地正文同步（源码模式编辑走 content 不经 yCollab）：写回该笔记的 ytext，防切回实时预览被陈旧 ytext 回退。 */
+  syncLocalBody: (file: string, bodyLF: string) => void;
   /** 协作态落盘完成通知：驱动磁盘基线收敛（重建 doc 的挂起复位）。 */
   notifyNoteDiskWrite: (file: string) => void;
   /** 应用退出/切仓库：清空全部协作文档上下文。 */
@@ -64,6 +67,10 @@ export const useNoteCollabStore = create<NoteCollabState>((set) => ({
       delete bindings[file];
       return { bindings };
     });
+  },
+
+  syncLocalBody: (file, bodyLF) => {
+    applyLocalBody(file, bodyLF);
   },
 
   notifyNoteDiskWrite: (file) => {

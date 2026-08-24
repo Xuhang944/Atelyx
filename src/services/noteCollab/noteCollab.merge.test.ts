@@ -16,6 +16,7 @@ import * as Y from "yjs";
 import { Text as YText } from "yjs";
 import * as encoding from "lib0/encoding";
 import {
+  applyLocalBody,
   baselineSeedUpdate,
   bindNoteDoc,
   markNoteDiskWrite,
@@ -226,5 +227,26 @@ describe("修复：重开磁盘基线收敛（应修 #1）", () => {
     // 重建触发 new ytext + 重发 RESET & syncStep1
     expect(refreshCount).toBe(1);
     expect(sent.length).toBeGreaterThan(beforeRebuildBroadcasts);
+  });
+});
+
+// ===== 协议层：源码模式本地正文同步（切回实时预览不被陈旧 ytext 回退）=====
+
+describe("applyLocalBody（源码模式编辑同步 ytext）", () => {
+  it("不同正文 → ytext 整体替换（旧内容不残留；正文由调用方传 LF 归一化）", () => {
+    const a = bindNoteDoc(F, "old body content");
+    applyLocalBody(F, "new body\nwith LF");
+    expect(a.ytext.toString()).toBe("new body\nwith LF");
+  });
+
+  it("相同正文 → no-op（不产生 ytext update，无广播增量）", () => {
+    bindNoteDoc(F, "same body");
+    const before = sent.length;
+    applyLocalBody(F, "same body");
+    expect(sent.length).toBe(before);
+  });
+
+  it("无 entry → no-op（不崩）", () => {
+    expect(() => applyLocalBody(F, "anything")).not.toThrow();
   });
 });
