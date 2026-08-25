@@ -92,8 +92,9 @@ interface ChatPanelState {
   /** 当前内存会话所属的仓库 ID（load 时记录；flush 写盘前校验归属，防跨仓库搞混）。 */
   sessionVaultId: string | null;
 
-  /** 进仓库时加载：读盘历史会话 + 进入新对话态（默认显示新的空对话，不恢复上次激活会话）。vaultId = 当前仓库稳定 ID。 */
-  load: (vaultId: string | null) => Promise<void>;
+  /** 进仓库时加载：读盘历史会话 + 进入新对话态（默认显示新的空对话，不恢复上次激活会话）。vaultId = 当前仓库稳定 ID。
+   * `force`：真实仓库切换时传 true——绕过「已加载该仓库」幂等守卫强制重读盘（防 sessionVaultId 巧合等于目标时把切换当冗余跳过，面板停留在旧会话）。 */
+  load: (vaultId: string | null, force?: boolean) => Promise<void>;
   /** 切到新对话态（activeSessionId = null，不创建空会话对象）——发送首条消息时才真正创建会话。 */
   newSession: () => void;
   /** 切换到历史会话（内存 updatedAt 置顶排序；「最近使用」不持久化，重启后按最近对话排序）。 */
@@ -135,8 +136,6 @@ interface ChatPanelState {
 }
 
 let abortController: AbortController | null = null;
-/** 最近一次成功 load 的仓库 ID：同一仓库重复 load（挂载 effect / selectVault / AiChatPanel vaultRoot effect）只读一次盘 */
-let lastLoadedVaultId: string | null = null;
 /** 会话是否有本地改动（新建/切换/删除/发送/设置变化置 true；写盘成功后清）。
  * 脏门控：未改动不写盘——外部删除会话文件后切仓库，flush 不再把内存副本写回（覆盖删除）。 */
 let dirty = false;
@@ -838,9 +837,13 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
   loaded: false,
   sessionVaultId: null,
 
-  load: async (vaultId) => {
-    // 幂等：同一仓库已加载过则跳过（三处调用方共享，防重复读盘 + 二次 load 覆盖进行中的会话改动）
-    if (useChatPanelStore.getState().loaded && lastLoadedVaultId === vaultId) {
+  load: async (vaultId, force = false) => {
+    // 幂等：内存会话已属于目标仓库（sessionVaultId 为权威）则跳过——防多调用方重复读盘
+    // + 二次 load 覆盖进行中会话改动；真实换仓库（sessionVaultId ≠ 目标）必重载；
+    // `force`（selectVault 真实切换传入）绕过守卫强制重读盘。
+    const st = useChatPanelStore.getState();
+    const prevVault = st.sessionVaultId;
+    if (!force && st.loaded && prevVault === vaultId) {
       return;
     }
     // 清残留 debounce timer（防旧仓库 timer 写新仓库状态）+ 脏会话标记
@@ -852,7 +855,13 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     overridesDirty = false;
     // 切仓库让路：中止旧仓库进行中的命名请求，防其后台空转/误写
     abortAutoTitle();
-    set({ pendingMentions: [], pendingRewrites: [] });
+    // 真实换仓库：立即清空旧仓库会话（历史列表/当前会话回到新仓库空上下文），
+    // 杜绝切换后残留、加载失败残留旧仓库数据被展示（force = 明确切换，必清）
+    set({
+      pendingMentions: [],
+      pendingRewrites: [],
+      ...(force || prevVault !== vaultId ? { sessions: [], activeSessionId: null } : {}),
+    });
     try {
       // 一次性迁移：旧 editor-chats.json → 元数据侧车 + 面板覆盖，然后删索引（幂等，失败不阻塞）
       await migrateLegacyIndex();
@@ -882,7 +891,6 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
       if (useAppStore.getState().vaultId !== vaultId) return;
       // 新仓库干净状态：清脏标记（旧仓库未写完的改动不再写回）
       dirty = false;
-      lastLoadedVaultId = vaultId;
       set({
         sessions,
         // 新对话态：打开面板默认是空对话，历史会话从历史浮层手动打开；

@@ -334,12 +334,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       // 切换仓库：清空旧画布运行时状态（防残留 saveTimer 跨仓库写盘/旧消息残留）
       useCanvasStore.getState().resetCanvasState();
       // 文件树/画布列表/AI 会话随切换等待完成：读条覆盖到数据就绪，避免切换后面板仍显示旧仓库内容。
-      // 工作区视图在 set() 已立即切换（不阻塞显示）；加载失败只记录，不把已成功的切换判失败
+      // 工作区视图在 set() 已立即切换（不阻塞显示）；各自独立 try——任一加载失败不连带跳过其余
+      // （尤其 AI 会话加载不能被文件树失败跳过，否则历史/当前会话停留在旧仓库）
       try {
         await refreshCanvasAndTree();
-        await useChatPanelStore.getState().load(info.id);
       } catch (e) {
-        console.error("加载仓库数据失败", e);
+        console.error("加载文件树/画布列表失败", e);
+      }
+      try {
+        // force：真实仓库切换，强制重读盘（防 sessionVaultId 巧合等于目标时被幂等守卫跳过，
+        // 面板停留在旧仓库会话）
+        await useChatPanelStore.getState().load(info.id, true);
+      } catch (e) {
+        console.error("加载 AI 对话会话失败", e);
       }
       return true;
     } catch (e) {

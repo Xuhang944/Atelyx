@@ -220,12 +220,12 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
     useChatPanelStore.getState().clearPendingRewrites();
   }, [pendingRewrites]);
 
-  // 仓库切换时强制重载会话（双保险）：selectVault 已 load 一次，但若其中间某步异常被
+  // 仓库切换时强制重载会话（双保险）：selectVault 已 load(force) 一次，但若其中间某步异常被
   // catch 跳过（如 global.json 写入失败），此处保证消息区/历史列表一定跟随新仓库刷新
   useEffect(() => {
     if (!vaultRoot) return;
     closeHistory();
-    void useChatPanelStore.getState().load(useAppStore.getState().vaultId);
+    void useChatPanelStore.getState().load(useAppStore.getState().vaultId, true);
   }, [vaultRoot, closeHistory]);
 
   // 智能滚动跟随：贴底自动跟随新消息；上翻停止跟随 + 「新消息」回底按钮（与画布对话节点共用 hook）
