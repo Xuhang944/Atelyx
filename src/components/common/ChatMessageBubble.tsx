@@ -235,7 +235,7 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
                           streaming={isStreaming && idx === stepGroups.length - 1}
                         />
                       ) : (
-                        <NarrationLine key={ti} text={tk.text} />
+                        <NarrationLine key={ti} text={tk.text} markdownComponents={markdownComponents} />
                       ),
                     )}
                     {g.tools.map((run) => (
@@ -343,14 +343,17 @@ function toolIcon(name: string, size: number) {
   }
 }
 
-/** 工具轮叙述行：模型在工具轮里说的正文，作为该步的「思考行」展示（不进最终回复）。 */
-function NarrationLine({ text }: { text: string }) {
+/** 工具轮叙述行：模型在工具轮里说的正文，作为该步的叙述行展示（不进最终回复），与最终回复同 Markdown 正文渲染。 */
+function NarrationLine({ text, markdownComponents }: { text: string; markdownComponents?: Components }) {
   return (
-    <div
-      className="rounded px-1.5 py-1 text-[12.5px] leading-relaxed whitespace-pre-wrap break-words"
-      style={{ color: "var(--text-secondary)" }}
-    >
-      {text}
+    <div className="markdown-body max-w-none break-words rounded px-1.5 py-1">
+      <ReactMarkdown
+        remarkPlugins={MARKDOWN_PLUGINS}
+        rehypePlugins={REHYPE_PLUGINS}
+        components={markdownComponents}
+      >
+        {text}
+      </ReactMarkdown>
     </div>
   );
 }

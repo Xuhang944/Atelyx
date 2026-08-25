@@ -28,7 +28,7 @@ import { recordAgentFileWrite } from "@/services/history";
 import { readVaultFileWindow, writeVaultFile, editVaultFile, globVault, grepVault } from "@/services/vault/aiFiles";
 import { fetchWeb } from "@/services/web";
 import { prefix, scanMentionHits } from "@/utils/text";
-import { appendNarration, appendReasoning, coalesceAgentSteps, mergeToolRuns, promoteLastNarration } from "@/utils/agentSteps";
+import { appendNarration, appendReasoning, coalesceAgentSteps, fillAssistantReplyText, mergeToolRuns } from "@/utils/agentSteps";
 import { createPersistController } from "@/utils/persist";
 import { useSettingsStore } from "./settingsStore";
 import { useAppStore } from "./appStore";
@@ -278,7 +278,8 @@ async function autoNameSession(sessionId: string): Promise<void> {
     {
       getMessages: () => {
         const s = useChatPanelStore.getState().sessions.find((x) => x.id === sessionId);
-        return s?.messages ?? [];
+        // 叙述-only 消息（content 为空、正文在 steps）回填正文，供话题命名摘要
+        return (s?.messages ?? []).map(fillAssistantReplyText);
       },
       isNamed: () => autoNamedSessions.has(sessionId),
       applyTitle: (title) => applySessionTitle(sessionId, title),
@@ -646,10 +647,14 @@ async function runExchange(
     }
   }
 
-  // 历史含刚追加的 user 消息；过滤错误占位防污染上下文，system 提示词置首（与画布 runStream 同语义）
-  const apiHistory = [...active.messages, userMsg].filter(
-    (m) => !(m.role === "assistant" && m.content.startsWith(ERROR_PREFIX)),
-  );
+  // 历史含刚追加的 user 消息；叙述-only 消息（content 为空、正文在 steps）先回填 content
+  // （否则空 content 发给部分端点返回 400）；过滤错误占位防污染上下文，system 提示词置首
+  // （与画布 runStream 同语义）
+  const apiHistory = [...active.messages, userMsg]
+    .map(fillAssistantReplyText)
+    .filter(
+      (m) => !(m.role === "assistant" && m.content.startsWith(ERROR_PREFIX)),
+    );
 
   // 系统提示词：Agent 提示词 + 引用文件读取引导（工具含 read_file 时追加「@引用 文件用 read_file 读取」）
   const systemText = assembleAgentSystemPrompt(systemPrompt, tools);
@@ -714,23 +719,6 @@ async function runExchange(
                 messages: s.messages.map((m) =>
                   m.id === asstMsg.id
                     ? { ...m, steps: appendNarration(m.steps ?? [], text) }
-                    : m
-                ),
-              }
-            : s
-        ),
-      }));
-    },
-    // 收束：最后一段叙述提升为最终回复 content（该轮只出正文、未调工具时）
-    onNarrationFinalize: () => {
-      useChatPanelStore.setState((state) => ({
-        sessions: state.sessions.map((s) =>
-          s.id === active.id
-            ? {
-                ...s,
-                messages: s.messages.map((m) =>
-                  m.id === asstMsg.id
-                    ? { ...m, ...promoteLastNarration(m) }
                     : m
                 ),
               }

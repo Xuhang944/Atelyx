@@ -10,7 +10,7 @@
  * 这样思考与叙述交错到达（同一 rAF 帧 flush）时不会把一段思考拆成两个思考块；
  * 工具轮之间的思考仍自然分隔（第二轮思考不会并进第一轮）。
  */
-import type { AgentStep, ToolRun } from "@/types";
+import type { AgentStep, Role, ToolRun } from "@/types";
 
 /**
  * 思考增量写入 steps：并入当前轮最后一个思考步（尾部向前找第一个 reasoning，遇工具步即停）。
@@ -33,7 +33,7 @@ export function appendReasoning(steps: AgentStep[], text: string): AgentStep[] {
   return [...steps, { kind: "reasoning", text }];
 }
 
-/** 叙述正文增量写入 steps（工具轮的文本叙述，渲染为该步的「思考行」）：并入当前轮最后一个 text 步（尾部向前找，遇工具步即停），否则新起。 */
+/** 叙述正文增量写入 steps（工具轮的文本叙述，渲染为该步的「叙述行」）：并入当前轮最后一个 text 步（尾部向前找，遇工具步即停），否则新起。 */
 export function appendNarration(steps: AgentStep[], text: string): AgentStep[] {
   if (!text) return steps;
   for (let i = steps.length - 1; i >= 0; i--) {
@@ -51,28 +51,31 @@ export function appendNarration(steps: AgentStep[], text: string): AgentStep[] {
 }
 
 /**
- * 把最后一段叙述提升为最终回复正文（`onNarrationFinalize`）：
- * 收束轮（无工具、只有正文）里，把刚流式生成的最后一个 text 步从 steps 移除、并入 `content`。
- * 提升「当前轮」最后一个 text 步（尾部向前找，遇工具步即停）——思考尾步可能拖在叙述之后，
- * 若只看最后一步会把回答留在叙述行、永远不进 content。
+ * assistant 可回复正文：content 非空直接返回；否则回退到所有 text 叙述步拼接——
+ * 叙述不再提升进 content 后，叙述-only 消息（工具可用轮直接回答、未调工具）的
+ * 复制/API 历史/分支门控均以此为正文兜底。
  */
-export function promoteLastNarration(msg: {
-  steps?: AgentStep[];
+export function assistantReplyText(msg: {
   content: string;
-}): { steps?: AgentStep[]; content: string } {
-  const steps = msg.steps;
-  if (!steps?.length) return { content: msg.content, steps };
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const s = steps[i];
-    if (s.kind === "text") {
-      return {
-        steps: [...steps.slice(0, i), ...steps.slice(i + 1)],
-        content: msg.content + s.text,
-      };
-    }
-    if (s.kind === "tool") break;
-  }
-  return { content: msg.content, steps };
+  steps?: AgentStep[];
+}): string {
+  if (msg.content) return msg.content;
+  return (msg.steps ?? [])
+    .filter((s): s is Extract<AgentStep, { kind: "text" }> => s.kind === "text")
+    .map((s) => s.text)
+    .join("\n");
+}
+
+/**
+ * assistant 消息 content 为空时以叙述步拼接回填（叙述-only 消息的正文在 steps）：
+ * API 历史 / 话题命名等按 content 取正文的消费方共用，防空正文丢失；其余消息原样返回。
+ */
+export function fillAssistantReplyText<
+  T extends { role: Role; content: string; steps?: AgentStep[] },
+>(m: T): T {
+  return m.role === "assistant" && !m.content
+    ? { ...m, content: assistantReplyText(m) }
+    : m;
 }
 
 /**

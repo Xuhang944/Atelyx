@@ -74,15 +74,10 @@ export interface RunStreamExchangeOptions {
   /** 工具调用过程通知（可视化）：跨轮**全量**累积列表，执行前发 running、执行后发 done/error（调用方 mergeToolRuns 交错进 steps）。 */
   onToolRuns?: (runs: ToolRun[]) => void;
   /**
-   * 工具轮的叙述正文增量通知：每轮在调用工具前说的普通文本**边生成边**追加为一个「思考行」text 步
+   * 工具轮的叙述正文增量通知：每轮在调用工具前说的普通文本**边生成边**追加为一个「叙述行」text 步
    * （不是缓冲到轮末，从而保留流式打字效果），不进 content。
    */
   onNarration?: (text: string) => void;
-  /**
-   * 收束通知：某工具可用轮只出正文、未调工具（即该轮文本就是最终回复）时，把刚流式生成的
-   * 最后一个 text 步提升为 `content`（最终回复正文），供落盘/最终展示复用。
-   */
-  onNarrationFinalize?: () => void;
 }
 
 export async function runStreamExchange(
@@ -222,12 +217,7 @@ export async function runStreamExchange(
 
       if (toolCalls.length === 0) {
         // 纯文本轮：强制末轮正文已实时进 content；工具可用轮里模型直接回答（未调工具）时，
-        // 其正文在 pendingNarration——先 flush 成 text 步，再收束提升为该轮的最终回复 content
-        if (toolsForRound.length) {
-          cancelRaf();
-          flushPending();
-          options.onNarrationFinalize?.();
-        }
+        // 其正文留在 pendingNarration，由循环外统一 flush 成 text 步（叙述行，Markdown 正文渲染）
         break;
       }
 

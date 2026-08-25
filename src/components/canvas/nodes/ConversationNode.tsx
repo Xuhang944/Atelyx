@@ -46,6 +46,7 @@ import { useInlineEdit } from "@/hooks/useInlineEdit";
 import { useDismissOnOutside } from "@/hooks/useDismissOnOutside";
 import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
 import { useWikiNodeLocate } from "@/hooks/useWikiNodeLocate";
+import { assistantReplyText } from "@/utils/agentSteps";
 
 /** 模块级空消息数组，避免 selector 每次返回新引用导致 React 无限循环。 */
 const EMPTY_MESSAGES: Message[] = [];
@@ -843,7 +844,7 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
               // 分支按钮仅在 AI 回复处显示（用户消息不分支）：以该 AI 回复（含）之前的完整状态创建子节点
               const canBranch =
                 m.role === "assistant" &&
-                m.content.trim() !== "" &&
+                assistantReplyText(m).trim() !== "" &&
                 !isStreamingMsg;
               return (
                 <ChatMessageBubble
@@ -874,7 +875,7 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
                   copyText={
                     m.role === "user"
                       ? (m.displayContent ?? m.content)
-                      : m.content
+                      : assistantReplyText(m)
                   }
                   messageId={m.id}
                   canRollback={canBranch}

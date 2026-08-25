@@ -50,6 +50,7 @@ import { PopupLayer } from "@/components/common/PopupLayer";
 import { ERROR_PREFIX } from "@/constants/chat";
 import { usePopupAnchor } from "@/hooks/usePopupAnchor";
 import { noteTitleFromFile } from "@/utils/filename";
+import { assistantReplyText } from "@/utils/agentSteps";
 import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
 import type { EditorChatMessage, EditorChatMessageRef } from "@/types";
 
@@ -428,7 +429,7 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
                 !streaming &&
                 m.role === "assistant" &&
                 i === messages.length - 1 &&
-                m.content.trim() !== "" &&
+                assistantReplyText(m).trim() !== "" &&
                 !m.content.startsWith(ERROR_PREFIX);
               return (
                 <ChatMessageBubble
@@ -450,9 +451,9 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
                       <Loader2 size={12} className="animate-spin" /> 生成中…
                     </span>
                   }
-                  copyText={m.role === "user" ? (m.displayContent ?? m.content) : m.content}
+                  copyText={m.role === "user" ? (m.displayContent ?? m.content) : assistantReplyText(m)}
                   messageId={m.id}
-                  canRollback={!isStreamingMsg && m.role === "assistant" && m.content.trim() !== ""}
+                  canRollback={!isStreamingMsg && m.role === "assistant" && assistantReplyText(m).trim() !== ""}
                   onRollback={handleRollback}
                   onRegenerate={canRegenerate ? handleRegenerate : undefined}
                   userBubbleClass="bg-[var(--bg-tertiary)]"

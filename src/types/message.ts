@@ -46,11 +46,11 @@ export interface ToolRun {
 }
 
 /**
- * Agent 步进的一个步骤（思考与工具调用按序交错，每步工具上方的思考可见）。
+ * Agent 步进的一个步骤（思考与工具调用按序交错，每步工具上方的叙述/思考可见）。
  * - `reasoning`：某一轮工具的思考（`reasoning_content` 流式累积，渲染为可折叠思考行）
- * - `text`：某一轮工具的叙述正文（模型在工具轮里说的普通文本，也作为该步的「思考行」展示）
+ * - `text`：某一轮工具的叙述正文（模型在工具轮里说的普通文本，渲染为该步的叙述行、正文样式，不提升进 content）
  * - `tool`：一次工具调用（含结果详情，可展开）
- * 仅展示性元数据，不进 API 历史（工具轮消息不落历史）。
+ * 仅展示性元数据，不进 API 历史（工具轮消息不落历史；叙述-only 消息的 API/复制正文经 `assistantReplyText` 回退）。
  */
 export type AgentStep =
   | { kind: "reasoning"; text: string }

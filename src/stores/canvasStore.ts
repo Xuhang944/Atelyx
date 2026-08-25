@@ -76,7 +76,7 @@ import {
   runAutoNaming,
 } from "./streaming";
 import { isAssetConsumed } from "@/utils/consumed";
-import { appendNarration, appendReasoning, mergeToolRuns, promoteLastNarration } from "@/utils/agentSteps";
+import { appendNarration, appendReasoning, assistantReplyText, fillAssistantReplyText, mergeToolRuns } from "@/utils/agentSteps";
 import { prefix, scanMentionHits } from "@/utils/text";
 import { sanitizeFilename, siblingPath } from "@/utils/filename";
 import { useSettingsStore } from "./settingsStore";
@@ -831,7 +831,9 @@ async function autoNameConversation(conversationId: string): Promise<void> {
       getMessages: () => {
         const node = findConversationNode(conversationId);
         if (!node) return [];
-        return useCanvasStore.getState().messagesByConv[conversationId] ?? [];
+        const msgs = useCanvasStore.getState().messagesByConv[conversationId] ?? [];
+        // 叙述-only 消息（content 为空、正文在 steps）回填正文，供话题命名摘要
+        return msgs.map(fillAssistantReplyText);
       },
       isNamed: () => {
         const node = findConversationNode(conversationId);
@@ -910,11 +912,15 @@ async function runStream(conversationId: string): Promise<void> {
   abortControllers.set(conversationId, controller);
 
   // 引用已在 send 时固化进 user 消息 content（@引用 路径块 / 非文件节点全文注入），此处不再动态拼接
+  // 叙述-only 消息（content 为空、正文在 steps 叙述步）先回填 content——
+  // 否则空 content 会被下方过滤丢弃，造成多轮上下文断裂
   // 过滤 system 与错误占位 assistant（[错误] 不进 API 历史，避免污染上下文）；
   // 空占位 assistant（预建 content:"" 的流式占位）也不发送——部分端点对空 content 返回 400
   const history = store
     .getState()
-    .messagesByConv[conversationId].filter(
+    .messagesByConv[conversationId]
+    .map(fillAssistantReplyText)
+    .filter(
       (m) =>
         m.role !== "system" &&
         !(
@@ -1103,23 +1109,6 @@ async function runStream(conversationId: string): Promise<void> {
               [conversationId]: l.map((m) =>
                 m.id === asstId
                   ? { ...m, steps: appendNarration(m.steps ?? [], text) }
-                  : m,
-              ),
-            },
-          };
-        });
-      },
-      // 收束：最后一段叙述提升为最终回复 content（该轮只出正文、未调工具时）
-      onNarrationFinalize: () => {
-        if (!findConversationNode(conversationId)) return;
-        store.setState((state) => {
-          const l = state.messagesByConv[conversationId] ?? [];
-          return {
-            messagesByConv: {
-              ...state.messagesByConv,
-              [conversationId]: l.map((m) =>
-                m.id === asstId
-                  ? { ...m, ...promoteLastNarration(m) }
                   : m,
               ),
             },
@@ -2385,7 +2374,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     const copied = src
       .slice(0, upToIdx + 1)
       .filter(
-        (m) => m.content.trim() !== "" || (m.attachments?.length ?? 0) > 0,
+        (m) => assistantReplyText(m).trim() !== "" || (m.attachments?.length ?? 0) > 0,
       );
 
     // 单次 undo 事务：节点 + 边 + 消息复制
@@ -2398,6 +2387,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       conversationId: childId,
       role: m.role,
       content: m.content,
+      // 分支保留完整步骤（叙述/工具/思考）：叙述-only 消息正文在 steps，缺省则分支显示为空
+      steps: m.steps,
       attachments: m.attachments,
       refs: m.refs,
       createdAt: baseTs + i,

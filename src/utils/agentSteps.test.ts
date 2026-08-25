@@ -4,15 +4,16 @@
  * 核心回归：思考与叙述增量在同一 rAF 帧交错到达（引擎 flushPending 先叙述后思考）时，
  * 同轮思考必须并入前一个思考步（一段思考渲染为单个「思考过程」折叠块）、同轮叙述必须并入
  * 前一个叙述步（不拆行）；工具轮之间的思考/叙述仍各自成步（分组渲染每轮独立）。
- * `promoteLastNarration` 在叙述后拖有思考尾步时仍能提升回答为 content。
+ * `assistantReplyText` 对叙述-only 消息以叙述步拼接作正文兜底。
  */
 import { describe, expect, it } from "vitest";
 import {
   appendNarration,
   appendReasoning,
+  assistantReplyText,
   coalesceAgentSteps,
+  fillAssistantReplyText,
   groupAgentSteps,
-  promoteLastNarration,
 } from "./agentSteps";
 import type { AgentStep, ToolRun } from "@/types";
 
@@ -73,52 +74,41 @@ describe("appendNarration", () => {
   });
 });
 
-describe("promoteLastNarration", () => {
-  it("最后一步是叙述时提升为 content", () => {
-    const { steps, content } = promoteLastNarration({
-      steps: [R("想"), T("回答")],
-      content: "",
+describe("assistantReplyText", () => {
+  it("content 非空时直接返回 content", () => {
+    expect(assistantReplyText({ content: "最终回复", steps: [T("叙述")] })).toBe("最终回复");
+  });
+
+  it("content 为空时回退到所有叙述步拼接", () => {
+    expect(
+      assistantReplyText({
+        content: "",
+        steps: [R("想"), T("先查"), tool("t1"), T("再答")],
+      }),
+    ).toBe("先查\n再答");
+  });
+
+  it("无叙述步时返回空串（复制/门控按无回复处理）", () => {
+    expect(assistantReplyText({ content: "", steps: [R("想"), tool("t1")] })).toBe("");
+    expect(assistantReplyText({ content: "", steps: undefined })).toBe("");
+  });
+});
+
+describe("fillAssistantReplyText", () => {
+  it("assistant 空 content 以叙述拼接回填", () => {
+    expect(
+      fillAssistantReplyText({ role: "assistant", content: "", steps: [T("叙述"), tool("t1")] }).content,
+    ).toBe("叙述");
+  });
+
+  it("非 assistant 或 content 非空时原样返回", () => {
+    expect(fillAssistantReplyText({ role: "user", content: "问题" })).toEqual({
+      role: "user",
+      content: "问题",
     });
-    expect(content).toBe("回答");
-    expect(steps).toEqual([R("想")]);
-  });
-
-  it("叙述后拖有思考尾步时仍提升该轮叙述（回答不再卡在叙述行）", () => {
-    const { steps, content } = promoteLastNarration({
-      steps: [R("想"), T("回答"), R("尾")],
-      content: "",
-    });
-    expect(content).toBe("回答");
-    expect(steps).toEqual([R("想"), R("尾")]);
-  });
-
-  it("该轮无叙述（纯思考收束）时不提升", () => {
-    const msg = { steps: [R("想")], content: "" };
-    expect(promoteLastNarration(msg)).toEqual(msg);
-  });
-
-  it("不跨工具轮提升", () => {
-    const msg = {
-      steps: [R("想"), T("叙述"), tool("t1"), R("第二轮")],
-      content: "",
-    };
-    expect(promoteLastNarration(msg)).toEqual(msg);
-  });
-
-  it("提升最后一个工具轮后的叙述，不动前几轮叙述", () => {
-    const { steps, content } = promoteLastNarration({
-      steps: [R("想"), T("第一轮叙述"), tool("t1"), R("二"), T("最终回答")],
-      content: "",
-    });
-    expect(content).toBe("最终回答");
-    expect(steps).toEqual([R("想"), T("第一轮叙述"), tool("t1"), R("二")]);
-  });
-
-  it("无 steps 时原样返回", () => {
-    expect(promoteLastNarration({ content: "x" })).toEqual({
-      content: "x",
-      steps: undefined,
-    });
+    expect(
+      fillAssistantReplyText({ role: "assistant", content: "回复", steps: [T("叙述")] }).content,
+    ).toBe("回复");
   });
 });
 
@@ -166,10 +156,8 @@ describe("流式同帧交错（回归：思考被拆成两行）", () => {
     ]);
     expect(groups[0].tools).toEqual([]);
 
-    // 收束：叙述提升为 content（回答不再卡在叙述行）
-    const promoted = promoteLastNarration({ steps, content: "" });
-    expect(promoted.content).toBe("让我查");
-    expect(promoted.steps).toEqual([R("我想想资料再想")]);
+    // 叙述留在步骤展示：叙述-only 消息以叙述步拼接作可回复正文兜底（不再提升进 content）
+    expect(assistantReplyText({ steps, content: "" })).toBe("让我查");
   });
 });
 
