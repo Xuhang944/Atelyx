@@ -294,7 +294,7 @@ export function InspectorPanel() {
                   ? `系统提示词：已注册提示词（${selectedAgent.systemPromptFile}）`
                   : "系统提示词：未设置"}
                 {" · "}
-                {selectedAgent.tools.length ? `${selectedAgent.tools.length} 工具` : "无工具"}
+                {selectedAgent.tools.length ? `${selectedAgent.tools.length} 可配置工具` : "仅只读基础能力"}
               </p>
             )}
           </section>

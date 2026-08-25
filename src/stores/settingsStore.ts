@@ -168,7 +168,7 @@ interface SettingsState {
   resolveAgent: (id: string | undefined) => AgentConfig | null;
   /**
    * 解析 Agent 发送请求（画布/面板共用）：系统提示词（引用已注册提示词笔记实时读正文）+ 工具组装。
-   * Agent 不存在返回 null；笔记缺失降级为不带系统提示词；tools 空 = 不带工具。
+   * Agent 不存在返回 null；笔记缺失降级为不带系统提示词；tools 空 = 仅只读基础工具（read_file/glob/grep 恒并入）。
    */
   resolveAgentRequest: (
     agentId: string | undefined,
@@ -819,18 +819,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         // 笔记缺失：跳过注入
       }
     }
-    // 工具组装：tools 空 = 不带工具；web_search 勾选但未配置搜索源时剔除并提示
-    // （预置「对话」除外：其 web_search 是缺省自带的，未配置源时静默剔除不弹横幅，
-    // 设置页工具区仍显示「未配置搜索源」角标；用户显式勾选搜索的 Agent 保持提示）
+    // 工具组装：只读基础工具（read_file/glob/grep）恒并入，无需勾选；
+    // 可勾选工具（web_search/web_fetch/edit_file/write_file）按 agent.tools 并入，
+    // web_search 勾选但未配置搜索源时剔除并提示（预置「对话」除外：其 web_search 缺省自带，
+    // 未配置源时静默剔除不弹横幅，设置页工具区仍显示「未配置搜索源」角标；用户显式勾选搜索的 Agent 保持提示）
     const s = get();
     const searchReady = s.isSearchConfigured();
-    let tools: ToolSchema[] = [];
-    let skippedWebSearch = false;
-    if (agent.tools.length) {
-      const assembly = buildAgentTools(agent.tools, searchReady);
-      tools = assembly.tools;
-      skippedWebSearch = assembly.skippedWebSearch && agent.id !== BUILTIN_AGENT_CHAT_ID;
-    }
+    const assembly = buildAgentTools(agent.tools, searchReady);
+    const tools = assembly.tools;
+    const skippedWebSearch = assembly.skippedWebSearch && agent.id !== BUILTIN_AGENT_CHAT_ID;
     return { systemPrompt, tools, skippedWebSearch };
   },
 

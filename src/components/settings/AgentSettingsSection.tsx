@@ -4,9 +4,10 @@
  * Agent = 可复用的对话预设（名称 + 系统提示词 + 工具），对话节点 / AI 对话面板
  * 按 id 引用、发送时实时解析（改 Agent 即改行为，无需改引用处）。
  * 系统提示词 = 引用已注册提示词笔记（右键笔记「注册为提示词」，发送时实时读正文、
- * 外部编辑即时生效）；工具勾选决定 Agent 可自主调用的能力。
+ * 外部编辑即时生效）；可配置工具（写/搜/抓取）勾选决定 Agent 可自主调用的写/搜能力，
+ * 只读基础工具（读文件/查找/搜索内容）恒可用、不占用开关。
  *
- * 预置 Agent（「对话」只读 + 检索 + 联网 / 「Agent」全工具，builtin 标记）默认随仓库出现、
+ * 预置 Agent（「对话」只读基础 + 联网搜索 / 「Agent」全工具，builtin 标记）默认随仓库出现、
  * 可编辑但不可删除（列表不显示删除按钮，store 侧另有兜底）；副本为普通 Agent 可删除。
  *
  * 表单为本地草稿 + 显式「保存」提交（避免每键一次 agents.json 原子写）；
@@ -83,7 +84,9 @@ export function AgentSettingsSection() {
     const promptPart = a.systemPromptFile
       ? `已注册提示词：${noteTitleFromFile(a.systemPromptFile)}`
       : "无提示词";
-    return `${promptPart} · ${a.tools.length ? `${a.tools.length} 工具` : "无工具"}`;
+    return `${promptPart} · ${
+      a.tools.length ? `${a.tools.length} 可配置工具` : "仅只读基础能力"
+    }`;
   };
 
   return (
@@ -96,14 +99,6 @@ export function AgentSettingsSection() {
           >
             <Sparkles size={14} style={{ color: "var(--accent)" }} />
             Agent
-          </div>
-          <div
-            className="text-xs mt-0.5"
-            style={{ color: "var(--text-muted)" }}
-          >
-            对话预设：系统提示词 +
-            工具能力；预置「对话」（只读 + 检索 + 联网）/「Agent」（全工具）不可删除；对话节点
-            / AI 对话面板按 Agent 选择，模型仍独立选择
           </div>
         </div>
         <button
@@ -261,12 +256,11 @@ export function AgentSettingsSection() {
                 className="text-[11px] mt-1"
                 style={{ color: "var(--text-muted)" }}
               >
-                发送时实时读笔记正文注入，外部编辑即时生效；文件面板右键 .md
-                可注册为提示词
+                实时读正文注入；文件面板右键 .md 可注册为提示词
               </p>
             </div>
 
-            {/* 工具：Agent 可自主调用的能力（勾选才可用；全不勾 = 不带工具） */}
+            {/* 工具：可配置能力（web_search/web_fetch/edit_file/write_file 勾选；只读基础工具恒可用，不显示开关） */}
             <div className="mb-4">
               <div
                 className="text-xs mb-1.5"
@@ -275,7 +269,7 @@ export function AgentSettingsSection() {
                 工具
               </div>
               <div className="flex flex-col gap-1">
-                {AGENT_TOOLS_META.map((t) => {
+                {AGENT_TOOLS_META.filter((t) => !t.readOnly).map((t) => {
                   const on = (draft?.tools ?? []).includes(t.id);
                   return (
                     <button
@@ -325,14 +319,6 @@ export function AgentSettingsSection() {
                   );
                 })}
               </div>
-              {(draft?.tools ?? []).length === 0 && (
-                <p
-                  className="text-[11px] mt-1"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  未勾选任何工具 = 不带工具（普通对话）
-                </p>
-              )}
             </div>
 
             {/* 保存 */}
@@ -364,7 +350,6 @@ export function AgentSettingsSection() {
       {confirmDelete && (
         <ConfirmDialog
           title="删除 Agent"
-          description={`删除「${selected?.name ?? ""}」后，引用它的对话节点 / 会话将降级为普通对话（不带系统提示词与工具）。此操作不可撤销。`}
           confirmText="删除"
           onConfirm={() => {
             if (selectedId) void removeAgent(selectedId);

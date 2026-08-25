@@ -23,6 +23,7 @@ import { GREP_TOOL } from "./grep";
 import { EDIT_FILE_TOOL } from "./editFile";
 import { WRITE_FILE_TOOL } from "./writeFile";
 import { createToolRegistry } from "./registry";
+import { FILE_REFERENCE_PROMPT, READONLY_TOOL_IDS } from "@/constants/tools";
 
 /** Agent 模式全部工具（注册顺序 = 名册/浮层展示顺序）。各工具参数类型各异，注册为通用定义。 */
 export const AGENT_TOOLS = [
@@ -51,7 +52,9 @@ export interface AgentToolAssembly {
   unknownIds: string[];
 }
 
-/** 按勾选 id + 搜索配置组装工具名册；未知 id 静默忽略（不迁移存量数据）。 */
+/** 按勾选 id + 搜索配置组装工具名册；未知 id 静默忽略（不迁移存量数据）。
+ * 只读基础工具（read_file/glob/grep）恒并入，不依赖勾选——它们是 Agent 的基础能力；
+ * 可勾选工具（web_search/web_fetch/edit_file/write_file）按 enabledIds 并入，web_search 未配置搜索源时剔除。 */
 export function buildAgentTools(
   enabledIds: string[],
   searchReady: boolean,
@@ -61,14 +64,30 @@ export function buildAgentTools(
   const known = new Set(AGENT_TOOLS.map((t) => t.name));
   const unknownIds = enabledIds.filter((id) => !known.has(id));
   for (const def of AGENT_TOOLS) {
-    if (!enabledIds.includes(def.name)) continue;
     if (def.name === "web_search" && !searchReady) {
       skippedWebSearch = true;
       continue;
     }
+    // 只读基础工具恒并入（enabledIds 里残留的只读 id 也无需过滤，并入语义不变）
+    if (!READONLY_TOOL_IDS.includes(def.name) && !enabledIds.includes(def.name)) continue;
     tools.push({ name: def.name, description: def.description, parameters: def.parameters });
   }
   return { tools, skippedWebSearch, unknownIds };
+}
+
+/**
+ * 组装发送给模型的 system 消息文本：Agent 系统提示词 + 引用文件读取引导。
+ * 工具含 read_file 时追加引导（只读基础工具恒可用后即恒注入）——让模型知道 @引用 的笔记
+ * 应经 read_file 按路径读取正文，而不是假装看过内容。两 store（画布/面板）共用防行为分叉。
+ */
+export function assembleAgentSystemPrompt(
+  systemPrompt: string | undefined,
+  tools: ToolSchema[],
+): string | undefined {
+  const parts: string[] = [];
+  if (systemPrompt?.trim()) parts.push(systemPrompt);
+  if (tools.some((t) => t.name === "read_file")) parts.push(FILE_REFERENCE_PROMPT);
+  return parts.length ? parts.join("\n\n") : undefined;
 }
 
 /** 工具产物 hooks（画布建节点 vs 面板不建 的差异收敛于此）。 */

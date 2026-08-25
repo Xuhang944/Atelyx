@@ -28,7 +28,7 @@ export type EditorChatRole = "user" | "assistant";
 /**
  * 用户消息发送时固化的笔记引用（拖入输入框的 @引用，运行时有效）。
  * 与画布对话的 MessageRef 对称：仅「显示 @chip + 点击打开笔记」用，不参与模型上下文
- * （笔记全文注入随 user 消息 content 固化，见 chatPanelStore.send）。
+ * （@引用 只发文件路径，路径块随 user 消息 content 固化，见 chatPanelStore.send）。
  * 随消息 .jsonl 记录持久化（refs 字段），重开会话恢复 @chip。
  */
 export interface EditorChatMessageRef {
@@ -69,8 +69,8 @@ export interface EditorChatMessage {
    */
   reasoningContent?: string;
   /**
-   * user 消息气泡显示用：发送时的原始输入，与 content 分离——content 可能含注入的
-   * 笔记全文（@引用）/ 系统提示词展开，气泡避免展示一大篇注入内容。
+   * user 消息气泡显示用：发送时的原始输入，与 content 分离——content 含「引用文件」
+   * 路径块（@引用），气泡避免展示注入内容。
    * 随消息 .jsonl 记录持久化（displayContent 字段）。
    */
   displayContent?: string;

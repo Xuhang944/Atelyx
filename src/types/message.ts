@@ -92,7 +92,8 @@ export interface Message {
   reasoningContent?: string;
   /**
    * user 消息气泡显示用：发送时的原始输入（含 @提及 标记），与 content 分离——
-   * content 是 @提及 就地替换后的展开版（发给模型/历史重发），气泡避免展示一大篇正文。
+   * content 是 .md 笔记 @引用 的「引用文件」路径块 + 非文件节点（画布内文本/搜索等）的
+   * 就地替换展开版（发给模型/历史重发），气泡避免展示一大篇注入内容。
    */
   displayContent?: string;
   /** user 消息可携带多模态附件（图片走 vision） */

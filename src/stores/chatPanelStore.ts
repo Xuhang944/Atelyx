@@ -12,7 +12,6 @@ import {
   writeChatMessages,
   appendChatMessages,
   deleteChatMessages,
-  readNote,
 } from "@/services/vault";
 import { toLlmMessages } from "@/services/ai/client";
 import { abortAutoTitle } from "@/services/ai/autoTitle";
@@ -23,14 +22,13 @@ import {
   decideCleanup,
   runAutoNaming,
 } from "./streaming";
-import { runAgentTools } from "@/services/ai/tools";
+import { runAgentTools, assembleAgentSystemPrompt } from "@/services/ai/tools";
 import { runSearch } from "@/services/search";
 import { recordAgentFileWrite } from "@/services/history";
 import { readVaultFileWindow, writeVaultFile, editVaultFile, globVault, grepVault } from "@/services/vault/aiFiles";
 import { fetchWeb } from "@/services/web";
 import { prefix, scanMentionHits } from "@/utils/text";
 import { appendNarration, appendReasoning, coalesceAgentSteps, mergeToolRuns, promoteLastNarration } from "@/utils/agentSteps";
-import { baseName } from "@/utils/filename";
 import { createPersistController } from "@/utils/persist";
 import { useSettingsStore } from "./settingsStore";
 import { useAppStore } from "./appStore";
@@ -226,9 +224,9 @@ function parseChatMessages(jsonl: string): EditorChatMessage[] {
 const autoNamedSessions = new Set<string>();
 
 /**
- * @引用 就地注入（send/regenerate 共用）：把文本内的 `@标签` 按命中实例替换为笔记全文
- * （scanMentionHits 精确位置，从后往前替换防位置漂移）。笔记缺失/读取失败跳过该处注入
- * （保留 @标签 原文）。返回替换后文本 + 成功注入的文件列表（按 @标签 出现顺序，可重复）。
+ * @引用 注入（send/regenerate 共用）：.md 引用只发文件路径——@标签 文本保留原位，
+ * 消息开头拼「引用文件」路径块（模型用 read_file 按需读取正文，不把笔记全文打进每条消息）。
+ * @标签 被手动删掉时跳过（扫描不到标签 = 该引用下沉丢弃，不记 refs）。
  */
 async function injectNoteRefs(
   text: string,
@@ -240,25 +238,20 @@ async function injectNoteRefs(
     text,
     refs.map((r) => ({ nodeId: r.file, text: `@${r.label}` })),
   );
-  let out = text;
-  for (let i = hits.length - 1; i >= 0; i--) {
-    const { start, end, mention } = hits[i];
-    const ref = refs.find((r) => r.file === mention.nodeId);
-    if (!ref) continue;
-    try {
-      const noteText = await readNote(ref.file);
-      if (noteText.trim()) {
-        const name = baseName(ref.file);
-        const wrapper = `[笔记《${name}》内容]\n${noteText}`;
-        out = out.slice(0, start) + wrapper + out.slice(end);
-        injectedFiles.push(ref.file);
-      }
-    } catch {
-      // 笔记缺失/读取失败：跳过注入（保留 @标签 原文）
+  const hitFiles = new Set(hits.map((h) => h.mention.nodeId));
+  // 按 @标签 出现顺序去重（同文件重复引用只出一条路径）
+  const seen = new Set<string>();
+  const active: { file: string; label: string }[] = [];
+  for (const r of refs) {
+    if (hitFiles.has(r.file) && !seen.has(r.file)) {
+      seen.add(r.file);
+      active.push(r);
     }
   }
-  injectedFiles.reverse(); // 从后往前处理后恢复按 @标签 出现顺序
-  return { text: out, injectedFiles };
+  if (!active.length) return { text, injectedFiles };
+  const fileBlock = `[引用文件：\n${active.map((r) => `- ${r.file}`).join("\n")}]\n\n`;
+  injectedFiles.push(...active.map((r) => r.file));
+  return { text: `${fileBlock}${text}`, injectedFiles };
 }
 
 /** 命名成功写回：登记防重复命名 + 更新会话 title + 落盘元数据侧车（自动命名与重新命名共用）。 */
@@ -658,12 +651,15 @@ async function runExchange(
     (m) => !(m.role === "assistant" && m.content.startsWith(ERROR_PREFIX)),
   );
 
+  // 系统提示词：Agent 提示词 + 引用文件读取引导（工具含 read_file 时追加「@引用 文件用 read_file 读取」）
+  const systemText = assembleAgentSystemPrompt(systemPrompt, tools);
+
   await runStreamExchange({
     provider,
     model,
     ...(reasoningEffort ? { reasoningEffort } : {}),
     apiMessages: [
-      ...(systemPrompt ? [{ role: "system" as const, text: systemPrompt }] : []),
+      ...(systemText ? [{ role: "system" as const, text: systemText }] : []),
       ...toLlmMessages(apiHistory),
     ],
     ...(tools.length ? { tools } : {}),
@@ -1003,8 +999,8 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
       markMetaDirty(active.id);
     }
 
-    // @引用（自动 @ 当前笔记 / 手动拖入）：就地替换输入内的 @标签 为笔记全文（与画布对话节点 5.4 语义一致）。
-    // 标签被用户手动删掉/文件缺失时跳过注入（扫描不到标签 = 该引用下沉丢弃，不记 refs）。
+    // @引用（自动 @ 当前笔记 / 手动拖入）：只发文件路径——@标签 保留原位，消息开头拼「引用文件」路径块
+    // （模型用 read_file 读取正文，不整文打进消息）。标签被用户手动删掉/文件缺失时跳过（扫描不到标签 = 该引用下沉丢弃，不记 refs）。
     const { text: finalContent, injectedFiles } = await injectNoteRefs(trimmed, refs);
     const injectedRefs: EditorChatMessageRef[] = injectedFiles
       .map((f) => refs.find((r) => r.file === f))
@@ -1013,7 +1009,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     const userMsg: EditorChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
-      // 气泡显示原始输入；content 含注入的笔记全文（与画布 displayContent 分离语义一致）
+      // 气泡显示原始输入；content 含「引用文件」路径块（与画布 displayContent 分离语义一致）
       content: finalContent,
       displayContent: trimmed,
       refs: injectedRefs.length ? injectedRefs : undefined,
@@ -1042,8 +1038,8 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     if (!resolved) return;
 
     const userMsg = list[lastUserIdx];
-    // 重建注入：以原始输入（displayContent）为基底重读笔记全文并重新就地替换（同 send 语义）。
-    // 不能以 userMsg.content（已含上次注入）为基底——上次注入的 wrapper 会把 @标签 位置
+    // 重建引用：以原始输入（displayContent）为基底重拼「引用文件」路径块（同 send 语义）。
+    // 不能以 userMsg.content（已含上次路径块）为基底——上次的路径块会把 @标签 位置
     // 整体推移，displayContent 的命中索引套在 content 上会错位（多个 @引用时尤甚）；
     // displayContent 缺失/无 refs 跳过。
     let rebuiltContent = userMsg.content;

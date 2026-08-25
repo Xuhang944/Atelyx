@@ -13,6 +13,8 @@ export interface AgentToolMeta {
   label: string;
   /** 依赖搜索源配置（未配置时自动剔除并提示）。 */
   needsSearch?: boolean;
+  /** 只读基础工具：默认恒可用，不依赖 Agent 勾选（设置页不显示开关）。 */
+  readOnly?: boolean;
 }
 
 /** read_file 单次默认/最大返回行数（分页读取，模型可传 offset 继续读大文件）。
@@ -31,12 +33,22 @@ export const GREP_MAX_LINE_BYTES = 2000;
 export const AGENT_TOOLS_META: AgentToolMeta[] = [
   { id: "web_search", label: "联网搜索", needsSearch: true },
   { id: "web_fetch", label: "抓取网页" },
-  { id: "read_file", label: "读取文件" },
-  { id: "glob", label: "查找文件" },
-  { id: "grep", label: "搜索内容" },
+  { id: "read_file", label: "读取文件", readOnly: true },
+  { id: "glob", label: "查找文件", readOnly: true },
+  { id: "grep", label: "搜索内容", readOnly: true },
   { id: "edit_file", label: "编辑文件" },
   { id: "write_file", label: "写入文件" },
 ];
 
-/** Agent 模式默认启用的工具 id 全集（缺省 = 全部工具，用户按需关闭个别）。 */
-export const DEFAULT_AGENT_TOOLS = AGENT_TOOLS_META.map((t) => t.id);
+/** 只读基础工具 id 集合：组装工具名册时无条件并入（不依赖 Agent 勾选）。 */
+export const READONLY_TOOL_IDS = AGENT_TOOLS_META.filter((t) => t.readOnly).map((t) => t.id);
+
+/** Agent 模式默认启用的可配置工具 id（只读基础工具恒可用，不在此列）。 */
+export const DEFAULT_AGENT_TOOLS = AGENT_TOOLS_META.filter((t) => !t.readOnly).map((t) => t.id);
+
+/**
+ * 系统提示词引导（工具含 read_file 时追加，随每条请求进 system 消息）：
+ * @引用 的笔记只带文件路径，模型需用 read_file 按路径读取正文，而不是猜测内容。
+ */
+export const FILE_REFERENCE_PROMPT =
+  "以 @ 前缀引用的文件是用户明确指定的笔记，其相对仓库根路径列在消息开头「引用文件」列表中。需要其内容时用 read_file 工具读取；在读取之前不要声称已查看过该文件。";

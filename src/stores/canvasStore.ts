@@ -45,7 +45,7 @@ import {
 import { toLlmMessages } from "@/services/ai/client";
 import { abortAutoTitle } from "@/services/ai/autoTitle";
 import { runSearch, resultsToText } from "@/services/search";
-import { runAgentTools } from "@/services/ai/tools";
+import { runAgentTools, assembleAgentSystemPrompt } from "@/services/ai/tools";
 import { readVaultFileWindow, writeVaultFile, editVaultFile, globVault, grepVault } from "@/services/vault/aiFiles";
 import { fetchWeb } from "@/services/web";
 import {
@@ -133,11 +133,17 @@ interface ClipboardNode {
 }
 let clipboardNodes: ClipboardNode[] = [];
 
-/** getReferencedInputs 返回的待注入引用（含源节点 id、显示名、注入内容）。 */
+/**
+ * getReferencedInputs 返回的待注入引用（含源节点 id、显示名、注入内容）。
+ * `.md` 笔记节点（文本且带 file）走「引用文件」路径块：`file` = 相对仓库根路径、`content` 恒空；
+ * 其余节点（画布内文本/搜索/表格）走全文注入：`content` = 注入正文、`file` 为空。
+ */
 interface ReferencedInput {
   nodeId: string;
   label: string;
   content: string;
+  /** .md 笔记节点相对仓库根路径（@引用/连边统一走路径块，模型 read_file 读取）。 */
+  file?: string;
 }
 
 /** @ 提及映射：输入框内可见的 @显示名 → 源节点 id（发送时就地替换为引用内容）。 */
@@ -844,7 +850,7 @@ async function autoNameConversation(conversationId: string): Promise<void> {
 
 /**
  * 流式执行一轮对话：预建 assistant 消息 → 按注入语义组装 messages → SSE 流式写入。
- * send 与 regenerate 共用（流式输出/停止；5.4：引用注入 user 消息）。
+ * send 与 regenerate 共用（流式输出/停止；引用固化进 user 消息）。
  *
  * 性能与状态正确性要点：
  * - onDelta 用 rAF 合并高频 token，避免每 token 一次 setState 卡 UI。
@@ -903,7 +909,7 @@ async function runStream(conversationId: string): Promise<void> {
   const controller = new AbortController();
   abortControllers.set(conversationId, controller);
 
-  // 5.4：引用已在 send 时固化进 user 消息 content（一次性注入），此处不再动态拼接
+  // 引用已在 send 时固化进 user 消息 content（@引用 路径块 / 非文件节点全文注入），此处不再动态拼接
   // 过滤 system 与错误占位 assistant（[错误] 不进 API 历史，避免污染上下文）；
   // 空占位 assistant（预建 content:"" 的流式占位）也不发送——部分端点对空 content 返回 400
   const history = store
@@ -932,11 +938,13 @@ async function runStream(conversationId: string): Promise<void> {
         });
       }
     }
-    // 5.4：引用已在 send 时固化进 user 消息 content（一次性注入），此处不再动态拼接
+    // 引用已在 send 时固化进 user 消息 content（@引用 路径块 / 非文件节点全文注入），此处不再动态拼接
     const apiMessages: LlmMessage[] = toLlmMessages(history);
-    // 系统提示词注入：Agent 引用已注册提示词笔记实时读正文（外部编辑即时生效）。读失败静默降级不阻塞对话。
-    if (agentReq?.systemPrompt?.trim()) {
-      apiMessages.unshift({ role: "system", text: agentReq.systemPrompt });
+    // 系统提示词注入：Agent 引用已注册提示词笔记实时读正文（外部编辑即时生效，读失败静默降级）；
+    // 工具含 read_file 时追加「@引用 文件用 read_file 读取」引导。
+    const systemPrompt = assembleAgentSystemPrompt(agentReq?.systemPrompt, tools);
+    if (systemPrompt) {
+      apiMessages.unshift({ role: "system", text: systemPrompt });
     }
     await runStreamExchange({
       provider,
@@ -1217,8 +1225,8 @@ function describeNodeAsInput(node: Node): { text: string; attach?: Attachment } 
 
 /**
  * 用最新资产状态重建最后一条 user 消息（regenerate 前调用，扩展）：
- * - @提及（refs.label 作为 `@显示名` 出现在 displayContent）：就地替换为最新内容——
- *   与 send 侧 `String.replace(m.text, …)` 同为「首处子串替换」语义，保持行为一致
+ * - .md 笔记 @引用（refs.label 出现在 displayContent）：保留 @标题 原位，最新文件路径重拼「引用文件」块
+ * - 非文件 @提及：就地替换为最新内容——与 send 侧「首处子串替换」语义一致
  * - 正向连边引用（label 不在 displayContent）：重拼 `[引用：…]` 前缀
  * - 附件：画布媒体节点引用（sourceNodeId）替换为最新 thumb/body，临时附件保留
  * 源节点缺失/读不到内容时跳过（保持旧快照，不崩坏）。
@@ -1231,13 +1239,22 @@ function rebuildUserContent(
   let content = userMsg.displayContent as string;
   const prefixParts: string[] = [];
   const attachByNode = new Map<string, Attachment>();
+  const fileRefs: string[] = [];
   for (const ref of userMsg.refs ?? []) {
     const node = nodes.find((n) => n.id === ref.nodeId);
     if (!node) continue;
+    const tag = `@${ref.label}`;
+    const inText = content.includes(tag);
+    // .md 笔记节点：@引用 与连边引用统一走「引用文件」路径块——@标题 在正文则保留原位（不替换），
+    // 取最新文件路径（笔记改名/移动后更新）；非文件节点（画布内文本/搜索/表格）落到下方整文注入分支
+    if (node.type === "text" && (node.data as unknown as TextData).file) {
+      const file = (node.data as unknown as TextData).file as string;
+      if (!fileRefs.includes(file)) fileRefs.push(file);
+      continue;
+    }
     const latest = describeNodeAsInput(node);
     if (!latest) continue;
-    const tag = `@${ref.label}`;
-    if (content.includes(tag)) {
+    if (inText) {
       // 函数形式替换：latest.text 若含 `$`/`&` 不会被 String.replace 当作替换模式解析
       content = content.replace(tag, () => latest.text);
       // 保留 sourceNodeId：附件来自画布媒体节点（@ 提及），供「已注入」检测与语义完整
@@ -1250,8 +1267,13 @@ function rebuildUserContent(
       prefixParts.push(latest.text);
     }
   }
+  // 重建整体结构 = 文件块 + 连边引用前缀 + 正文（与 send 拼装顺序一致）
+  const fileBlock = fileRefs.length
+    ? `[引用文件：\n${fileRefs.map((f) => `- ${f}`).join("\n")}]\n\n`
+    : "";
   if (prefixParts.length)
-    content = `[引用：${prefixParts.join("\n\n")}]\n\n${content}`;
+    content = `${fileBlock}[引用：${prefixParts.join("\n\n")}]\n\n${content}`;
+  else if (fileBlock) content = `${fileBlock}${content}`;
   const attachments = (userMsg.attachments ?? []).map((a) =>
     a.sourceNodeId ? (attachByNode.get(a.sourceNodeId) ?? a) : a,
   );
@@ -2002,6 +2024,15 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     for (const edge of upstream) {
       const sourceNode = nodes.find((n) => n.id === edge.source);
       if (!sourceNode) continue;
+      // .md 笔记节点：连边引用与 @提及 统一走「引用文件」路径块（模型 read_file 读取，不整文注入）
+      if (sourceNode.type === "text") {
+        const d = sourceNode.data as unknown as TextData;
+        if (d.file) {
+          const label = d.title || prefix(d.bodyMd ?? "") || "文本";
+          inputs.push({ nodeId: sourceNode.id, label, content: "", file: d.file });
+          continue;
+        }
+      }
       const input = describeNodeAsInput(sourceNode);
       if (!input) continue;
       // 媒体图片（attach 形态）不走连边注入：连边引用是文本语义，图片经 @提及 以附件发送（vision）；
@@ -2082,17 +2113,29 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       schedulePersist();
     }
 
-    // 5.4 就地替换：@提及 → 引用内容（文本节点正文 / 媒体附件），用户可见的 @显示名 位置即注入位置。
-    // 用 scanMentionHits 按命中实例精确替换（重复 @提及 时不错位），从后往前替换避免位置漂移。
-    // 内容与附件形态统一走 describeNodeAsInput（与连边引用/regenerate 重建同源，防行为分叉）。
+    // @提及 → 引用：文本节点正文 / 媒体附件就地替换注入；.md 笔记节点改为只发文件路径
+    // （消息顶部「引用文件」块，模型用 read_file 读取正文），@标题 文本位保留不动。
+    // 用 scanMentionHits 按命中实例精确处理（重复 @提及 时不错位），文本替换从后往前避免位置漂移。
     let finalContent = content;
     const mentionRefs: ReferencedInput[] = [];
     const mentionAtts: PendingAttachment[] = [];
+    const fileRefs: Array<{ nodeId: string; label: string; file: string }> = [];
     const hits = scanMentionHits(content, mentions);
     for (let i = hits.length - 1; i >= 0; i--) {
       const { start, end, mention: m } = hits[i];
       const node = nodes.find((n) => n.id === m.nodeId);
       if (!node) continue;
+      const label = m.text.slice(1);
+      // .md 笔记节点：@引用 只发文件路径（保留 @标题 原位），模型按需 read_file 读取；
+      // 仍记入 mentionRefs（气泡 @chip + 防连边引用重复注入）
+      if (node.type === "text") {
+        const d = node.data as unknown as TextData;
+        if (d.file) {
+          fileRefs.push({ nodeId: node.id, label, file: d.file });
+          mentionRefs.push({ nodeId: node.id, label, content: "" });
+          continue;
+        }
+      }
       const input = describeNodeAsInput(node);
       if (!input) continue;
       if (input.attach) {
@@ -2111,32 +2154,51 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       } else {
         finalContent =
           finalContent.slice(0, start) + input.text + finalContent.slice(end);
-        mentionRefs.push({
-          nodeId: node.id,
-          label: m.text.slice(1),
-          content: input.text,
-        });
+        mentionRefs.push({ nodeId: node.id, label, content: input.text });
       }
     }
     mentionRefs.reverse(); // 从后往前处理后恢复按出现顺序
     mentionAtts.reverse(); // 同 mentionRefs：多图片附件保持 @提及 出现顺序
 
-    // 未被 @提及 的入边引用（正向连边）仍拼到消息最前
+    // 连边通道：与 @提及 通道遍历的是同一引用集合（「引用即边」——每个 @提及 都建边），
+    // 是注入的两半——@提及 通道按 @标签 位置原位注入；这里只补「有边但当前消息无 @标签 且从未消费」的引用。
+    // 交互建的边首轮发送即被 @提及 消费，不会走到此分支；仅导入/旧画布/协作遗留的孤儿边命中。
     const edgeRefs = get().getReferencedInputs(conversationId);
     const already = new Set(mentionRefs.map((r) => r.nodeId));
     // 已消费（历史消息已注入过）的引用不重复注入——边消费后保留为实线，若不过滤，
-    // 后续每条消息都会重拼 [引用：…] 前缀并在气泡里累计同样的 @chip（5.4 一次性语义）
+    // 后续每条消息都会重拼 [引用：…] 前缀并在气泡里累计同样的 @chip
     const historyMsgs = messagesByConv[conversationId] ?? [];
     const extraRefs = edgeRefs.filter(
       (r) => !already.has(r.nodeId) && !isAssetConsumed(historyMsgs, r.nodeId),
     );
-    const refText = extraRefs
+    // 连边引用分区：.md 笔记（file）并入「引用文件」路径块；非文件节点（画布内文本/搜索/表格）整文注入
+    const edgeFileRefs: Array<{ nodeId: string; label: string; file: string }> = [];
+    const contentRefs: ReferencedInput[] = [];
+    for (const r of extraRefs) {
+      if (r.file) edgeFileRefs.push({ nodeId: r.nodeId, label: r.label, file: r.file });
+      else contentRefs.push(r);
+    }
+    const refText = contentRefs
       .map((r) => r.content)
       .filter(Boolean)
       .join("\n\n");
     finalContent = refText
       ? `[引用：${refText}]\n\n${finalContent}`
       : finalContent;
+
+    // 「引用文件」路径块：@提及 .md（已恢复 @出现顺序）+ 连边 .md 合并，同 nodeId 去重——
+    // 与 FILE_REFERENCE_PROMPT 引导对应，模型据此用 read_file 读取正文
+    const seenFiles = new Set<string>();
+    const uniqueFileRefs = [...fileRefs.reverse(), ...edgeFileRefs].filter((r) => {
+      if (seenFiles.has(r.nodeId)) return false;
+      seenFiles.add(r.nodeId);
+      return true;
+    });
+    if (uniqueFileRefs.length) {
+      finalContent = `[引用文件：\n${uniqueFileRefs
+        .map((r) => `- ${r.file}`)
+        .join("\n")}]\n\n${finalContent}`;
+    }
     const refs = [...extraRefs, ...mentionRefs];
     const allAttachments = [...attachments, ...mentionAtts];
 
@@ -2253,7 +2315,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     }
     if (lastUserIdx < 0) return;
 
-    // 5.4 扩展：最后一条 user 消息若引用了资产，用最新状态重建（文本/媒体内容与附件都可能已被
+    // 最后一条 user 消息若引用了资产，用最新状态重建（文件路径/文本/媒体内容与附件都可能已被
     // 编辑或外部修改，重新生成应基于最新上下文而非发送时的快照）。重建后随 .atlx 持久化。
     // displayContent 是重建基底（原始输入含 @标记）；旧消息无该字段时跳过（无法反推 @位置）。
     let nextList = list;
