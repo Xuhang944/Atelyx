@@ -7,7 +7,8 @@
 //!
 //! 协议（JSON over WS，字段 camelCase）：
 //! - C→S `hello`：`{ type, vaultId, nickname, color, deviceName }`（首条必发）
-//! - C→S `presence`：`{ type, file?, selection?, view? }`（选中变化节流后发）
+//! - C→S `presence`：`{ type, file?, selection?, view?, openFiles?, lockedNodes?, streamingNodeIds? }`
+//!   （选中变化节流后发；openFiles/lockedNodes/streamingNodeIds 不透明透传，供协作房间/画布锁/生成灯）
 //! - C→S `table-patch`：`{ type, file, patch }`（表格增量补丁广播；patch 不透明透传，
 //!   客户端按 file 匹配只应用当前打开的表格）
 //! - C→S `canvas-patch`：`{ type, file, patch }`（画布增量补丁广播；patch 不透明透传，
@@ -15,7 +16,7 @@
 //! - C→S `ping`（保活）/ `bye`（离开）
 //! - S→C `hello-ack`：`{ type, peerId }`（分配的本连接 id，先于 peers 帧——客户端据此把自己过滤出列表）
 //! - S→C `peers`：`{ type, peers: [{ peerId, nickname, color, deviceName, presence? }] }`
-//!   （房间成员变化时全量推送；presence 字段 = `{ file?, selection?, view? }`）
+//!   （房间成员变化时全量推送；presence 字段 = `{ file?, selection?, view?, openFiles?, lockedNodes?, streamingNodeIds? }`）
 //! - S→C `presence`：`{ type, peerId, presence }`（他人 presence 转发，不含自己）
 //! - S→C `table-patch`：`{ type, peerId, file, patch }`（他人补丁转发，不含自己）
 //! - S→C `canvas-patch`：`{ type, peerId, file, patch }`（他人补丁转发，不含自己）
@@ -82,6 +83,15 @@ struct ClientMsg {
     selection: Option<serde_json::Value>,
     #[serde(default)]
     view: Option<String>,
+    /// 打开文件清单（协作房间面板；不透明透传，relay 不解析）。
+    #[serde(default)]
+    open_files: Option<serde_json::Value>,
+    /// 画布对话独占锁声明（presence 跨视图保活；不透明透传）。
+    #[serde(default)]
+    locked_nodes: Option<serde_json::Value>,
+    /// 画布正在 AI 生成的对话节点（生成灯；不透明透传）。
+    #[serde(default)]
+    streaming_node_ids: Option<serde_json::Value>,
     /// 表格增量补丁（`table-patch` 消息；不透明透传，relay 不解析内容）。
     #[serde(default)]
     patch: Option<serde_json::Value>,
@@ -96,6 +106,12 @@ struct Presence {
     file: Option<String>,
     selection: Option<serde_json::Value>,
     view: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    open_files: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    locked_nodes: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    streaming_node_ids: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -264,6 +280,9 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
                             file: msg.file,
                             selection: msg.selection,
                             view: msg.view,
+                            open_files: msg.open_files,
+                            locked_nodes: msg.locked_nodes,
+                            streaming_node_ids: msg.streaming_node_ids,
                         };
                         let mut rooms = hub.0.lock().unwrap();
                         if let Some(room) = rooms.get_mut(&hello.vault_id) {

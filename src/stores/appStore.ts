@@ -22,6 +22,7 @@ import { useVaultStore } from "@/stores/vaultStore";
 import { useChatPanelStore } from "@/stores/chatPanelStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
+import { useCalendarStore } from "@/stores/calendarStore";
 import { useCollabStore } from "@/stores/collabStore";
 import { markSelfSave } from "@/utils/selfSave";
 import { useCanvasStore } from "@/stores/canvasStore";
@@ -133,6 +134,12 @@ interface AppState {
   /** 窗口形态切换（view effect 用）：启动页固定 960×640 不可调整 / 工作区恢复可调整。 */
   applyStartupWindow: () => Promise<void>;
   applyWorkspaceWindow: () => Promise<void>;
+  /** 设置弹窗状态（null = 关闭；tab 为可选初始 tab，缺省 = 通用）。 */
+  settingsModal: { tab?: string } | null;
+  /** 打开设置弹窗（可指定初始 tab）。 */
+  openSettings: (tab?: string) => void;
+  /** 关闭设置弹窗。 */
+  closeSettings: () => void;
 
   loadList: () => Promise<void>;
   /** 打开画布（树行携带 id + file）：设置全局文件状态并记录「上次打开」（uiState）。 */
@@ -303,6 +310,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       await useCanvasStore.getState().flush();
       await useTableStore.getState().flush();
       await useChatPanelStore.getState().flush(get().vaultId);
+      await useCalendarStore.getState().flush();
       const info = await openVault(root);
       const now = Math.floor(Date.now() / 1000);
       const recents = bumpRecentVault(get().recentVaults, info, now);
@@ -368,9 +376,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   backToVaultSelect: () => {
-    // 回启动页：AI 会话落盘防 debounce 丢改动（应用级 UI 状态跨仓库/跨会话保留，无需清理）
+    // 回启动页：AI 会话/日历日程落盘防 debounce 丢改动（应用级 UI 状态跨仓库/跨会话保留，无需清理）
     void useChatPanelStore.getState().flush(get().vaultId);
+    void useCalendarStore.getState().flush();
     useSettingsStore.getState().clearVaultConfig();
+    // 清设置弹窗（防止下次进入工作区残留重开）
+    set({ settingsModal: null });
     set({
       view: "vaultSelect",
       vaultRoot: null,
@@ -390,6 +401,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     await useCanvasStore.getState().flush();
     await useTableStore.getState().flush();
     await useChatPanelStore.getState().flush(get().vaultId);
+    await useCalendarStore.getState().flush();
     await useUiStateStore.getState().flush();
     await useSettingsStore.getState().flush();
     // 协作连接收尾不在此处（本函数启动自动更新检查时也会调用）：dispose 会断开会话内协作连接
@@ -429,6 +441,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   applyStartupWindow: () => applyStartupWindowSvc(),
   applyWorkspaceWindow: () => applyWorkspaceWindowSvc(),
 
+  settingsModal: null,
+  openSettings: (tab) => set({ settingsModal: tab ? { tab } : {} }),
+  closeSettings: () => set({ settingsModal: null }),
+
   loadList: async () => {
     const vaultId = get().vaultId;
     try {
@@ -445,6 +461,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ currentCanvasId: row.id, currentCanvasFile: row.file });
     // 记录「上次打开」供下次进入仓库恢复（画布窗口已无标签概念，打开即唯一文件状态）
     useUiStateStore.getState().recordOpenCanvas(row.file);
+    // 记录最近打开（主页面板「最近打开」数据源）
+    const vaultId = get().vaultId;
+    if (vaultId) useUiStateStore.getState().recordRecentFile(row.file, "canvas", vaultId);
   },
   closeCanvas: () => {
     set({ currentCanvasId: null, currentCanvasFile: null });
@@ -457,6 +476,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   openNote: (file, title) => {
     set({ currentNoteFile: file, currentNoteTitle: title });
     useUiStateStore.getState().recordOpenNote(file);
+    const vaultId = get().vaultId;
+    if (vaultId) useUiStateStore.getState().recordRecentFile(file, "note", vaultId);
   },
   closeNote: () => {
     set({ currentNoteFile: null, currentNoteTitle: "" });
@@ -465,6 +486,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   openTable: (file, title) => {
     set({ currentTableFile: file, currentTableTitle: title });
     useUiStateStore.getState().recordOpenTable(file);
+    const vaultId = get().vaultId;
+    if (vaultId) useUiStateStore.getState().recordRecentFile(file, "table", vaultId);
     // 内容加载由 TableView 自载（同 CanvasView：openCanvas 不加载，视图挂载时按文件读盘）——
     // 撕裂窗口只镜像文件路径，须由视图统一承担加载；此处不 load 防主窗口切表时重复读盘
   },

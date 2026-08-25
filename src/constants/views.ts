@@ -11,5 +11,9 @@ export const VIEW_LABELS: Record<ViewKind, string> = {
   search: "搜索",
   inspector: "属性",
   aichat: "AI 对话",
+  collabroom: "协作房间",
+  calendar: "日历",
+  repohistory: "仓库历史",
+  recent: "最近打开",
   empty: "空面板",
 };

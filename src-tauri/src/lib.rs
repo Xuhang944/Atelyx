@@ -115,6 +115,9 @@ pub fn run() {
             commands::windows::create_panel_window,
             // 跨窗口拖拽释放检测（物理左键状态轮询，见 commands/windows.rs）
             commands::windows::is_mouse_left_down,
+            // 主页面板数据（日历/仓库历史：带日期笔记扫描 + 全仓库历史版本聚合）
+            commands::home::list_dated_notes,
+            commands::home::list_repo_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

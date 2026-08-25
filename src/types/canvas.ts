@@ -294,6 +294,8 @@ export interface GlobalConfig {
   fontFamily?: string;
   /** 进入仓库时自动恢复上次打开的文件（画布/笔记/表格）。缺省 = true（开启）。 */
   autoRestoreFiles?: boolean;
+  /** 进入仓库时自动切到「主页」布局。缺省 = false（保持恢复上次界面）。 */
+  defaultHomeLayout?: boolean;
   /** 协作中转（collab-relay）开关。缺省 = false（关闭）。 */
   collabEnabled?: boolean;
   /** 协作中转地址（如 ws://192.168.1.10:17701/ws）。 */

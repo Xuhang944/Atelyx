@@ -82,11 +82,13 @@ export {
   type WhiteboardEdge,
 } from "./canvas";
 
-export { UI_STATE_SCHEMA, type AppUiState } from "./uiState";
+export { UI_STATE_SCHEMA, type AppUiState, type RecentFileEntry } from "./uiState";
 
 export {
   VIEW_KINDS,
+  HOME_LAYOUT_ID,
   createDefaultLayouts,
+  createHomeLayout,
   createTab,
   createPanel,
   createEmptyPanel,
@@ -99,6 +101,10 @@ export {
   type WorkspaceLayout,
   type DetachedWindow,
 } from "./workspaceLayout";
+
+export type { CalendarItem } from "./calendar";
+
+export type { DatedNote, RepoHistoryEntry, DailyCount, RepoHistoryResult } from "./home";
 
 export type {
   FieldType,

@@ -28,6 +28,10 @@ export type ViewKind =
   | "search"
   | "inspector"
   | "aichat"
+  | "collabroom"
+  | "calendar"
+  | "repohistory"
+  | "recent"
   | "empty";
 
 /** 分割方向：horizontal = 左右并排，vertical = 上下叠放。 */
@@ -88,6 +92,10 @@ export const VIEW_KINDS: ViewKind[] = [
   "search",
   "inspector",
   "aichat",
+  "collabroom",
+  "calendar",
+  "repohistory",
+  "recent",
 ];
 
 /** 新建标签（锁定恒 false；视图恒非 empty）。 */
@@ -106,9 +114,42 @@ export function createPanel(view: ViewKind): PanelNode {
   return { kind: "panel", id: crypto.randomUUID(), tabs: [tab], activeTabId: tab.id };
 }
 
+/** 主页布局的稳定 id（固定置顶、不可删除/排序/重命名；uiState 加载时缺失即补入，幂等只补一次）。 */
+export const HOME_LAYOUT_ID = "home";
+
+/** 主页布局（固定置顶；左窄右宽：左列 协作房间+最近打开，右区 日历+仓库历史；面板内部仍可自由调整）。 */
+export function createHomeLayout(): WorkspaceLayout {
+  return {
+    id: HOME_LAYOUT_ID,
+    name: "主页",
+    tree: {
+      kind: "split",
+      id: crypto.randomUUID(),
+      direction: "horizontal",
+      children: [
+        {
+          kind: "split",
+          id: crypto.randomUUID(),
+          direction: "vertical",
+          children: [createPanel("collabroom"), createPanel("recent")],
+          sizes: [50, 50],
+        },
+        {
+          kind: "split",
+          id: crypto.randomUUID(),
+          direction: "vertical",
+          children: [createPanel("calendar"), createPanel("repohistory")],
+          sizes: [55, 45],
+        },
+      ],
+      sizes: [22, 78],
+    },
+  };
+}
+
 /**
- * 默认布局（三套：画布/笔记/表格，面板结构 文件 | [主区/副区]，均为单标签面板）。
- * 首次进入仓库/布局损坏时回退；激活布局缺省 = 列表第一个（画布）。
+ * 默认布局（主页固定置顶 + 三套：画布/笔记/表格，面板结构 文件 | [主区/副区]，均为单标签面板）。
+ * 首次进入仓库/布局损坏时回退；激活布局缺省 = 列表第一个（主页）。
  */
 export function createDefaultLayouts(): WorkspaceLayout[] {
   const build = (name: string, left: ViewKind, main: ViewKind, right: ViewKind, sizes1: [number, number], sizes2: [number, number]): WorkspaceLayout => ({
@@ -132,6 +173,7 @@ export function createDefaultLayouts(): WorkspaceLayout[] {
     },
   });
   return [
+    createHomeLayout(),
     build("画布", "files", "canvas", "inspector", [17, 83], [74, 26]),
     build("笔记", "files", "note", "aichat", [19, 81], [72, 28]),
     build("表格", "files", "table", "note", [18, 82], [77, 23]),

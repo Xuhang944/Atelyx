@@ -49,7 +49,9 @@ import {
   tearOffFromPanel,
 } from "@/utils/workspaceLayout";
 import {
+  HOME_LAYOUT_ID,
   createDefaultLayouts,
+  createHomeLayout,
   createTab,
   type DetachedWindow,
   type LayoutNode,
@@ -57,7 +59,7 @@ import {
   type ViewKind,
   type WorkspaceLayout,
 } from "@/types/workspaceLayout";
-import { UI_STATE_SCHEMA, type AppUiState } from "@/types";
+import { UI_STATE_SCHEMA, type AppUiState, type RecentFileEntry } from "@/types";
 
 interface UiStateStore {
   /** 文件面板展开的文件夹相对路径集合（不可变更新，防 selector 无限重渲染）。 */
@@ -76,6 +78,8 @@ interface UiStateStore {
   focusedPanelId: string | null;
   /** 撕裂出去的独立窗口（应用级、跨布局共享；视图全局唯一约束覆盖树 + 此列表）。 */
   detachedWindows: DetachedWindow[];
+  /** 最近打开的文件（跨仓库记录、按 file+vaultId 去重置顶、上限截断；主页面板按当前仓库过滤）。 */
+  recentFiles: RecentFileEntry[];
   /** 当前 ui-state 是否已从磁盘加载（恢复 effect 依赖它避免在加载前误清状态）。 */
   loaded: boolean;
 
@@ -93,6 +97,8 @@ interface UiStateStore {
   recordOpenNote: (file: string) => void;
   /** 记录打开的表格文件（lastTableFile）。 */
   recordOpenTable: (file: string) => void;
+  /** 记录最近打开的文件（recentFiles：去重置顶 + 截断；kind 与 vaultId 由调用方提供）。 */
+  recordRecentFile: (file: string, kind: RecentFileEntry["kind"], vaultId: string) => void;
   /** 画布重命名/移动后同步 lastCanvasFile（旧路径命中才更新）。 */
   renameLastCanvas: (oldFile: string, newFile: string) => void;
   /** 笔记重命名/移动后同步 lastNoteFile（旧路径命中才更新）。 */
@@ -195,6 +201,16 @@ function activeLayout(get: () => UiStateStore): WorkspaceLayout {
   );
 }
 
+/** 最近打开文件列表上限（去重置顶后截断）。 */
+const MAX_RECENT_FILES = 50;
+
+/** 保证主页布局存在且恒置顶（主页不可删除/排序；已存在的保留用户面板调整，缺失/损坏只补一次）。 */
+function ensureHomeLayout(layouts: WorkspaceLayout[]): WorkspaceLayout[] {
+  const home = layouts.filter((l) => l.id === HOME_LAYOUT_ID);
+  const rest = layouts.filter((l) => l.id !== HOME_LAYOUT_ID);
+  return [(home[0] ?? createHomeLayout()), ...rest];
+}
+
 /** 「布局 N」命名自动去重（N = 最小未占用序号）。 */
 function nextLayoutName(names: string[]): string {
   let n = 1;
@@ -253,6 +269,7 @@ function toDiskState(get: () => UiStateStore): AppUiState {
     ...(s.activeLayoutId ? { activeLayoutId: s.activeLayoutId } : {}),
     ...(s.focusedPanelId ? { focusedPanelId: s.focusedPanelId } : {}),
     ...(s.detachedWindows.length > 0 ? { detachedWindows: s.detachedWindows } : {}),
+    ...(s.recentFiles.length > 0 ? { recentFiles: s.recentFiles } : {}),
   };
 }
 
@@ -298,6 +315,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
   activeLayoutId: null,
   focusedPanelId: null,
   detachedWindows: [],
+  recentFiles: [],
   loaded: false,
 
   load: async () => {
@@ -307,18 +325,19 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
       const disk = await readAppUiState();
       // 旧 schema 兼容（v1 前磁盘数据）：树判别值 kind "area"（面板含 view 字段 / 已迁移形状）→ 归一化为 "panel"
       // （聚焦字段旧名 focusedAreaId 已被 Rust 反序列化剥离，无迁移价值；缺失时兜底聚焦第一个面板）
-      const layouts =
+      const layouts = ensureHomeLayout(
         Array.isArray(disk.workspaceLayouts) &&
-        disk.workspaceLayouts.length > 0 &&
-        disk.workspaceLayouts.every(
-          (l) =>
-            l &&
-            ((l.tree as { kind?: string } | undefined)?.kind === "area" ||
-              (l.tree as { kind?: string } | undefined)?.kind === "panel" ||
-              (l.tree as { kind?: string } | undefined)?.kind === "split"),
-        )
+          disk.workspaceLayouts.length > 0 &&
+          disk.workspaceLayouts.every(
+            (l) =>
+              l &&
+              ((l.tree as { kind?: string } | undefined)?.kind === "area" ||
+                (l.tree as { kind?: string } | undefined)?.kind === "panel" ||
+                (l.tree as { kind?: string } | undefined)?.kind === "split"),
+          )
           ? disk.workspaceLayouts.map((l) => ({ ...l, tree: migrateLegacyTree(l.tree) }))
-          : createDefaultLayouts();
+          : createDefaultLayouts(),
+      );
       const activeLayoutId =
         disk.activeLayoutId && layouts.some((l) => l.id === disk.activeLayoutId)
           ? disk.activeLayoutId
@@ -334,6 +353,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
         detachedWindows: Array.isArray(disk.detachedWindows)
           ? disk.detachedWindows.filter(isValidDetached)
           : [],
+        recentFiles: Array.isArray(disk.recentFiles) ? disk.recentFiles : [],
         loaded: true,
       });
     } catch (e) {
@@ -347,6 +367,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
         activeLayoutId: null,
         focusedPanelId: null,
         detachedWindows: [],
+        recentFiles: [],
         loaded: true,
       });
     }
@@ -392,6 +413,15 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
 
   recordOpenTable: (file) => {
     set({ lastTableFile: file });
+    persistDebounced();
+  },
+
+  recordRecentFile: (file, kind, vaultId) => {
+    const next = [
+      { file, kind, vaultId, openedAt: Date.now() },
+      ...get().recentFiles.filter((r) => !(r.file === file && r.vaultId === vaultId)),
+    ].slice(0, MAX_RECENT_FILES);
+    set({ recentFiles: next });
     persistDebounced();
   },
 
@@ -681,6 +711,8 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
   },
 
   renameLayout: (id, name) => {
+    // 主页布局固定不可重命名（名称「主页」恒定）
+    if (id === HOME_LAYOUT_ID) return;
     const trimmed = name.trim();
     if (!trimmed) return;
     set({
@@ -692,6 +724,8 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
   },
 
   deleteLayout: (id) => {
+    // 主页布局固定不可删除
+    if (id === HOME_LAYOUT_ID) return;
     const { workspaceLayouts, activeLayoutId } = get();
     if (workspaceLayouts.length <= 1) return;
     const next = workspaceLayouts.filter((l) => l.id !== id);
@@ -714,6 +748,8 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
     const { workspaceLayouts } = get();
     if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) return;
     if (fromIndex >= workspaceLayouts.length || toIndex >= workspaceLayouts.length) return;
+    // 主页固定置顶：禁止移动主页本身（index 0），也禁止把其他布局拖到主页之前（toIndex 0）
+    if (workspaceLayouts[fromIndex]?.id === HOME_LAYOUT_ID || toIndex === 0) return;
     const next = [...workspaceLayouts];
     const [moved] = next.splice(fromIndex, 1);
     if (!moved) return;

@@ -109,13 +109,15 @@ const ACCENT_PRESETS = [
   "#15803d",
 ];
 
-export function SettingsModal({ onClose }: { onClose: () => void }) {
+export function SettingsModal({ onClose, initialTab }: { onClose: () => void; initialTab?: string }) {
   const vaultConfig = useSettingsStore((s) => s.vaultConfig);
   // 应用级外观（跨仓库共享，global.json）：强调色 / 字号 / 字体 / 自动恢复（theme/toggleTheme 在下方声明）
   const accentColor = useSettingsStore((s) => s.accentColor);
   const fontSize = useSettingsStore((s) => s.fontSize);
   const fontFamily = useSettingsStore((s) => s.fontFamily);
   const autoRestoreFiles = useSettingsStore((s) => s.autoRestoreFiles);
+  const defaultHomeLayout = useSettingsStore((s) => s.defaultHomeLayout);
+  const setDefaultHomeLayout = useSettingsStore((s) => s.setDefaultHomeLayout);
   // 协作中转（应用级）：开关 + 地址 + 昵称/颜色 + 连接状态
   const collabEnabled = useSettingsStore((s) => s.collabEnabled);
   const collabRelayUrl = useSettingsStore((s) => s.collabRelayUrl);
@@ -124,7 +126,9 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const setCollabConfig = useSettingsStore((s) => s.setCollabConfig);
   const collabConnected = useCollabStore((s) => s.connected);
   // 设置内容（左侧九 tab）：应用级（通用 / 多人协作 / 关于）+ 仓库级（模型供应商 / 模型服务 / Agent / 联网搜索 / 文件与路径 / 编辑器）
-  const [tab, setTab] = useState<Tab>("general");
+  const [tab, setTab] = useState<Tab>(() =>
+    initialTab && TAB_ITEMS.some((t) => t.key === (initialTab as Tab)) ? (initialTab as Tab) : "general",
+  );
   /** 左侧 tab 栏折叠状态（折叠后仅显示图标）。 */
   const [tabsCollapsed, setTabsCollapsed] = useState(false);
   /** 检查中转连接：执行中 / 结果（多人协作 tab）。 */
@@ -487,6 +491,18 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                     checked={autoRestoreFiles}
                     onChange={(v) => void setAutoRestoreFiles(v)}
                     title="自动恢复上次打开的文件"
+                  />
+                </SettingCard>
+
+                {/* 进仓库时打开主页（应用级）：开启后进入仓库自动切到主页布局；关闭 = 保持恢复上次界面 */}
+                <SettingCard
+                  title="进仓库时打开主页"
+                  description="进入仓库自动切到主页布局；关闭则恢复上次界面"
+                >
+                  <ToggleSwitch
+                    checked={defaultHomeLayout}
+                    onChange={(v) => void setDefaultHomeLayout(v)}
+                    title="进仓库时打开主页"
                   />
                 </SettingCard>
 

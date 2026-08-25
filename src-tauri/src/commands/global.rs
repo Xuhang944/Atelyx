@@ -64,6 +64,9 @@ pub struct GlobalConfig {
     /// 协作身份色（hex；空 = 随机分配）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collab_color: Option<String>,
+    /// 进入仓库时自动切到「主页」布局。缺省 None = false（保持恢复上次界面）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_home_layout: Option<bool>,
 }
 
 /// 获取本机设备名（协作身份默认值：昵称留空时前端用它兜底展示）。
@@ -178,6 +181,12 @@ pub struct AppUiState {
     /// 聚焦面板 id（画布快捷键门控；缺省 = 布局第一个面板）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focused_panel_id: Option<String>,
+    /// 撕裂出去的独立窗口（视图 + 位置尺寸，跨布局共享、重启恢复；前端自持 schema）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detached_windows: Option<serde_json::Value>,
+    /// 最近打开的文件（跨仓库、去重置顶、上限截断；前端自持 schema）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recent_files: Option<serde_json::Value>,
 }
 
 fn app_ui_state_path(app: &AppHandle) -> Result<PathBuf, String> {

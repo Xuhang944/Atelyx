@@ -3,6 +3,7 @@
 
 pub mod filesearch;
 pub mod global;
+pub mod home;
 pub mod keychain;
 pub mod search;
 pub mod table;

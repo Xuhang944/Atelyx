@@ -6,14 +6,18 @@
  * 面板头/撕裂窗口头渲染保存/冲突/错误状态。
  */
 import {
+  CalendarDays,
+  Clock,
   FileText,
   Files,
+  History,
   Info,
   LayoutTemplate,
   Palette,
   Search,
   Sparkles,
   Table as TableIcon,
+  Users,
   X,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -28,6 +32,10 @@ import { FilesView } from "@/components/layout/views/FilesView";
 import { SearchView } from "@/components/layout/views/SearchView";
 import { InspectorView } from "@/components/layout/views/InspectorView";
 import { AiChatView } from "@/components/layout/views/AiChatView";
+import { CollabRoomView } from "@/components/layout/views/CollabRoomView";
+import { CalendarView } from "@/components/layout/views/CalendarView";
+import { RepoHistoryView } from "@/components/layout/views/RepoHistoryView";
+import { RecentView } from "@/components/layout/views/RecentView";
 import type { ViewKind } from "@/types";
 
 /** 视图元信息（标签/头部共用）。 */
@@ -39,6 +47,10 @@ export const VIEW_META: Record<ViewKind, { label: string; icon: ReactNode }> = {
   search: { label: "搜索", icon: <Search size={13} /> },
   inspector: { label: "属性", icon: <Info size={13} /> },
   aichat: { label: "AI 对话", icon: <Sparkles size={13} /> },
+  collabroom: { label: "协作房间", icon: <Users size={13} /> },
+  calendar: { label: "日历", icon: <CalendarDays size={13} /> },
+  repohistory: { label: "仓库历史", icon: <History size={13} /> },
+  recent: { label: "最近打开", icon: <Clock size={13} /> },
   empty: { label: "空面板", icon: <LayoutTemplate size={13} /> },
 };
 
@@ -59,6 +71,14 @@ export function ViewHost({ view, hostId }: { view: ViewKind; hostId: string }) {
       return <InspectorView />;
     case "aichat":
       return <AiChatView />;
+    case "collabroom":
+      return <CollabRoomView />;
+    case "calendar":
+      return <CalendarView />;
+    case "repohistory":
+      return <RepoHistoryView />;
+    case "recent":
+      return <RecentView />;
     default:
       // 空面板：不渲染占位提示（右键头部/内容区可添加视图，≡ 菜单可分割/删除面板）
       return <div className="h-full w-full" style={{ background: "var(--bg-primary)" }} />;

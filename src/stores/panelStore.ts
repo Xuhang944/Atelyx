@@ -722,6 +722,8 @@ export const usePanelStore = create<PanelStore>((set, get) => {
       // 外观与配置（主题/强调色/仓库级模型配置；撕裂窗口渲染需应用）
       void useSettingsStore.getState().load();
       if (payload.vaultId) void useSettingsStore.getState().loadVaultConfig();
+      // 应用级 UI 使用状态（recentFiles 等供「最近打开」面板；撕裂窗口只读加载、不落盘——持久化已抑制）
+      void useUiStateStore.getState().load();
       // AI 对话会话读盘（aichat 视图渲染依赖）
       void useChatPanelStore.getState().load(payload.vaultId);
       // 窗口标题 = 激活标签
@@ -915,7 +917,9 @@ export const usePanelStore = create<PanelStore>((set, get) => {
       }
       const mirror = get().layoutMirror;
       if (!mirror) return;
-      const relevant: ViewKind[] = ["canvas", "table", "note"];
+      // 协作宿主 = 本窗口渲染了协作相关视图才连接（每个窗口独立持有连接）：
+      // 画布/笔记/表格显示远端 presence，协作房间面板本身也需要在线成员列表
+      const relevant: ViewKind[] = ["canvas", "table", "note", "collabroom"];
       const isHost = relevant.some(
         (v) => findViewHost(mirror.activeTree, mirror.detachedWindows, v) === get().windowId,
       );

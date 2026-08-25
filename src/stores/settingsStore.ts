@@ -58,6 +58,8 @@ interface SettingsState {
   fontFamily?: string;
   /** 进入仓库时自动恢复上次打开的文件（应用级，存 global.json；缺省 true = 开启）。 */
   autoRestoreFiles: boolean;
+  /** 进入仓库时自动切到「主页」布局（应用级，存 global.json；缺省 false = 保持恢复上次界面）。 */
+  defaultHomeLayout: boolean;
   /** 协作中转（collab-relay）开关（应用级，存 global.json；缺省 false = 关闭）。 */
   collabEnabled: boolean;
   /** 协作中转地址（应用级，如 ws://192.168.1.10:17701/ws）。 */
@@ -144,6 +146,8 @@ interface SettingsState {
   setSoftLineBreak: (enabled: boolean) => Promise<void>;
   /** 设置进入仓库时是否自动恢复上次打开的文件（应用级；缺省 true = 开启，写 global.json）。 */
   setAutoRestoreFiles: (enabled: boolean) => Promise<void>;
+  /** 设置进入仓库时是否自动切到「主页」布局（应用级；缺省 false = 保持恢复上次界面，写 global.json）。 */
+  setDefaultHomeLayout: (enabled: boolean) => Promise<void>;
   /** 更新协作配置（应用级）：内存 + global.json 落盘 + 重建 relay 连接。 */
   setCollabConfig: (
     patch: Partial<
@@ -307,6 +311,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   fontSize: undefined,
   fontFamily: undefined,
   autoRestoreFiles: true,
+  defaultHomeLayout: false,
   collabEnabled: false,
   collabRelayUrl: "",
   collabNickname: "",
@@ -328,6 +333,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     let fontSize: number | undefined;
     let fontFamily: string | undefined;
     let autoRestoreFiles = true;
+    let defaultHomeLayout = false;
     let collabEnabled = false;
     let collabRelayUrl = "";
     let collabNickname = "";
@@ -340,6 +346,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       fontSize = cfg.fontSize;
       fontFamily = cfg.fontFamily;
       autoRestoreFiles = cfg.autoRestoreFiles ?? true;
+      defaultHomeLayout = cfg.defaultHomeLayout ?? false;
       collabEnabled = cfg.collabEnabled ?? false;
       collabRelayUrl = cfg.collabRelayUrl ?? "";
       collabNickname = cfg.collabNickname ?? "";
@@ -360,6 +367,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       fontSize,
       fontFamily,
       autoRestoreFiles,
+      defaultHomeLayout,
       collabEnabled,
       collabRelayUrl,
       collabNickname,
@@ -667,6 +675,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       await updateGlobalConfig({ autoRestoreFiles: enabled });
     } catch (e) {
       console.error("保存自动恢复配置失败", e);
+    }
+  },
+
+  setDefaultHomeLayout: async (enabled) => {
+    set({ defaultHomeLayout: enabled });
+    try {
+      await updateGlobalConfig({ defaultHomeLayout: enabled });
+    } catch (e) {
+      console.error("保存主页默认布局配置失败", e);
     }
   },
 

@@ -14,6 +14,17 @@ import type { DetachedWindow, WorkspaceLayout } from "@/types/workspaceLayout";
 /** `ui-state.json` 文件 schema 版本（Rust 侧 `commands/global.rs` 有同名常量，两端须保持一致）。 */
 export const UI_STATE_SCHEMA = "atelyx-ui-state/v1" as const;
 
+/** 最近打开的文件条目（应用级、跨仓库记录；主页面板按当前仓库过滤展示）。 */
+export interface RecentFileEntry {
+  /** 相对仓库根路径。 */
+  file: string;
+  kind: "canvas" | "note" | "table";
+  /** 归属仓库 id（vaultId；打开时按当前仓库记录）。 */
+  vaultId: string;
+  /** 打开时间戳（ms）。 */
+  openedAt: number;
+}
+
 /** 应用级 UI 使用状态（`app_data_dir/ui-state.json` 磁盘格式，扁平无分桶）。 */
 export interface AppUiState {
   schema: typeof UI_STATE_SCHEMA;
@@ -33,4 +44,6 @@ export interface AppUiState {
   focusedPanelId?: string;
   /** 撕裂出去的独立窗口（应用级、跨布局共享；缺省 = 无）。 */
   detachedWindows?: DetachedWindow[];
+  /** 最近打开的文件（跨仓库记录、按 file+vaultId 去重置顶、上限截断；缺省 = 无）。 */
+  recentFiles?: RecentFileEntry[];
 }

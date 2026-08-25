@@ -26,6 +26,8 @@ export interface CollabPresence {
   file: string | null;
   selection: CollabSelection;
   view: "table" | "timeline" | "note" | "canvas" | null;
+  /** 该用户当前打开的全部文件（聚焦文件置顶；最多 3 个：当前画布/笔记/表格）。 */
+  openFiles?: Array<{ file: string; view: "canvas" | "note" | "table" }>;
   /** 画布对话节点独占编辑锁（跨视图保活：用户看表格/笔记期间锁仍对端可见）。 */
   lockedNodes?: CollabLockClaim[];
   /** 画布正在 AI 生成的对话节点（生成中指示灯）。 */

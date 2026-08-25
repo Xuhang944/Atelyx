@@ -176,8 +176,23 @@ function schedulePresenceBroadcast(presence: CollabPresence): void {
   const streamingNodeIds = Object.entries(cs.streamingByConv)
     .filter(([, v]) => v)
     .map(([id]) => id);
+  // 打开文件清单（跨视图保活：画布/笔记/表格可同时打开，聚焦文件置顶，供「协作房间」面板展示）
+  const as = useAppStore.getState();
+  const openFiles: CollabPresence["openFiles"] = [];
+  const focusView: "canvas" | "note" | "table" =
+    presence.view === "canvas" ? "canvas" : presence.view === "note" ? "note" : "table";
+  if (presence.file) openFiles.push({ file: presence.file, view: focusView });
+  const others: Array<[string | null, "canvas" | "note" | "table"]> = [
+    [as.currentCanvasFile, "canvas"],
+    [as.currentNoteFile, "note"],
+    [as.currentTableFile, "table"],
+  ];
+  for (const [file, view] of others) {
+    if (file && !openFiles.some((o) => o.file === file)) openFiles.push({ file, view });
+  }
   const merged: CollabPresence = {
     ...presence,
+    ...(openFiles.length ? { openFiles } : {}),
     ...(lockedNodes.length ? { lockedNodes } : {}),
     ...(streamingNodeIds.length ? { streamingNodeIds } : {}),
   };

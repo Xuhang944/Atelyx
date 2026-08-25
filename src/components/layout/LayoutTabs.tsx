@@ -11,6 +11,7 @@ import { useRef, useState } from "react";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import { Menu, MenuItem } from "@/components/common/Menu";
 import { VaultSwitcher } from "@/components/layout/VaultSwitcher";
+import { HOME_LAYOUT_ID } from "@/types";
 
 /** 拖拽判定阈值（px）：低于视为点击，不进入拖动模式。 */
 const DRAG_THRESHOLD = 4;
@@ -44,6 +45,8 @@ export function LayoutTabs() {
   const onTabPointerDown = (e: React.PointerEvent, index: number) => {
     if (e.button !== 0) return;
     if (menu || editingId) return; // 菜单/重命名打开时不拖
+    // 主页布局固定置顶：不可拖拽排序
+    if (layouts[index]?.id === HOME_LAYOUT_ID) return;
     dragRef.current = { index, startX: e.clientX, moved: false };
     // 不在 pointerdown 时 capture：WebView2 中 pointerdown 即 setPointerCapture 会吞掉
     // 后续 click（单击切换/双击重命名失效）；只有真正进入拖动（位移超阈值）才 capture
@@ -102,6 +105,7 @@ export function LayoutTabs() {
         {layouts.map((l, index) => {
           const active = l.id === activeLayoutId;
           const dragging = dragOffset !== null && dragRef.current?.index === index;
+          const isHome = l.id === HOME_LAYOUT_ID;
           return (
             <div
               key={l.id}
@@ -130,6 +134,8 @@ export function LayoutTabs() {
               onPointerUp={(e) => onTabPointerUp(e, index)}
               onPointerCancel={onTabPointerCancel}
               onContextMenu={(e) => {
+                // 主页布局固定：不可重命名/删除/排序，不弹右键菜单
+                if (isHome) return;
                 e.preventDefault();
                 e.stopPropagation();
                 setMenu({ id: l.id, x: e.clientX, y: e.clientY });
@@ -173,12 +179,18 @@ export function LayoutTabs() {
                     activateLayout(l.id);
                   }}
                   onDoubleClick={() => {
+                    // 主页布局固定：不可重命名
+                    if (isHome) return;
                     cancelRef.current = false;
                     setDraft(l.name);
                     setEditingId(l.id);
                   }}
                   className="pl-3 pr-2 py-0.5 truncate max-w-[120px] min-w-[48px] text-left"
-                  title={`${l.name}（点击切换 / 双击重命名 / 右键菜单 / 拖拽排序）`}
+                  title={
+                    isHome
+                      ? "主页（固定布局：不可删除/排序/重命名，面板可调整）"
+                      : `${l.name}（点击切换 / 双击重命名 / 右键菜单 / 拖拽排序）`
+                  }
                   data-tauri-drag-region="false"
                 >
                   {l.name}

@@ -6,7 +6,7 @@
  * 文件打开/关闭/恢复联动在此层（跨 store 一致性），视图渲染全在面板内部。
  */
 import { Maximize, Settings } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useAppStore } from "@/stores/appStore";
 import { useChatPanelStore } from "@/stores/chatPanelStore";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -18,20 +18,24 @@ import { TitleBarControls } from "@/components/common/TitleBarControls";
 import { LayoutTabs } from "@/components/layout/LayoutTabs";
 import { WorkspaceGrid } from "@/components/layout/WorkspaceGrid";
 import { noteTitleFromFile, tableTitleFromFile } from "@/utils/filename";
-import type { FileTreeNode } from "@/types";
+import { HOME_LAYOUT_ID, type FileTreeNode } from "@/types";
 
 export function ProjectWorkspacePage() {
-  const [showSettings, setShowSettings] = useState(false);
-
   const toggleFullscreen = useAppStore((s) => s.toggleFullscreen);
   const minimizeWindow = useAppStore((s) => s.minimizeWindow);
   const toggleMaximizeWindow = useAppStore((s) => s.toggleMaximizeWindow);
   const closeWindow = useAppStore((s) => s.closeWindow);
 
+  // 设置弹窗（全局：面板内「前往设置」入口经 openSettings 打开，可指定初始 tab）
+  const settingsModal = useAppStore((s) => s.settingsModal);
+  const openSettings = useAppStore((s) => s.openSettings);
+  const closeSettings = useAppStore((s) => s.closeSettings);
+
   // 当前打开文件状态（面板渲染入口；打开动作在 appStore，联动 effect 在此层）
   const currentCanvasFile = useAppStore((s) => s.currentCanvasFile);
   const currentNoteFile = useAppStore((s) => s.currentNoteFile);
   const currentTableFile = useAppStore((s) => s.currentTableFile);
+  const vaultId = useAppStore((s) => s.vaultId);
 
   const vaultNoteList = useVaultStore((s) => s.noteList);
   const vaultTableList = useVaultStore((s) => s.tableList);
@@ -161,6 +165,18 @@ export function ProjectWorkspacePage() {
     currentTableFile,
   ]);
 
+  /** 「进仓库时打开主页」开关：每次进入仓库（挂载/切仓库）若开启则激活主页布局。
+   * 依赖 uiLoaded：ui-state 从磁盘加载完成前不得激活——否则随后 load 会用磁盘 activeLayoutId 覆盖。 */
+  const defaultHomeLayout = useSettingsStore((s) => s.defaultHomeLayout);
+  useEffect(() => {
+    if (!defaultHomeLayout) return;
+    if (!uiLoaded) return;
+    const ui = useUiStateStore.getState();
+    if (ui.workspaceLayouts.some((l) => l.id === HOME_LAYOUT_ID)) {
+      ui.activateLayout(HOME_LAYOUT_ID);
+    }
+  }, [defaultHomeLayout, vaultId, uiLoaded]);
+
   /** 全屏切换（视图控制图标，经 store 转发到 services）。 */
   const handleToggleFullscreen = () => {
     void toggleFullscreen().catch((e) => {
@@ -185,7 +201,7 @@ export function ProjectWorkspacePage() {
             {/* 右操作区（常驻）：设置 + 全屏（ml-auto 贴右缘，窗口控制在其后） */}
             <div className="ml-auto flex-shrink-0 flex items-center" data-tauri-drag-region>
               <button
-                onClick={(e) => { e.stopPropagation(); setShowSettings(true); }}
+                onClick={(e) => { e.stopPropagation(); openSettings(); }}
                 className="w-8 h-8 flex items-center justify-center rounded-md hover:opacity-80"
                 style={{ color: "var(--text-secondary)" }}
                 title="设置"
@@ -216,7 +232,9 @@ export function ProjectWorkspacePage() {
           </div>
         </div>
 
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      {settingsModal && (
+        <SettingsModal initialTab={settingsModal.tab} onClose={closeSettings} />
+      )}
     </div>
   );
 }
