@@ -148,6 +148,79 @@ describe("分割 / 关闭", () => {
     expect(collectPanels(closed!)).toHaveLength(1);
     expect(collectPanels(closed!)[0]!.tabs.map((t) => t.view)).toEqual(["canvas"]);
   });
+
+  it("closePanel 嵌套：删除内层 split 中的面板只删目标，父塌缩、兄弟保留", () => {
+    // Split H [ A | Split V [ B | C ] ]，删 B → Split H [ A | C ]（V 塌缩为 C）
+    const tree: LayoutNode = {
+      kind: "split",
+      id: "outer",
+      direction: "horizontal",
+      sizes: [40, 60],
+      children: [
+        createPanel("files"),
+        {
+          kind: "split",
+          id: "inner",
+          direction: "vertical",
+          sizes: [50, 50],
+          children: [createPanel("canvas"), createPanel("note")],
+        },
+      ],
+    };
+    const target = collectPanels(tree)[1]!; // canvas（V 内第一个）
+    const closed = closePanel(tree, target.id);
+    expect(closed!.kind).toBe("split");
+    expect(collectPanels(closed!).map((p) => p.id)).toEqual([
+      collectPanels(tree)[0]!.id,
+      collectPanels(tree)[2]!.id,
+    ]);
+    const split = closed as SplitNode;
+    expect(split.children.map((c) => c.kind)).toEqual(["panel", "panel"]);
+    expect(split.sizes).toEqual([40, 60]);
+  });
+
+  it("closePanel 深层嵌套：只删目标，整条祖先链塌缩后其余面板保留", () => {
+    // Split H [ files | Split H [ Split V[canvas | new] | inspector ] ]，删 new →
+    // Split H [ files | Split H [ canvas | inspector ] ]（canvas 顶替 V 槽位）
+    const tree: LayoutNode = {
+      kind: "split",
+      id: "root",
+      direction: "horizontal",
+      sizes: [17, 83],
+      children: [
+        createPanel("files"),
+        {
+          kind: "split",
+          id: "inner",
+          direction: "horizontal",
+          sizes: [74, 26],
+          children: [
+            {
+              kind: "split",
+              id: "v",
+              direction: "vertical",
+              sizes: [50, 50],
+              children: [createPanel("canvas"), createPanel("search")],
+            },
+            createPanel("inspector"),
+          ],
+        },
+      ],
+    };
+    const target = collectPanels(tree)[2]!; // search（V 内第二个）
+    const closed = closePanel(tree, target.id);
+    expect(collectPanels(closed!).map((p) => p.id)).toEqual([
+      collectPanels(tree)[0]!.id,
+      collectPanels(tree)[1]!.id,
+      collectPanels(tree)[3]!.id,
+    ]);
+    expect(collectPanels(closed!).map((p) => p.tabs[0]!.view)).toEqual(["files", "canvas", "inspector"]);
+    const root = closed as SplitNode;
+    const inner = root.children[1] as SplitNode;
+    expect(root.children).toHaveLength(2);
+    expect(inner.children.map((c) => c.kind)).toEqual(["panel", "panel"]);
+    expect(inner.sizes).toEqual([74, 26]);
+  });
 });
 
 describe("多叉同级分割（左中右）", () => {

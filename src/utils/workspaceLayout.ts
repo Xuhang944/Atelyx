@@ -282,6 +282,8 @@ function wrapPanel(
 /**
  * 关闭面板 = 从父 split 移除（children 剩 1 个时父塌缩、唯一子节点顶替其位置；
  * 剩余尺寸归一化到 100）。根即该面板（最后一个面板）时返回 null（不可关闭）。
+ * 递归塌缩只移除目标面板自身：r.node 非空（含塌缩后的子节点）一律保留，
+ * 仅 r.node === null 的目标面板被丢弃——否则每层祖先会连带删掉整棵子树。
  */
 export function closePanel(tree: LayoutNode, panelId: string): LayoutNode | null {
   const removeFromSplit = (node: LayoutNode): { node: LayoutNode | null; removed: boolean } => {
@@ -294,14 +296,11 @@ export function closePanel(tree: LayoutNode, panelId: string): LayoutNode | null
     const sizes: number[] = [];
     for (let i = 0; i < node.children.length; i++) {
       const r = removeFromSplit(node.children[i]);
-      if (r.removed) {
-        removed = true;
-        continue;
-      }
       if (r.node) {
         children.push(r.node);
         sizes.push(node.sizes[i] ?? 0);
       }
+      if (r.removed) removed = true;
     }
     if (!removed) return { node, removed: false };
     if (children.length === 1) return { node: children[0], removed: true };
