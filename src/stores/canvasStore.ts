@@ -76,7 +76,7 @@ import {
   runAutoNaming,
 } from "./streaming";
 import { isAssetConsumed } from "@/utils/consumed";
-import { appendNarration, appendReasoning, assistantReplyText, fillAssistantReplyText, mergeToolRuns } from "@/utils/agentSteps";
+import { appendNarration, appendReasoning, assistantReplyText, fillAssistantReplyText, finalizeReplyText, mergeToolRuns } from "@/utils/agentSteps";
 import { prefix, scanMentionHits } from "@/utils/text";
 import { sanitizeFilename, siblingPath } from "@/utils/filename";
 import { useSettingsStore } from "./settingsStore";
@@ -1014,7 +1014,7 @@ async function runStream(conversationId: string): Promise<void> {
         schedulePersist();
         abortControllers.delete(conversationId);
       },
-      onDone: ({ content, reasoning, timedOut }) => {
+      onDone: ({ content, reasoning, timedOut, truncated, promoteNarration }) => {
         // 节点已删除：丢弃流收尾写入（防孤儿消息随补丁落盘），键已随删除清理
         if (!findConversationNode(conversationId)) {
           abortControllers.delete(conversationId);
@@ -1027,11 +1027,30 @@ async function runStream(conversationId: string): Promise<void> {
         const m = store
           .getState()
           .messagesByConv[conversationId]?.find((mm) => mm.id === asstId);
+        if (!m) {
+          // 流式中消息已被移除（极端竞态）：仅复位 streaming 态，不重建键
+          store.setState((state) => ({
+            streamingByConv: {
+              ...state.streamingByConv,
+              [conversationId]: false,
+            },
+          }));
+          schedulePersist();
+          abortControllers.delete(conversationId);
+          return;
+        }
+        // onDone 最终化：最终回答轮叙述提升进 content + 输出上限截断提示（画布/面板共用）
+        const finalized = finalizeReplyText({
+          content: m.content ?? content,
+          steps: m.steps ?? [],
+          promoteNarration,
+          truncated,
+        });
         const decision = decideCleanup(
-          m?.content ?? content,
+          finalized.content,
           reasoning,
           timedOut,
-          !!m?.steps?.length,
+          finalized.steps.length > 0,
         );
         if (decision.kind === "remove") {
           store.setState((state) => {
@@ -1039,28 +1058,7 @@ async function runStream(conversationId: string): Promise<void> {
             return {
               messagesByConv: {
                 ...state.messagesByConv,
-                [conversationId]: l.filter((m) => m.id !== asstId),
-              },
-              streamingByConv: {
-                ...state.streamingByConv,
-                [conversationId]: false,
-              },
-            };
-          });
-        } else if (decision.kind === "timeout-error") {
-          store.setState((state) => {
-            const l = state.messagesByConv[conversationId] ?? [];
-            return {
-              messagesByConv: {
-                ...state.messagesByConv,
-                [conversationId]: l.map((m) =>
-                  m.id === asstId
-                    ? {
-                        ...m,
-                        content: `${ERROR_PREFIX} ${TIMEOUT_ERROR_TEXT}`,
-                      }
-                    : m,
-                ),
+                [conversationId]: l.filter((mm) => mm.id !== asstId),
               },
               streamingByConv: {
                 ...state.streamingByConv,
@@ -1069,12 +1067,30 @@ async function runStream(conversationId: string): Promise<void> {
             };
           });
         } else {
-          store.setState((state) => ({
-            streamingByConv: {
-              ...state.streamingByConv,
-              [conversationId]: false,
-            },
-          }));
+          store.setState((state) => {
+            const l = state.messagesByConv[conversationId] ?? [];
+            return {
+              messagesByConv: {
+                ...state.messagesByConv,
+                [conversationId]: l.map((mm) =>
+                  mm.id === asstId
+                    ? {
+                        ...mm,
+                        content:
+                          decision.kind === "timeout-error"
+                            ? `${ERROR_PREFIX} ${TIMEOUT_ERROR_TEXT}`
+                            : finalized.content,
+                        steps: finalized.steps,
+                      }
+                    : mm,
+                ),
+              },
+              streamingByConv: {
+                ...state.streamingByConv,
+                [conversationId]: false,
+              },
+            };
+          });
         }
         // messages 随 .atlx 增量补丁落盘（流式结束统一写，不逐 token 写）
         schedulePersist();

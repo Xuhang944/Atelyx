@@ -28,7 +28,7 @@ import { recordAgentFileWrite } from "@/services/history";
 import { readVaultFileWindow, writeVaultFile, editVaultFile, globVault, grepVault } from "@/services/vault/aiFiles";
 import { fetchWeb } from "@/services/web";
 import { prefix, scanMentionHits } from "@/utils/text";
-import { appendNarration, appendReasoning, coalesceAgentSteps, fillAssistantReplyText, mergeToolRuns } from "@/utils/agentSteps";
+import { appendNarration, appendReasoning, coalesceAgentSteps, fillAssistantReplyText, finalizeReplyText, mergeToolRuns } from "@/utils/agentSteps";
 import { createPersistController } from "@/utils/persist";
 import { useSettingsStore } from "./settingsStore";
 import { useAppStore } from "./appStore";
@@ -747,18 +747,25 @@ async function runExchange(
       void autoNameSession(active.id);
       abortController = null;
     },
-    onDone: ({ content, reasoning, timedOut }) => {
+    onDone: ({ content, reasoning, timedOut, truncated, promoteNarration }) => {
       // 空回复移除占位；超时且回答未产出写超时降级（保留思考）；否则正常保留。
       // 用占位消息的实际 content/steps 判定（叙述提升/工具步骤已在其内），而非引擎 totals
       const m = useChatPanelStore
         .getState()
         .sessions.find((s) => s.id === active.id)
         ?.messages.find((mm) => mm.id === asstMsg.id);
+      // onDone 最终化：最终回答轮叙述提升进 content + 输出上限截断提示（画布/面板共用）
+      const finalized = finalizeReplyText({
+        content: m?.content ?? content,
+        steps: m?.steps ?? [],
+        promoteNarration,
+        truncated,
+      });
       const decision = decideCleanup(
-        m?.content ?? content,
+        finalized.content,
         reasoning,
         timedOut,
-        !!m?.steps?.length,
+        finalized.steps.length > 0,
       );
       useChatPanelStore.setState((state) => {
         const sess = state.sessions.find((s) => s.id === active.id);
@@ -772,6 +779,12 @@ async function runExchange(
           );
         } else if (decision.kind === "remove") {
           messages = messages.filter((m) => m.id !== asstMsg.id);
+        } else {
+          messages = messages.map((m) =>
+            m.id === asstMsg.id
+              ? { ...m, content: finalized.content, steps: finalized.steps }
+              : m
+          );
         }
         return {
           sessions: state.sessions.map((s) =>

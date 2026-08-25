@@ -56,6 +56,7 @@ function formatGrepMatches(matches: GrepMatchRow[]): string {
 export const GREP_TOOL = defineTool<GrepArgs>({
   name: "grep",
   label: meta.label,
+  parallelSafe: true,
   description:
     "用正则表达式搜索仓库内文件内容，返回匹配行（带行号、按文件分组）。" +
     `可选 path 限定搜索的文件或目录、include 限定文件（单一正向 glob，如「*.ts」「*.{js,jsx}」，不支持列表与否定）。` +

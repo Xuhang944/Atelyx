@@ -13,8 +13,11 @@ import {
   assistantReplyText,
   coalesceAgentSteps,
   fillAssistantReplyText,
+  finalizeReplyText,
   groupAgentSteps,
+  promoteTrailingNarration,
 } from "./agentSteps";
+import { ERROR_PREFIX, TRUNCATED_TEXT } from "@/constants/chat";
 import type { AgentStep, ToolRun } from "@/types";
 
 const R = (text: string): AgentStep => ({ kind: "reasoning", text });
@@ -156,7 +159,8 @@ describe("流式同帧交错（回归：思考被拆成两行）", () => {
     ]);
     expect(groups[0].tools).toEqual([]);
 
-    // 叙述留在步骤展示：叙述-only 消息以叙述步拼接作可回复正文兜底（不再提升进 content）
+    // 叙述以叙述行展示：叙述-only 消息以叙述步拼接作可回复正文兜底（assistantReplyText 回退）；
+    // 新引擎在最终回答轮（无工具调用）经 promoteTrailingNarration 提升进 content
     expect(assistantReplyText({ steps, content: "" })).toBe("让我查");
   });
 });
@@ -169,5 +173,84 @@ describe("groupAgentSteps", () => {
     expect(groups[0].tools.map((r) => r.id)).toEqual(["t1"]);
     expect(groups[1].thinkings).toEqual([{ kind: "reasoning", text: "二" }]);
     expect(groups[1].tools).toEqual([]);
+  });
+});
+
+describe("promoteTrailingNarration", () => {
+  it("尾部叙述行提升进 content 并从 steps 移除（最终回答轮）", () => {
+    expect(promoteTrailingNarration([R("想"), tool("t1"), T("最终回答")])).toEqual({
+      content: "最终回答",
+      steps: [R("想"), tool("t1")],
+    });
+  });
+
+  it("多段尾部叙述行按序拼接提升", () => {
+    expect(promoteTrailingNarration([R("想"), T("第一段"), T("第二段")])).toEqual({
+      content: "第一段\n第二段",
+      steps: [R("想")],
+    });
+  });
+
+  it("工具/思考步后的尾部文本才提升（工具步之前的历史叙述不提升）", () => {
+    const steps = [T("历史叙述"), tool("t1"), R("轮内思考"), T("回答")];
+    expect(promoteTrailingNarration(steps)).toEqual({
+      content: "回答",
+      steps: [T("历史叙述"), tool("t1"), R("轮内思考")],
+    });
+  });
+
+  it("无尾部文本步时原样返回空 content", () => {
+    expect(promoteTrailingNarration([R("想"), tool("t1")])).toEqual({
+      content: "",
+      steps: [R("想"), tool("t1")],
+    });
+    expect(promoteTrailingNarration([])).toEqual({ content: "", steps: [] });
+  });
+});
+
+describe("finalizeReplyText", () => {
+  it("最终回答轮：尾部叙述提升进 content、移出 steps", () => {
+    expect(
+      finalizeReplyText({
+        content: "",
+        steps: [R("想"), tool("t1"), T("回答")],
+        promoteNarration: true,
+        truncated: false,
+      }),
+    ).toEqual({ content: "回答", steps: [R("想"), tool("t1")] });
+  });
+
+  it("非最终轮（promoteNarration=false）不提升", () => {
+    expect(
+      finalizeReplyText({
+        content: "",
+        steps: [R("想"), tool("t1"), T("叙述")],
+        promoteNarration: false,
+        truncated: false,
+      }),
+    ).toEqual({ content: "", steps: [R("想"), tool("t1"), T("叙述")] });
+  });
+
+  it("截断且有正文：尾部追加截断提示，提升后的步骤移除", () => {
+    const res = finalizeReplyText({
+      content: "",
+      steps: [T("已生成的部分")],
+      promoteNarration: true,
+      truncated: true,
+    });
+    expect(res.content).toContain("已生成的部分");
+    expect(res.content).toContain(TRUNCATED_TEXT);
+    expect(res.steps).toEqual([]);
+  });
+
+  it("截断且正文为空：写 `[错误]` 截断占位", () => {
+    expect(
+      finalizeReplyText({
+        content: "",
+        steps: [R("想")],
+        promoteNarration: false,
+        truncated: true,
+      }).content,
+    ).toBe(`${ERROR_PREFIX} ${TRUNCATED_TEXT}`);
   });
 });

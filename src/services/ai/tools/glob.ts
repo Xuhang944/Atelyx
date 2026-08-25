@@ -23,6 +23,7 @@ function errText(e: unknown): string {
 export const GLOB_TOOL = defineTool<GlobArgs>({
   name: "glob",
   label: meta.label,
+  parallelSafe: true,
   description:
     "按 glob 模式查找仓库内文件路径（相对仓库根；只返回文件、不含目录；跳过隐藏目录与排除文件夹）。" +
     `模式不含「/」时匹配任意深度的文件名（「*」匹配整棵树的全部文件），含「/」才锚定层级（如「src/**/*.ts」）。` +

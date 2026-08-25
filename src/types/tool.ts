@@ -126,6 +126,11 @@ export interface ToolDefinition<A = Record<string, unknown>> {
   summarize: (args: A) => string;
   /** 执行（走注入的 capabilities）。 */
   execute: (args: A, exec: ToolExecContext) => Promise<ToolResult>;
+  /**
+   * 是否可与同轮其他工具**并行**执行（缺省 false = 串行屏障，等前一批收敛再跑）。
+   * 只读/无副作用工具（read_file/glob/grep/web_search/web_fetch）标 true；读写工具不标，防写竞态。
+   */
+  parallelSafe?: boolean;
   /** 回填模型的 tool 消息文本，缺省 = `result.content ?? result.summary`。 */
   renderResult?: (result: ToolResult) => string;
 }

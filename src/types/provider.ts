@@ -4,7 +4,7 @@ export interface ProviderModel {
   nickname?: string;
 }
 
-/** 模型思考档位（dsh 风格：思考必须显式开启并在线上指名档位）。 */
+/** 模型思考档位（思考型模型须显式开启并在线上指名档位，默认不指定跟随模型）。 */
 export type ReasoningEffort = "off" | "low" | "medium" | "high";
 
 export interface ProviderConfig {

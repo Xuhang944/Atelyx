@@ -11,6 +11,7 @@
  * 工具轮之间的思考仍自然分隔（第二轮思考不会并进第一轮）。
  */
 import type { AgentStep, Role, ToolRun } from "@/types";
+import { ERROR_PREFIX, TRUNCATED_TEXT } from "@/constants/chat";
 
 /**
  * 思考增量写入 steps：并入当前轮最后一个思考步（尾部向前找第一个 reasoning，遇工具步即停）。
@@ -51,9 +52,54 @@ export function appendNarration(steps: AgentStep[], text: string): AgentStep[] {
 }
 
 /**
+ * 轮末正文提升：把 steps 末尾**连续**的「叙述行」（text 步）提升为最终回复 content。
+ * 无预算工具循环下，最终回答轮无工具调用，其正文以叙述行流式展示在 steps——
+ * 轮末需要落进 content 作为最终回复（画布/面板 onDone 在 `promoteNarration` 时调用）。
+ * 尾部连续文本步之外（如遇 tool/reasoning 步）不再提升；无尾部文本步时原样返回。
+ */
+export function promoteTrailingNarration(steps: AgentStep[]): {
+  content: string;
+  steps: AgentStep[];
+} {
+  let end = steps.length;
+  const chunks: string[] = [];
+  while (end > 0 && steps[end - 1].kind === "text") {
+    chunks.unshift((steps[end - 1] as Extract<AgentStep, { kind: "text" }>).text);
+    end--;
+  }
+  if (chunks.length === 0) return { content: "", steps };
+  return { content: chunks.join("\n"), steps: steps.slice(0, end) };
+}
+
+/**
+ * onDone 最终化（画布/面板共用）：最终回答轮把尾部叙述提升进 content（`promoteNarration`），
+ * 输出上限截断时附 `TRUNCATED_TEXT` 提示（有正文则尾接，正文为空则 `[错误]` 占位）。
+ * 返回最终 content 与 steps，供调用方 decideCleanup 后写入占位消息。
+ */
+export function finalizeReplyText(args: {
+  content: string;
+  steps: AgentStep[];
+  promoteNarration: boolean;
+  truncated: boolean;
+}): { content: string; steps: AgentStep[] } {
+  let finalContent = args.content;
+  let finalSteps = args.steps;
+  if (args.promoteNarration) {
+    const res = promoteTrailingNarration(finalSteps);
+    finalSteps = res.steps;
+    finalContent = res.content || finalContent;
+  }
+  if (args.truncated) {
+    finalContent = finalContent.trim()
+      ? `${finalContent}\n\n${TRUNCATED_TEXT}`
+      : `${ERROR_PREFIX} ${TRUNCATED_TEXT}`;
+  }
+  return { content: finalContent, steps: finalSteps };
+}
+
+/**
  * assistant 可回复正文：content 非空直接返回；否则回退到所有 text 叙述步拼接——
- * 叙述不再提升进 content 后，叙述-only 消息（工具可用轮直接回答、未调工具）的
- * 复制/API 历史/分支门控均以此为正文兜底。
+ * 未走轮末提升路径的叙述-only 消息（中止/未提升）的复制/API 历史/分支门控均以此为正文兜底。
  */
 export function assistantReplyText(msg: {
   content: string;

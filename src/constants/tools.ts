@@ -29,6 +29,9 @@ export const GLOB_MAX_RESULTS = 100;
 export const GREP_MAX_MATCHES = 250;
 export const GREP_MAX_LINE_BYTES = 2000;
 
+/** 单轮内并行安全的工具调用最大在飞数（有界滚动池；1 = 全串行）。 */
+export const MAX_PARALLEL_TOOL_CALLS = 10;
+
 /** UI 展示与默认勾选的工具名单（执行层同名集合见 services/ai/tools）。 */
 export const AGENT_TOOLS_META: AgentToolMeta[] = [
   { id: "web_search", label: "联网搜索", needsSearch: true },

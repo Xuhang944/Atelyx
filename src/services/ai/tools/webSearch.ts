@@ -15,6 +15,7 @@ export interface WebSearchArgs {
 export const WEB_SEARCH_TOOL = defineTool<WebSearchArgs>({
   name: "web_search",
   label: meta.label,
+  parallelSafe: true,
   description: "联网搜索获取最新信息，返回网页标题、摘要与链接（可作为回答依据）",
   parameters: {
     type: "object",

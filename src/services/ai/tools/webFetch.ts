@@ -19,6 +19,7 @@ function errText(e: unknown): string {
 export const WEB_FETCH_TOOL = defineTool<WebFetchArgs>({
   name: "web_fetch",
   label: meta.label,
+  parallelSafe: true,
   description: "抓取指定网页（URL）的正文内容，获取最新信息作为回答依据",
   parameters: {
     type: "object",

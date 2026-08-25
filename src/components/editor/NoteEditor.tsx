@@ -35,7 +35,7 @@ import { PopupLayer } from "@/components/common/PopupLayer";
 
 type SaveState = NoteSaveStatus["state"];
 
-/** 模块级空数组：notePeers 缺省引用（避免每次渲染新数组导致无限重渲染，见 AGENTS 8.4）。 */
+/** 模块级空数组：notePeers 缺省引用（避免每次渲染新数组导致无限重渲染）。 */
 const EMPTY_PEERS: CollabPeer[] = [];
 
 export function NoteEditor({ file }: { file: string }) {

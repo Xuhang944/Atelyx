@@ -96,7 +96,7 @@ export interface AgentToolHooks {
   onToolResult?: (name: string, result: ToolResult) => void;
 }
 
-/** 执行一轮工具调用（公共执行器，画布/面板共用）。 */
+/** 执行一轮工具调用（公共执行器，画布/面板共用）；并行在飞上限取 `MAX_PARALLEL_TOOL_CALLS` 常量。 */
 export async function runAgentTools(
   calls: LlmToolCall[],
   exec: ToolExecContext,

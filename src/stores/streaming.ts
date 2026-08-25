@@ -1,11 +1,13 @@
 /**
  * 公共流式对话引擎：画布对话节点（canvasStore.runStream）与 AI 对话面板（chatPanelStore.runExchange）共用。
  *
- * 一轮完整流式对话 = 可选工具循环（function calling）+ 双通道 rAF 节流 + 空闲超时 + SSE 流式。
+ * 一轮完整流式对话 = 无预算工具循环（模型不调工具即收束，靠 max-tokens 兜底 + 停止按钮打断）+
+ * 双通道 rAF 节流 + 空闲超时 + SSE 流式。
  * 状态容器差异（messagesByConv vs sessions）由调用方回调消化：
  * - applyBatch：每帧合并后的增量写回调
  * - onError：请求失败写 [错误] 占位（保留已产出内容）
- * - onDone：流结束（含超时/中止），调用方用 decideCleanup 做最终清理
+ * - onDone：流结束（含超时/中止/截断），调用方用 decideCleanup 做最终清理；`truncated` = 达到输出上限，
+ *   `promoteNarration` = 最终回答轮（无工具调用）其叙述行应在轮末提升进 content
  * - executeTools：工具执行（走公共执行器 runAgentTools，产物节点差异由调用方 hooks 消化），返回 tool 消息由引擎回填下一轮
  *
  * 类型全部用中性词汇（LlmMessage/ToolSchema），工具执行走 services/ai/tools 注册表（runAgentTools）。
@@ -40,22 +42,17 @@ export interface ToolExecResult {
 }
 
 /**
- * 工具调用轮数安全上限（默认）：只要模型还在调用工具就继续往下走，
- * 不让固定的小轮数把多步任务中途掐断；此值仅作防死循环的安全阀，模型自会在输出不带工具
- * 的正文时收束。到顶后引擎会进行一次强制纯文本轮给最终回答机会。
+ * 工具调用轮数无预算：只要模型还在调用工具就继续，模型自会在输出不带工具的正文时收束；
+ * 失控由 max-tokens（输出上限）+ 用户停止按钮兜底，不设固定轮数上限。
  */
-export const DEFAULT_MAX_TOOL_ROUNDS = 20;
-
 export interface RunStreamExchangeOptions {
   provider: ProviderConfig;
   model: string;
   apiMessages: LlmMessage[];
   /** 思考档位：下发 `reasoning_effort` 以开启模型思考（仅对支持思考的模型生效）；缺省 = 不指定。 */
   reasoningEffort?: ReasoningEffort;
-  /** 传入 = 启用工具循环（最多 maxToolRounds 轮 + 1 次强制纯文本）；不传 = 单轮。 */
+  /** 传入 = 启用工具循环（无轮数上限，模型不调工具即收束）；不传 = 单轮。 */
   tools?: ToolSchema[];
-  /** 工具执行轮数上限（防死循环），默认 `DEFAULT_MAX_TOOL_ROUNDS`（20）。到顶会有一轮强制纯文本收束。 */
-  maxToolRounds?: number;
   signal: AbortSignal;
   applyBatch: (batch: StreamBatch) => void;
   onError: (err: Error) => void;
@@ -63,6 +60,13 @@ export interface RunStreamExchangeOptions {
     content: string;
     reasoning: string;
     timedOut: boolean;
+    /** 达到输出上限（finish_reason=length）：工具调用不执行（参数可能残缺），调用方附截断提示。 */
+    truncated: boolean;
+    /**
+     * 最终回答轮（本轮无工具调用）：该轮正文经叙述通道流式展示，轮末应提升进 content——
+     * 调用方对占位消息 steps 调 `promoteTrailingNarration` 后写入。中止/工具轮/单轮模式为 false。
+     */
+    promoteNarration: boolean;
   }) => void;
   /**
    * 工具执行（画布/面板均走 services/ai/tools 的 runAgentTools，产物节点差异由调用方 hooks 消化），
@@ -83,7 +87,6 @@ export interface RunStreamExchangeOptions {
 export async function runStreamExchange(
   options: RunStreamExchangeOptions,
 ): Promise<void> {
-  const maxRounds = options.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
   let apiMessages = options.apiMessages;
 
   // 引擎内部 controller：空闲超时用内部 abort；外部 signal（停止按钮/切画布）变化时转发中止。
@@ -155,14 +158,15 @@ export async function runStreamExchange(
     }
   };
 
+  // 无预算工具循环：每轮都携带工具名册（若配置了 Agent），模型不调工具即收束；无工具（单轮模式）只跑一轮。
+  const hasTools = !!options.tools?.length;
+  let truncated = false;
+  let promoteNarration = false;
   try {
-    for (let round = 0; round <= maxRounds; round++) {
+    for (;;) {
       let toolCalls: LlmToolCall[] = [];
       let stopReason: LlmFinishReason | undefined;
       let roundError: Error | null = null;
-      // 最后一轮不带 tools：强制纯文本回复，保证占位消息有内容（否则连续工具调用会「只出工具产物、无 AI 回复」）
-      const toolsForRound =
-        options.tools && round < maxRounds ? options.tools : [];
       // 请求发起即开始空闲计时（首个 token 前的等待也受超时保护）
       resetIdle();
       await streamChat(
@@ -173,15 +177,15 @@ export async function runStreamExchange(
           ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
           messages: apiMessages,
           signal,
-          ...(toolsForRound.length ? { tools: toolsForRound } : {}),
+          ...(options.tools?.length ? { tools: options.tools } : {}),
           // 传输级重试：网络抖动/5xx/429 自动退避重试（最多 2 次；流开始后不重试，防重复输出）
           retry: { maxRetries: 2 },
         },
         {
           onDelta: (delta) => {
-            // 工具可用轮（含可能调用工具的轮次）里正文是「叙述」，缓冲后 rAF 合并进 text 步（保留流式打字）；
-            // 仅末轮（强制纯文本）的正文实时进 content（最终回复）
-            if (toolsForRound.length) pendingNarration += delta;
+            // 工具轮里正文是「叙述」（缓冲后 rAF 合并进 text 步，保留流式打字；最终回答轮由调用方
+            // 在 onDone promoteNarration 时提升进 content）；无工具（单轮模式）的正文实时进 content。
+            if (hasTools) pendingNarration += delta;
             else pendingDelta += delta;
             scheduleApply();
             resetIdle();
@@ -215,21 +219,24 @@ export async function runStreamExchange(
         return;
       }
 
+      // 中止（停止按钮/空闲超时）：不提升、不执行工具——保留已产出叙述为步骤，由调用方 decideCleanup 收尾
+      if (signal.aborted) break;
+
       if (toolCalls.length === 0) {
-        // 纯文本轮：强制末轮正文已实时进 content；工具可用轮里模型直接回答（未调工具）时，
-        // 其正文留在 pendingNarration，由循环外统一 flush 成 text 步（叙述行，Markdown 正文渲染）
+        // 模型收束：最终回答轮（无工具调用）。正文走了叙述通道（流式打字），
+        // 标记 promoteNarration 让调用方在轮末把该轮叙述提升进 content；
+        // 若因输出上限截断，truncated 一并告知（调用方附截断提示）。
+        truncated = stopReason === "max-tokens";
+        promoteNarration = hasTools;
         break;
       }
 
       // 回复被截断（finish_reason=length → 中性 max-tokens）：tool call 参数可能残缺，不执行工具
-      // （防残缺参数执行产生误导产物），如实报错由调用方写 [错误] 占位
+      // （防残缺参数执行产生误导产物）；优雅收尾——保留已产出的叙述，截断提示由调用方消费
       if (stopReason === "max-tokens") {
-        cancelRaf();
-        clearIdle();
-        options.onError(
-          new Error("回复被截断（达到输出上限），工具调用未执行，请重试"),
-        );
-        return;
+        truncated = true;
+        promoteNarration = false;
+        break;
       }
 
       // 执行工具调用（走公共执行器 runAgentTools，画布/面板差异由 executeTools 回调消化）：
@@ -250,18 +257,9 @@ export async function runStreamExchange(
       allRuns.push(...runningRuns);
       options.onToolRuns?.([...allRuns]);
       const { messages: toolMessages, results } = await options.executeTools(toolCalls);
-      if (signal.aborted) {
-        // 中止：工具结果不回填，但 running 态归一化为「（已中断）」error（否则 running 状态随消息落盘，
-        // 画布重开后工具块永久转圈；面板解析侧另有同款归一化兜底）；已完成记录保留
-        allRuns = allRuns.map((run) =>
-          run.status === "running"
-            ? { ...run, status: "error" as const, resultSummary: "（已中断）" }
-            : run,
-        );
-        options.onToolRuns?.([...allRuns]);
-        break;
-      }
       // 执行完成：running → done/error + 结果摘要（可视化块实时更新）。
+      // **先于中止分支映射**：并行下用户停止时，部分调用可能在中止前已完成并回填（results 含其结果），
+      // 须先标 done/error，否则会被下方中止分支误标「（已中断）」。
       // **回写 allRuns**（新对象，引用变化触发气泡重渲染），finally 兜底据此只处理真未回填的工具
       allRuns = allRuns.map((run) => {
         const res = results.find((r) => r.id === run.id);
@@ -274,8 +272,17 @@ export async function runStreamExchange(
         };
       });
       options.onToolRuns?.([...allRuns]);
-      // 已达工具上限：本轮工具已执行（结果已沉淀），不再回填继续请求
-      // （末轮 toolsForRound 恒为空、toolCalls 恒为空，上面已 break——此处无需守卫）
+      if (signal.aborted) {
+        // 中止：仍 running 的（真未完成/未回填）归一化为「（已中断）」error（否则 running 状态随消息落盘，
+        // 画布重开后工具块永久转圈；面板解析侧另有同款归一化兜底）；已完成记录保留
+        allRuns = allRuns.map((run) =>
+          run.status === "running"
+            ? { ...run, status: "error" as const, resultSummary: "（已中断）" }
+            : run,
+        );
+        options.onToolRuns?.([...allRuns]);
+        break;
+      }
       apiMessages = [
         ...apiMessages,
         // 中性语义：assistant 带 toolCalls 时 text 为 null（适配器转 OpenAI 线时 content 为 null，
@@ -292,6 +299,8 @@ export async function runStreamExchange(
       content: totalContent,
       reasoning: totalReasoning,
       timedOut,
+      truncated,
+      promoteNarration,
     });
   } catch (e) {
     cancelRaf();

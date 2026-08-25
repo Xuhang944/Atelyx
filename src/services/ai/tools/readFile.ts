@@ -32,6 +32,7 @@ function positiveInt(v: unknown, fallback: number, name: string): number {
 export const READ_FILE_TOOL = defineTool<ReadFileArgs>({
   name: "read_file",
   label: meta.label,
+  parallelSafe: true,
   description:
     "分页读取仓库中指定文本文件（相对仓库根路径），返回带行号的内容。结果含总行数与页脚提示；大文件用 offset/limit 分段继续读取（offset=上一段页脚提示的行号）。",
   parameters: {
