@@ -1256,7 +1256,7 @@ pub struct ChatSessionRow {
     pub id: String,
     /// 消息正文 .jsonl 相对仓库根路径（`.atelyx/对话历史/<会话 id>.jsonl`）
     pub file: String,
-    /// 元数据侧车（缺省 = 缺省标题/Agent，由前端按首条消息派生标题）
+    /// 元数据侧车（`.atelyx/对话历史/<会话 id>.meta.json`；缺失/损坏 = 前端按未命名/缺省 Agent 展示）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<ChatSessionMeta>,
 }
@@ -1279,7 +1279,9 @@ pub fn list_chat_sessions_file(root: &Path) -> Result<Vec<ChatSessionRow>, Strin
             .unwrap_or(&name)
             .to_string();
         let file = format!("{CHAT_HISTORY_DIR}/{name}");
-        let meta = read_chat_session_meta_file(root, &file).ok().flatten();
+        // 读元数据侧车须传 `<id>.meta.json` 路径（误传 `.jsonl` 会被 chat_meta_path 校验拒绝 → meta 恒 None，标题/Agent 加载不出）
+        let meta_file = format!("{CHAT_HISTORY_DIR}/{id}{CHAT_META_EXT}");
+        let meta = read_chat_session_meta_file(root, &meta_file).ok().flatten();
         rows.push(ChatSessionRow { id, file, meta });
     }
     rows.sort_by(|a, b| a.id.cmp(&b.id));
