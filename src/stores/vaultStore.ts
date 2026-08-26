@@ -131,6 +131,24 @@ export function isKnownNoteDiskContent(file: string, content: string): boolean {
 /** loadFiles 并发守卫：递增序号，仅最后一次发起者的扫描结果落盘（后台填充与 watcher 触发并发时防旧结果覆盖）。 */
 let loadFilesSeq = 0;
 
+/** 笔记内容缓存上限（FIFO 淘汰最旧；防大笔记常驻内存无限膨胀，切仓库清空）。 */
+const MAX_NOTE_CACHE = 30;
+
+/** 写入单文件笔记缓存并淘汰最旧（重复写入 = 移除旧条目再追加，FIFO 顺序近似最近使用）。 */
+function cacheNoteContent(
+  cache: Record<string, string>,
+  file: string,
+  content: string,
+): Record<string, string> {
+  const next: Record<string, string> = {};
+  for (const [k, v] of Object.entries(cache)) if (k !== file) next[k] = v;
+  next[file] = content;
+  if (Object.keys(next).length > MAX_NOTE_CACHE) {
+    delete next[Object.keys(next)[0]];
+  }
+  return next;
+}
+
 /** 文件监听订阅状态（startFileWatcher 幂等启停用）。
  * watcherGen = 订阅代数：每次启/停递增，在途订阅完成时校验代数一致才保留——
  * 防「enable → disable → enable」竞态下旧订阅结果覆盖新订阅、前一个 unlisten 丢失泄漏（双监听常驻）。 */
@@ -374,6 +392,9 @@ interface VaultFileState {
   noteList: { name: string; file: string }[];
   /** 全部 `.atb` 表格（递归提取，file = 相对仓库根路径；表格窗口联动/AI 填行目标选择用）。 */
   tableList: { name: string; file: string }[];
+  /** 笔记内容缓存（file → 正文；仅本会话内读过的笔记，FIFO 上限）。布局切换/重开笔记直接命中，
+   *  避免每次 NoteEditor 挂载都读盘（与 tableStore 的「已加载不重读」同语义）；切仓库清空。 */
+  noteContents: Record<string, string>;
   /** 拉取全仓库文件树（watcher 事件/挂载时调用）。canvases 走 appStore.loadList。 */
   loadFiles: () => Promise<void>;
   /**
@@ -474,6 +495,8 @@ interface VaultFileState {
   readAttachmentDataUrl: (file: string) => Promise<string>;
   /** 写回笔记正文并刷新文件树（mtime 变化即时反映到面板）。 */
   saveNoteContent: (file: string, content: string) => Promise<void>;
+  /** 作废单文件笔记内容缓存（真实外部修改/删除时调用；下次读取走盘）。 */
+  invalidateNoteCache: (file: string) => void;
   /** 设置历史记录作者（进入仓库/身份变化时调用；组件不直连 service，走本 store）。 */
   noteHistorySetAuthor: (name: string, device: string) => void;
   /** 记录一条笔记历史版本（版本边界；连续编辑自动节流合并，不逐键记录）。 */
@@ -552,6 +575,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
   tree: [],
   noteList: [],
   tableList: [],
+  noteContents: {},
 
   loadFiles: async () => {
     const seq = ++loadFilesSeq;
@@ -760,7 +784,14 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     canvasState.updateNodeData(nodeId, { file });
   },
 
-  readNoteContent: async (file) => readNote(file),
+  readNoteContent: async (file) => {
+    // 命中缓存（本会话已读过）：布局切换/重开笔记直接返回，不再读盘
+    const cached = get().noteContents[file];
+    if (cached !== undefined) return cached;
+    const content = await readNote(file);
+    set((s) => ({ noteContents: cacheNoteContent(s.noteContents, file, content) }));
+    return content;
+  },
   scanWikiBacklinks: (noteName, noteFile) => scanWikiBacklinksSvc(noteName, noteFile),
   rebuildInternalLinks: () => rebuildInternalLinksSvc(),
   readAttachmentDataUrl: (file) => readAttachmentDataUrlSvc(file),
@@ -771,7 +802,17 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     recordNoteDiskContentSvc(file, content);
     // 标记路径级自写回波：watcher 收到同路径事件后跳过无关的全树重扫（内容编辑不改文件树）
     markSelfSave(file);
+    // 自写内容同步进缓存：布局切换重挂载直接命中（watcher 自写回波不会另行作废缓存）
+    set((s) => ({ noteContents: cacheNoteContent(s.noteContents, file, content) }));
   },
+
+  invalidateNoteCache: (file) =>
+    set((s) => {
+      if (!(file in s.noteContents)) return s; // 无缓存条目：返回原引用，不触发订阅
+      const next = { ...s.noteContents };
+      delete next[file];
+      return { noteContents: next };
+    }),
 
   noteHistorySetAuthor: (name, device) =>
     setHistoryAuthor({ id: device || name, name: name || device || "用户", device: device || "" }),
@@ -906,6 +947,9 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
             // NoteEditor 感知外部修改：无本地改动实时刷新、有改动提示冲突
             // （markNoteExternallyEdited 始终保留：跨编辑面同步 + 冲突检测必经，不受自写回波影响）
             get().markNoteExternallyEdited(c.path);
+            // 真实外部修改（非本端自写回波，含画布/AI 写 .md）：作废笔记内容缓存，下次读取走盘
+            // （自写回波缓存已由 saveNoteContent 同步，不另行作废防缓存失效后重读盘）
+            if (!isSelfSaveEcho(c.path)) get().invalidateNoteCache(c.path);
           }
           // 纯内容自写回波（本端写盘，markSelfSave 已标记）不改文件树：跳过全仓库重扫；
           // 外部新建/删除/改名 .md 非自写回波，仍重扫（与 canvas/table 分支同语义）

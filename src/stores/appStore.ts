@@ -336,7 +336,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         currentTableTitle: "",
       });
       // 立即清空旧仓库文件树：文件面板不再残留上一仓库的文件（新树加载完成前显示「正在加载仓库…」读条）
-      useVaultStore.setState({ tree: [], noteList: [], tableList: [] });
+      // 同步清空笔记内容缓存：相对路径跨仓库无意义，防新仓库同路径错读旧仓库缓存
+      useVaultStore.setState({ tree: [], noteList: [], tableList: [], noteContents: {} });
       // 加载仓库级配置覆盖（.atelyx/config.json），需在发消息前完成
       await useSettingsStore.getState().loadVaultConfig();
       // 切换仓库：清空旧画布运行时状态（防残留 saveTimer 跨仓库写盘/旧消息残留）
