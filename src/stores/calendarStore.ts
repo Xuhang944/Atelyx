@@ -4,7 +4,9 @@
  * 手动日程 CRUD 防抖落盘；写盘按「已加载仓库」归属校验（loadedForVault），
  * 切仓库前须先 flush（appStore.selectVault 已接）防防抖窗口内把旧仓库日程写进新仓库。
  * 带日期笔记来自 `services/home.listDatedNotes`（frontmatter date/due），随 load 一并刷新。
- * 加载失败静默降级为空（尽力而为，不阻塞面板）。
+ * 性能：同仓库会话内缓存（loadedForVault），主页面板随布局切换反复挂载时，已缓存仓库
+ * 仅后台静默重扫带日期笔记；手动日程 items 为 store 实时态（防抖落盘），刷新不重读磁盘
+ * 防覆盖在途编辑。加载失败静默降级为空（尽力而为，不阻塞面板）。
  */
 import { create } from "zustand";
 import { CALENDAR_FILE, CALENDAR_SCHEMA } from "@/constants/calendar";
@@ -63,7 +65,7 @@ const persistCtl = createPersistController({
   delay: 400,
 });
 
-export const useCalendarStore = create<CalendarState>((set) => ({
+export const useCalendarStore = create<CalendarState>((set, get) => ({
   items: [],
   datedNotes: [],
   loadedForVault: null,
@@ -71,7 +73,18 @@ export const useCalendarStore = create<CalendarState>((set) => ({
   load: async () => {
     const vaultId = useAppStore.getState().vaultId;
     if (!vaultId) return;
-    // 清残留 debounce：切仓库前 selectVault 已 flush，此处双保险防旧 timer 写新仓库
+    if (get().loadedForVault === vaultId) {
+      // 同仓库已缓存：再进主页不清空不转圈，仅后台静默重扫带日期笔记（只读视图可能滞后）；
+      // 手动日程 items 为 store 实时态（防抖落盘），不重读磁盘，防覆盖在途编辑。
+      try {
+        const datedNotes = await listDatedNotes();
+        if (useAppStore.getState().vaultId === vaultId) set({ datedNotes });
+      } catch (e) {
+        console.error("刷新日历笔记失败", e);
+      }
+      return;
+    }
+    // 首载/切仓库：清残留 debounce（双保险防旧 timer 写新仓库）+ 清空防旧仓库数据闪现
     persistCtl.cancel();
     set({ loadedForVault: null, items: [], datedNotes: [] });
     try {

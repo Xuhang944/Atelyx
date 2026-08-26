@@ -128,8 +128,9 @@ fn extract_ymd(value: &str) -> Option<String> {
 }
 
 /// 扫描仓库 `.md` frontmatter 的 date/due 字段，返回带日期笔记（尽力而为：读失败/无日期跳过）。
+/// async：全仓库扫描在 async 运行时线程执行，不阻塞主/UI 线程（主页面板切换/后台刷新期间 UI 保持可点）。
 #[tauri::command]
-pub fn list_dated_notes(state: State<'_, VaultState>) -> Result<Vec<DatedNote>, String> {
+pub async fn list_dated_notes(state: State<'_, VaultState>) -> Result<Vec<DatedNote>, String> {
     let root = state.root()?;
     let exclude = state.exclude_folders()?;
     let mut notes: Vec<DatedNote> = Vec::new();
@@ -271,8 +272,9 @@ fn ts_to_ymd(ts_ms: i64) -> Option<String> {
 
 /// 聚合 `.atelyx/history/` 全部版本：版本流（ts 倒序、上限）+ 全量按日计数。
 /// 尽力而为：缺失/损坏侧文件跳过，不阻塞面板。
+/// async：全仓库聚合在 async 运行时线程执行，不阻塞主/UI 线程（主页面板切换/后台刷新期间 UI 保持可点）。
 #[tauri::command]
-pub fn list_repo_history(state: State<'_, VaultState>) -> Result<RepoHistoryResult, String> {
+pub async fn list_repo_history(state: State<'_, VaultState>) -> Result<RepoHistoryResult, String> {
     let root = state.root()?;
     let mut entries: Vec<RepoHistoryEntry> = Vec::new();
     collect_history_dir(&root.join(".atelyx/history"), "note", &mut entries);
