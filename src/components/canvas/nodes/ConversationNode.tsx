@@ -106,7 +106,7 @@ const refKeyOfNodeRef = (r: { label: string }) =>
  * 消息列表 + 输入框 + 流式渲染 + Markdown。
  * - 输入框支持粘贴/拖拽附件 → 待发送托盘
  * - @ 提及引用画布资产：@chips 常驻显示入边引用
- * - 连接边框（2.4/7.2）：四周虚线边框拉线接入引用 / 拖线引用（发送时自动连线）
+ * - 连接边框：鼠标移到节点边缘渐显连接圆点，从边缘拉线接入引用 / 拖线引用（发送时自动连线）
  */
 export function ConversationNode({ id, width, height, selected }: NodeProps) {
   const hasFixedHeight = height != null;

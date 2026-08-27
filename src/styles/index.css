@@ -157,7 +157,7 @@
   --xy-edge-label-color-default: #dcdcdc;
 }
 
-/* ===== 节点连接边框（ConnectionFrame）：四边透明长条 handle，拉线指示由 SVG 虚线膨胀承担 ===== */
+/* ===== 节点连接边框（ConnectionFrame）：四边透明长条 handle，连接圆点/选中阴影发光按需渐显 ===== */
 .conn-strip {
   background: transparent !important;
   border: none !important;
@@ -214,7 +214,7 @@ body {
 }
 
 /* ===== 节点选中反馈 ===== */
-/* 选中反馈由 ConnectionFrame 外圈圆角矩形承担（虚线 → 实线 + 金色发光），
+/* 选中反馈由 ConnectionFrame 承担（节点边缘阴影发光），
    故此处不额外加 wrapper 阴影（--xy-node-boxshadow-selected-* 已置 none） */
 /* 分组选中不提升层级：React Flow 默认选中 zIndex +1000（calculateZ），会把组盖到所有节点之上；
    group 是背景容器，永远垫底（selected 仅保留金色边框反馈，不遮挡上层节点） */
