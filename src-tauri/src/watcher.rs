@@ -76,10 +76,8 @@ pub fn start(app: AppHandle, root: PathBuf, exclude: Vec<String>) -> Result<(), 
     )
     .map_err(|e| e.to_string())?;
 
-    // 2. 递归监听整个仓库根（仓库自由文件夹结构；`.atelyx`/隐藏/排除目录由 dispatch 过滤）
-    if !root.exists() {
-        let _ = std::fs::create_dir_all(&root);
-    }
+    // 2. 递归监听整个仓库根（仓库自由文件夹结构；`.atelyx`/隐藏/排除目录由 dispatch 过滤；
+    //    root 由调用方保证存在——open_vault 校验过目录，ensure_default_vault 创建后归一化）
     debouncer
         .watcher()
         .watch(&root, notify::RecursiveMode::Recursive)

@@ -203,14 +203,13 @@ fn forward_to_room(rooms: &mut Rooms, vault_id: &str, sender_id: u64, payload: A
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
     let port = std::env::var("PORT").unwrap_or_else(|_| "17701".to_string());
     let addr = format!("0.0.0.0:{port}");
     let app = Router::new().route("/ws", get(ws_handler)).with_state(Hub::default());
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .unwrap_or_else(|e| panic!("bind {addr} 失败：{e}"));
-    tracing::info!("collab-relay 已启动，监听 {addr}（/ws）");
+    eprintln!("collab-relay 已启动，监听 {addr}（/ws）");
     axum::serve(listener, app).await.expect("服务器错误");
 }
 
@@ -303,28 +302,18 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
                             forward_to_room(&mut rooms, &hello.vault_id, peer_id, payload);
                         }
                     }
-                    // 表格内容补丁：不存储、不透传解析，原样转发房间内其他成员（客户端按 file 匹配）
-                    "table-patch" => {
+                    // 表格/画布内容补丁：同构透传（不存储、不解析内容，原样转发房间内其他成员，
+                    // 客户端按 file 匹配只应用当前打开的文件）
+                    "table-patch" | "canvas-patch" => {
                         if let (Some(file), Some(patch)) = (msg.file, msg.patch) {
+                            let kind: &'static str = if msg.kind.as_str() == "table-patch" {
+                                "table-patch"
+                            } else {
+                                "canvas-patch"
+                            };
                             let mut rooms = hub.0.lock().unwrap();
                             let payload = server_msg(
-                                "table-patch",
-                                Some(peer_id),
-                                None,
-                                None,
-                                Some(file),
-                                Some(patch),
-                                None,
-                            );
-                            forward_to_room(&mut rooms, &hello.vault_id, peer_id, payload);
-                        }
-                    }
-                    // 画布内容补丁：与表格同构（不透明透传，客户端按 file 匹配当前打开的画布）
-                    "canvas-patch" => {
-                        if let (Some(file), Some(patch)) = (msg.file, msg.patch) {
-                            let mut rooms = hub.0.lock().unwrap();
-                            let payload = server_msg(
-                                "canvas-patch",
+                                kind,
                                 Some(peer_id),
                                 None,
                                 None,

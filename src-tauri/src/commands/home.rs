@@ -16,7 +16,7 @@ use tauri::State;
 use crate::vault::{percent_decode, walk_md_in, VaultState};
 
 /// 带日期笔记（frontmatter `date`/`due`，自动进日历）。
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DatedNote {
     pub file: String,
@@ -26,7 +26,7 @@ pub struct DatedNote {
 }
 
 /// 历史版本元数据（聚合展示，不含全文 content 以控制载荷）。
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoHistoryEntry {
     pub file: String,
@@ -41,7 +41,7 @@ pub struct RepoHistoryEntry {
 }
 
 /// 按日历史版本计数（活动日历，全量不计上限）。
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct DailyCount {
     /// 本地日期 "YYYY-MM-DD"。
@@ -50,7 +50,7 @@ pub struct DailyCount {
 }
 
 /// list_repo_history 返回：版本流（ts 倒序、上限）+ 全量按日计数（活动日历，不受上限截断）。
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoHistoryResult {
     pub entries: Vec<RepoHistoryEntry>,

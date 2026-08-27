@@ -12,7 +12,10 @@ use nanoid::nanoid;
 use serde::Serialize;
 use tauri::{Manager, State};
 
-use crate::commands::vault::{collect_ref_updates, flush_canvas_updates, mime_from_ext};
+use crate::commands::vault::{
+    collect_ref_updates, ensure_no_id_conflict, flush_canvas_updates, mime_from_ext,
+    remove_replaced_file,
+};
 use crate::vault::{
     cache_evict_table, cache_put_table, delete_vault_file, read_table_file, read_table_file_cached,
     reorder_by, rename_note_file, rel_with_new_title, safe_join, same_physical_file,
@@ -95,13 +98,13 @@ pub fn write_table_vault(
         .ok_or_else(|| format!("非法路径：{}", file))?;
     let new_path = parent.join(format!("{}.atb", sanitize_filename(&table.title)));
     // 新路径已存在且 id 不同（前端 dedupe 被绕过/同步盘合并）：拒绝覆盖
-    if new_path.exists() {
-        if let Ok(existing) = read_table_file(&new_path) {
-            if existing.id != table.id {
-                return Err(format!("表格名冲突：另一表格已使用名称「{}」", table.title));
-            }
-        }
-    }
+    ensure_no_id_conflict(
+        &new_path,
+        &table.id,
+        &|p| read_table_file(p).ok().map(|t| t.id),
+        "表格",
+        &table.title,
+    )?;
     let now = Utc::now().timestamp();
     // 乐观并发 + createdAt 保留共读一次（缓存命中免重读；文件缺失 = 新表用 now）
     if old_path.exists() {
@@ -121,17 +124,13 @@ pub fn write_table_vault(
     write_table_file(&new_path, &table)?;
     // title 变更导致路径漂移：table 节点按 file 路径引用，须同步全部 .atlx（防断链）
     if old_path != new_path {
-        let same_file = same_physical_file(&old_path, &new_path);
         let pending = collect_ref_updates(&root, &file, &new_rel)?;
         if let Err(e) = flush_canvas_updates(&pending) {
             // 回滚：删新文件（旧文件未动、引用未刷，保持原名），防改名后引用断裂
             let _ = std::fs::remove_file(&new_path);
             return Err(format!("更新画布引用失败：{e}"));
         }
-        // case-only 重命名（Windows 大小写不敏感文件系统）指向同一物理文件：不删旧文件（删即丢数据）
-        if old_path.exists() && !same_file {
-            std::fs::remove_file(&old_path).map_err(|e| format!("删除旧表格文件失败：{e}"))?;
-        }
+        remove_replaced_file(&old_path, &new_path, "表格")?;
     }
     cache_evict_table(&state, &file);
     cache_put_table(&state, &new_path, &new_rel, &table);
@@ -170,14 +169,15 @@ pub fn patch_table_vault(
         .ok_or_else(|| format!("非法路径：{}", file))?;
     let new_path = parent.join(format!("{}.atb", sanitize_filename(&table.title)));
     let new_rel = rel_with_new_title(&file, &table.title, "atb");
-    // 新路径已存在且 id 不同（前端 dedupe 被绕过/同步盘合并）：拒绝覆盖。
-    // 仅路径漂移（title 变更）时检查——同名时文件就是本次基底，id 必然一致，免每次保存全量重读
-    if old_path != new_path && new_path.exists() {
-        if let Ok(existing) = read_table_file(&new_path) {
-            if existing.id != table.id {
-                return Err(format!("表格名冲突：另一表格已使用名称「{}」", table.title));
-            }
-        }
+    // 名冲突守卫仅路径漂移（title 变更）时检查——同名时文件就是本次基底，id 必然一致，免每次保存全量重读
+    if old_path != new_path {
+        ensure_no_id_conflict(
+            &new_path,
+            &table.id,
+            &|p| read_table_file(p).ok().map(|t| t.id),
+            "表格",
+            &table.title,
+        )?;
     }
     let now = Utc::now().timestamp();
     // 乐观并发：磁盘版本比前端基准新 → 拒绝覆盖（force = 保留本地强制覆盖）；缓存已按指纹保证磁盘最新
@@ -217,17 +217,13 @@ pub fn patch_table_vault(
     write_table_file(&new_path, &table)?;
     // title 变更导致路径漂移：table 节点按 file 路径引用，须同步全部 .atlx（防断链）
     if old_path != new_path {
-        let same_file = same_physical_file(&old_path, &new_path);
         let pending = collect_ref_updates(&root, &file, &new_rel)?;
         if let Err(e) = flush_canvas_updates(&pending) {
             // 回滚：删新文件（旧文件未动、引用未刷，保持原名），防改名后引用断裂
             let _ = std::fs::remove_file(&new_path);
             return Err(format!("更新画布引用失败：{e}"));
         }
-        // case-only 重命名（Windows 大小写不敏感文件系统）指向同一物理文件：不删旧文件（删即丢数据）
-        if old_path.exists() && !same_file {
-            std::fs::remove_file(&old_path).map_err(|e| format!("删除旧表格文件失败：{e}"))?;
-        }
+        remove_replaced_file(&old_path, &new_path, "表格")?;
     }
     cache_put_table(&state, &new_path, &new_rel, &table);
     Ok((now, new_rel))
@@ -252,12 +248,14 @@ pub fn rename_table_vault(
     let same_file = same_physical_file(&old_path, &new_path);
     // 目标已存在且非同文件：读现存 id 比对，异表拒绝覆盖（同 write_table_vault，防同步盘合并/
     // 隐藏/排除目录绕过前端 dedupe 时静默覆盖另一表格）
-    if new_path.exists() && !same_file {
-        if let Ok(existing) = read_table_file(&new_path) {
-            if existing.id != old_table.id {
-                return Err(format!("表格名冲突：另一表格已使用名称「{}」", new_title));
-            }
-        }
+    if !same_file {
+        ensure_no_id_conflict(
+            &new_path,
+            &old_table.id,
+            &|p| read_table_file(p).ok().map(|t| t.id),
+            "表格",
+            &new_title,
+        )?;
     }
     let pending = collect_ref_updates(&root, &file, &new_rel)?;
     let mut table = old_table.clone();
@@ -265,10 +263,7 @@ pub fn rename_table_vault(
     table.updated_at = Utc::now().timestamp();
     // 先写新文件再删旧文件，保证不丢数据
     write_table_file(&new_path, &table)?;
-    // case-only 重命名（Windows 大小写不敏感文件系统）指向同一物理文件：不删旧文件（删即丢数据）
-    if old_path != new_path && !same_file {
-        std::fs::remove_file(&old_path).map_err(|e| format!("删除旧表格文件失败：{e}"))?;
-    }
+    remove_replaced_file(&old_path, &new_path, "表格")?;
     if let Err(e) = flush_canvas_updates(&pending) {
         // 尽力回滚：恢复旧文件（旧标题），清理新文件
         let _ = write_table_file(&old_path, &old_table);
@@ -416,56 +411,6 @@ pub fn import_table_image_vault(
     // 唯一名不可能已存在；直接复制
     std::fs::copy(&src_path, &dest).map_err(|e| format!("复制图片失败：{e}"))?;
     Ok(rel)
-}
-
-/// 迁移遗留内嵌图片（单元格值 `data:` 前缀）→ 表格附件文件：先写全部附件
-/// （确定性命名 `img-<rowId>-<fieldId>-<idx>.<ext>`，重入幂等覆盖），成功后再重写 .atb
-/// 单元格值为相对路径——中途失败不损坏原表（.atb 未改，重开重试）。
-/// 无遗留 dataURL 时原样返回（零开销）。返回迁移后的表格（前端直接使用 + 同步乐观锁基准）。
-#[tauri::command]
-pub fn migrate_table_images_vault(
-    file: String,
-    state: State<'_, VaultState>,
-) -> Result<TableFile, String> {
-    let root = state.root()?;
-    let path = safe_join(&root, &file, false)?;
-    let mut table = read_table_file(&path)?;
-    let dir_rel = table_attachments_rel(&table.id);
-    let mut migrated_any = false;
-    for field in &table.fields {
-        if field.field_type != "image" {
-            continue;
-        }
-        for row in &mut table.rows {
-            let Some(value) = row.values.get_mut(&field.id) else { continue };
-            let Some(arr) = value.as_array_mut() else { continue };
-            for (i, item) in arr.iter_mut().enumerate() {
-                let Some(url) = item.as_str() else { continue };
-                if !url.starts_with("data:") {
-                    continue;
-                }
-                let bytes = data_url_to_bytes(url)
-                    .ok_or_else(|| format!("图片数据解码失败（{} 行 {} 字段）", row.id, field.id))?;
-                let mime = url
-                    .split_once(';')
-                    .and_then(|(p, _)| p.strip_prefix("data:"))
-                    .and_then(ext_from_mime)
-                    .ok_or_else(|| "不支持的图片格式".to_string())?;
-                let rel = format!("{dir_rel}/img-{}-{}-{}.{}", row.id, field.id, i, mime);
-                let dest = safe_join(&root, &rel, true)?;
-                std::fs::write(&dest, &bytes).map_err(|e| format!("迁移图片写入失败：{e}"))?;
-                *item = serde_json::Value::String(rel);
-                migrated_any = true;
-            }
-        }
-    }
-    if migrated_any {
-        table.updated_at = Utc::now().timestamp();
-        write_table_file(&path, &table)?;
-        cache_evict_table(&state, &file);
-        cache_put_table(&state, &path, &file, &table);
-    }
-    Ok(table)
 }
 
 /// 导出表格为 .xlsx（目标路径来自系统保存对话框，任意位置可写）。

@@ -9,13 +9,10 @@ mod watcher;
 
 use tauri::Manager;
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
@@ -44,7 +41,6 @@ pub fn run() {
             commands::vault::read_vault_file,
             commands::vault::read_vault_file_window,
             commands::vault::write_vault_file,
-            commands::vault::read_whiteboard_canvas,
             commands::vault::rename_note,
             commands::vault::read_vault_config,
             commands::vault::write_vault_config,
@@ -54,8 +50,6 @@ pub fn run() {
             commands::vault::write_agents,
             commands::vault::read_folder_colors,
             commands::vault::write_folder_colors,
-            commands::vault::read_editor_chats,
-            commands::vault::delete_legacy_editor_chats,
             commands::vault::list_chat_sessions,
             commands::vault::read_chat_session_meta,
             commands::vault::write_chat_session_meta,
@@ -88,7 +82,6 @@ pub fn run() {
             commands::table::move_table_vault,
             commands::table::delete_table_vault,
             commands::table::import_table_image_vault,
-            commands::table::migrate_table_images_vault,
             commands::table::cleanup_table_attachments_vault,
             commands::table::export_table_xlsx,
             commands::table::save_image_to_downloads,

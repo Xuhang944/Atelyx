@@ -30,7 +30,7 @@ use crate::vault::{
     rename_folder as rename_folder_impl, rename_note_file, rel_with_new_title,
     resolve_link_target, rewrite_internal_links, safe_join, same_physical_file,
     sanitize_filename, walk_md_in, write_canvas_file, write_note as write_note_file, write_vault_config as write_vault_config_file,
-    read_editor_chats_file, delete_editor_chats_file, list_chat_sessions_file,
+    list_chat_sessions_file,
     read_chat_session_meta_file, write_chat_session_meta_file, delete_chat_session_meta_file,
     read_editor_chats_meta_file, write_editor_chats_meta_file,
     read_prompt_notes_file, write_prompt_notes_file,
@@ -40,7 +40,7 @@ use crate::vault::{
     delete_chat_messages_file, read_dir_filtered, regenerate_file_id, cache_evict_canvas,
     BacklinkRow, CanvasFile, CanvasFileRow, CanvasPatch, AgentConfig,
     ChatMessageRecord, ChatMetaFile, ChatSessionMeta, ChatSessionRow, DeleteFolderResult,
-    LegacyEditorChatsFile, FileTreeNode, VaultConfig, VaultState,
+    FileTreeNode, VaultConfig, VaultState,
     WikiIndex, CANVAS_SCHEMA, query_wiki_backlinks,
 };
 
@@ -82,28 +82,13 @@ pub fn open_vault(
         return Err(format!("仓库路径不是文件夹：{}", path));
     }
     let root = dunce::canonicalize(&raw).map_err(|e| format!("仓库路径不可达：{} ({e})", path))?;
-    // 读仓库级配置拿生效的文件面板配置（排除文件夹）+ 仓库稳定 ID，缺省 = 空
-    let mut config = read_vault_config_file(&root)?;
-    let (vault_id, vault_id_new) = ensure_vault_id(&mut config);
-    let exclude_folders = config.exclude_folders.clone().unwrap_or_default();
-    init_vault_dirs(&root)?;
-    // 仅首次生成 vault_id 时落盘（失败不阻塞打开——下次打开会补写，内存值本轮回调已生效）
-    if vault_id_new {
-        let _ = write_vault_config_file(&root, &config);
-    }
-    // 先启监听再切 state：watcher 失败降级为警告（仓库仍可打开，实时同步降级为手动刷新）——
-    // 大仓库递归监听可能超 OS watch 上限（Linux inotify max_user_watches），不阻塞打开
-    // （warm_app/warm_exclude 在移动前克隆：反链索引后台预热用）
-    let warm_app = app.clone();
-    let warm_exclude = exclude_folders.clone();
-    if let Err(e) = watcher::start(app, root.clone(), exclude_folders.clone()) {
-        eprintln!("文件监听启动失败（仓库仍可打开，实时同步降级）：{e}");
-    }
-    state.set(root.clone(), exclude_folders)?;
+    let (vault_id, exclude_folders) = activate_vault(&app, &state, &root)?;
     // 反链索引后台预热：把唯一一次全量扫描（读全部 .md 提取引用）塞进「进入仓库」阶段，不阻塞打开；
     // 失败静默——首次反链查询会懒构建兜底（预热与查询竞争时以先建为准，索引幂等可重建）。
     // 锁 poison 在此同样容忍：后台预热非关键路径，查询侧会重建。
+    let warm_app = app.clone();
     let warm_root = root.clone();
+    let warm_exclude = exclude_folders;
     std::thread::spawn(move || {
         if let Some(st) = warm_app.try_state::<VaultState>() {
             if let Ok(mut guard) = st.wiki.lock() {
@@ -154,13 +139,13 @@ pub fn write_canvas_vault(
         .ok_or_else(|| format!("非法路径：{}", file))?;
     let new_path = parent.join(format!("{}.atlx", sanitize_filename(&canvas.title)));
     // 新路径已存在且 id 不同（前端 dedupe 被绕过/同步盘合并）：拒绝覆盖，防静默丢失另一画布
-    if new_path.exists() {
-        if let Ok(existing) = read_canvas_file(&new_path) {
-            if existing.id != canvas.id {
-                return Err(format!("画布名冲突：另一画布已使用名称「{}」", canvas.title));
-            }
-        }
-    }
+    ensure_no_id_conflict(
+        &new_path,
+        &canvas.id,
+        &|p| read_canvas_file(p).ok().map(|c| c.id),
+        "画布",
+        &canvas.title,
+    )?;
     let now = Utc::now().timestamp();
     // 乐观并发 + createdAt 保留共读一次（缓存命中免重读；文件缺失 = 新画布用 now）
     if old_path.exists() {
@@ -177,11 +162,7 @@ pub fn write_canvas_vault(
     }
     canvas.updated_at = now;
     write_canvas_file(&new_path, &canvas)?;
-    // case-only 重命名（Windows 大小写不敏感文件系统）指向同一物理文件：不删旧文件（删即丢数据）
-    if old_path != new_path && old_path.exists() && !same_physical_file(&old_path, &new_path) {
-        // 旧文件已不在需要，删除；失败须报错，否则同 id 双文件会歧义（列表读到旧内容）
-        std::fs::remove_file(&old_path).map_err(|e| format!("删除旧画布文件失败：{e}"))?;
-    }
+    remove_replaced_file(&old_path, &new_path, "画布")?;
     let new_rel = rel_with_new_title(&file, &canvas.title, "atlx");
     cache_evict_canvas(&state, &file);
     cache_put_canvas(&state, &new_path, &new_rel, &canvas);
@@ -222,14 +203,15 @@ pub fn patch_canvas_vault(
         .ok_or_else(|| format!("非法路径：{}", file))?;
     let new_path = parent.join(format!("{}.atlx", sanitize_filename(&canvas.title)));
     let new_rel = rel_with_new_title(&file, &canvas.title, "atlx");
-    // 新路径已存在且 id 不同（前端 dedupe 被绕过/同步盘合并）：拒绝覆盖，防静默丢失另一画布。
-    // 仅路径漂移（title 变更）时检查——同名时文件就是本次基底，id 必然一致，免每次保存全量重读
-    if old_path != new_path && new_path.exists() {
-        if let Ok(existing) = read_canvas_file(&new_path) {
-            if existing.id != canvas.id {
-                return Err(format!("画布名冲突：另一画布已使用名称「{}」", canvas.title));
-            }
-        }
+    // 名冲突守卫仅路径漂移（title 变更）时检查——同名时文件就是本次基底，id 必然一致，免每次保存全量重读
+    if old_path != new_path {
+        ensure_no_id_conflict(
+            &new_path,
+            &canvas.id,
+            &|p| read_canvas_file(p).ok().map(|c| c.id),
+            "画布",
+            &canvas.title,
+        )?;
     }
     let now = Utc::now().timestamp();
     // 乐观并发：磁盘版本比前端基准新 → 拒绝覆盖（缓存已按指纹保证磁盘最新）
@@ -257,10 +239,7 @@ pub fn patch_canvas_vault(
     }
     canvas.updated_at = now;
     write_canvas_file(&new_path, &canvas)?;
-    // case-only 重命名（Windows 大小写不敏感文件系统）指向同一物理文件：不删旧文件（删即丢数据）
-    if old_path != new_path && old_path.exists() && !same_physical_file(&old_path, &new_path) {
-        std::fs::remove_file(&old_path).map_err(|e| format!("删除旧画布文件失败：{e}"))?;
-    }
+    remove_replaced_file(&old_path, &new_path, "画布")?;
     cache_evict_canvas(&state, &file);
     cache_put_canvas(&state, &new_path, &new_rel, &canvas);
     Ok((now, new_rel))
@@ -284,11 +263,7 @@ pub fn rename_canvas_vault(
     let new_path = parent.join(format!("{}.atlx", sanitize_filename(&canvas.title)));
     // 先写新文件再删旧文件，保证不丢数据
     write_canvas_file(&new_path, &canvas)?;
-    // case-only 重命名（Windows 大小写不敏感文件系统）指向同一物理文件：不删旧文件（删即丢数据）
-    if old_path != new_path && !same_physical_file(&old_path, &new_path) {
-        // 删除失败须报错（同 id 双文件歧义），但新文件已落盘，下次保存会重试清理
-        std::fs::remove_file(&old_path).map_err(|e| format!("删除旧画布文件失败：{e}"))?;
-    }
+    remove_replaced_file(&old_path, &new_path, "画布")?;
     // 重命名路径变化：清旧缓存键 + 新路径按新指纹入缓存
     if new_path != old_path {
         cache_evict_canvas(&state, &file);
@@ -374,16 +349,17 @@ pub fn rebuild_internal_links(
 ) -> Result<RebuildLinksResult, String> {
     let root = state.root()?;
     let exclude = state.exclude_folders()?;
-    // 收集全部 .md 相对路径 + 构建解析表（精确路径 + 文件名索引；同名歧义 = 不解析）
-    let mut files: Vec<String> = vec![];
-    walk_md_in(&root, "", &exclude, &mut |rel, _path| {
-        files.push(rel.to_string());
+    // 收集全部 .md 相对路径 + 绝对路径（walk_md_in 回调已给 root.join(rel)，来源可信无需再 safe_join 重算）
+    let mut files: Vec<(String, PathBuf)> = vec![];
+    walk_md_in(&root, "", &exclude, &mut |rel, path| {
+        files.push((rel.to_string(), path.to_path_buf()));
         Ok(())
     })?;
-    let exact: std::collections::HashSet<String> = files.iter().cloned().collect();
+    let exact: std::collections::HashSet<String> =
+        files.iter().map(|(rel, _)| rel.clone()).collect();
     let mut by_basename: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
-    for rel in &files {
+    for (rel, _) in &files {
         let base = rel.rsplit('/').next().unwrap_or(rel).to_string();
         by_basename.entry(base).or_default().push(rel.clone());
     }
@@ -391,9 +367,8 @@ pub fn rebuild_internal_links(
         |name: &str| resolve_link_target(name, &exact, &by_basename);
     let mut modified = 0u32;
     let mut links = 0u32;
-    for rel in &files {
-        let path = safe_join(&root, rel, false)?;
-        let content = match std::fs::read_to_string(&path) {
+    for (rel, path) in &files {
+        let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(_) => continue, // 不可读跳过
         };
@@ -412,17 +387,6 @@ pub fn rebuild_internal_links(
         modified,
         links,
     })
-}
-
-/// 读外部白板文件（`.canvas` JSON 原文，只读查看/转换为画布用）。
-/// 复用通用文本读（safe_join 校验）；不提供写命令——白板格式保持只读，不被本应用改写。
-#[tauri::command]
-pub fn read_whiteboard_canvas(
-    file: String,
-    state: State<'_, VaultState>,
-) -> Result<String, String> {
-    let root = state.root()?;
-    read_note_file(&root, &file)
 }
 
 /// 写 .md 笔记（原子写，自动建父目录）。
@@ -857,20 +821,6 @@ pub fn write_folder_colors(
     write_folder_colors_file(&root, &colors)
 }
 
-/// 读旧 AI 对话面板会话索引（迁移专用：.atelyx/editor-chats.json，不存在/损坏返回默认；迁移完成后删除）。
-#[tauri::command]
-pub fn read_editor_chats(state: State<'_, VaultState>) -> Result<LegacyEditorChatsFile, String> {
-    let root = state.root()?;
-    read_editor_chats_file(&root)
-}
-
-/// 删旧 AI 对话面板会话索引（.atelyx/editor-chats.json，迁移完成后调用；幂等）。
-#[tauri::command]
-pub fn delete_legacy_editor_chats(state: State<'_, VaultState>) -> Result<(), String> {
-    let root = state.root()?;
-    delete_editor_chats_file(&root)
-}
-
 /// 扫 .atelyx/对话历史/ 列出全部会话（消息 .jsonl + 可选元数据侧车；会话清单 = 扫目录，无整文件索引）。
 #[tauri::command]
 pub fn list_chat_sessions(state: State<'_, VaultState>) -> Result<Vec<ChatSessionRow>, String> {
@@ -971,11 +921,7 @@ pub fn ensure_default_vault(
 ) -> Result<VaultInfo, String> {
     // 已打开则直接返回（重新读配置拿 id；缺失时补生成，与 open_vault 语义一致）
     if let Ok(root) = state.root() {
-        let mut config = read_vault_config_file(&root)?;
-        let (vault_id, vault_id_new) = ensure_vault_id(&mut config);
-        if vault_id_new {
-            let _ = write_vault_config_file(&root, &config);
-        }
+        let (vault_id, _) = ensure_vault_id_on_disk(&root)?;
         return Ok(vault_info_from(root, vault_id));
     }
     let app_data_dir = app_handle
@@ -986,22 +932,10 @@ pub fn ensure_default_vault(
     if !default_root.exists() {
         std::fs::create_dir_all(&default_root).map_err(|e| e.to_string())?;
     }
-    // 读配置拿生效的文件面板配置（排除文件夹）+ 仓库稳定 ID，与 open_vault 同流程
-    let mut config = read_vault_config_file(&default_root)?;
-    let (vault_id, vault_id_new) = ensure_vault_id(&mut config);
-    let exclude_folders = config.exclude_folders.clone().unwrap_or_default();
-    init_vault_dirs(&default_root)?;
-    if vault_id_new {
-        let _ = write_vault_config_file(&default_root, &config);
-    }
     // 与 open_vault 一致：dunce::canonicalize → 先启监听再切 state，保证存/回传格式统一
     let default_root = dunce::canonicalize(&default_root)
         .map_err(|e| format!("默认仓库路径不可达：{} ({e})", default_root.display()))?;
-    // watcher 失败降级（同 open_vault）：不阻塞默认仓库打开
-    if let Err(e) = watcher::start(app_handle, default_root.clone(), exclude_folders.clone()) {
-        eprintln!("文件监听启动失败（仓库仍可打开，实时同步降级）：{e}");
-    }
-    state.set(default_root.clone(), exclude_folders)?;
+    let (vault_id, _) = activate_vault(&app_handle, &state, &default_root)?;
     Ok(vault_info_from(default_root, vault_id))
 }
 
@@ -1019,7 +953,6 @@ pub fn create_canvas_vault(
         schema: CANVAS_SCHEMA.to_string(),
         id: id.clone(),
         title: title.clone(),
-        viewport: serde_json::json!({"x": 0, "y": 0, "zoom": 1}),
         nodes: vec![],
         edges: vec![],
         created_at: now,
@@ -1071,6 +1004,71 @@ fn vault_info_from(root: PathBuf, id: String) -> VaultInfo {
         name: crate::vault::vault_display_name(&root),
         id,
     }
+}
+
+/// 仓库稳定 ID 保障 + 生效文件面板配置读取（激活流程与「已打开」快路径共用）：
+/// 读配置 → 缺失生成 nanoid → 仅新建时落盘（失败不阻塞打开——下次打开会补写，内存值本轮回调已生效）。
+/// 返回 (vault_id, exclude_folders)。
+fn ensure_vault_id_on_disk(root: &Path) -> Result<(String, Vec<String>), String> {
+    let mut config = read_vault_config_file(root)?;
+    let (vault_id, vault_id_new) = ensure_vault_id(&mut config);
+    let exclude_folders = config.exclude_folders.clone().unwrap_or_default();
+    if vault_id_new {
+        let _ = write_vault_config_file(root, &config);
+    }
+    Ok((vault_id, exclude_folders))
+}
+
+/// 仓库激活公共流程（open_vault / ensure_default_vault 共用）：保障 vault_id → init 目录 →
+/// 先启监听再切 state（watcher 失败降级为警告，不阻塞打开——大仓库递归监听可能超 OS watch
+/// 上限（Linux inotify max_user_watches），仓库仍可打开，实时同步降级为手动刷新）。
+/// root 必须已完成 dunce::canonicalize（两调用方均为先归一化再激活，保证存/回传格式统一）。
+fn activate_vault(
+    app_handle: &AppHandle,
+    state: &State<'_, VaultState>,
+    root: &Path,
+) -> Result<(String, Vec<String>), String> {
+    let (vault_id, exclude_folders) = ensure_vault_id_on_disk(root)?;
+    init_vault_dirs(root)?;
+    if let Err(e) = watcher::start(app_handle.clone(), root.to_path_buf(), exclude_folders.clone()) {
+        eprintln!("文件监听启动失败（仓库仍可打开，实时同步降级）：{e}");
+    }
+    state.set(root.to_path_buf(), exclude_folders.clone())?;
+    Ok((vault_id, exclude_folders))
+}
+
+/// 保存名冲突守卫（画布/表格保存命令共用）：新路径已被另一文件占用（解析出的稳定 id 不同，
+/// 前端 dedupe 被绕过/同步盘合并/隐藏目录绕过）→ 拒绝覆盖，防静默丢失；现存文件解析失败
+/// （损坏）不拦截。调用方按需前置豁免条件（路径未漂移/同物理文件时 id 必然一致或已豁免）。
+pub(crate) fn ensure_no_id_conflict(
+    new_path: &Path,
+    id: &str,
+    existing_id: &dyn Fn(&Path) -> Option<String>,
+    kind: &str,
+    title: &str,
+) -> Result<(), String> {
+    if new_path.exists() {
+        if let Some(existing) = existing_id(new_path) {
+            if existing != id {
+                return Err(format!("{kind}名冲突：另一{kind}已使用名称「{title}」"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 保存路径漂移（title 改名）后的旧文件清理（画布/表格保存命令共用）：case-only 重命名
+/// （Windows 大小写不敏感文件系统）指向同一物理文件时不删（删即丢数据）；旧文件已不在
+/// （新建/外部已删）跳过；其余删除，失败须报错——同 id 双文件会歧义（列表读到旧内容）。
+pub(crate) fn remove_replaced_file(
+    old_path: &Path,
+    new_path: &Path,
+    kind: &str,
+) -> Result<(), String> {
+    if old_path != new_path && old_path.exists() && !same_physical_file(old_path, new_path) {
+        std::fs::remove_file(old_path).map_err(|e| format!("删除旧{kind}文件失败：{e}"))?;
+    }
+    Ok(())
 }
 
 /// 递归扫描仓库内全部 .atlx，命中更新条件的收集（不写盘，flush_canvas_updates 统一写回）。

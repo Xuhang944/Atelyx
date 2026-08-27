@@ -10,14 +10,10 @@
 //! 边界捕获：网络/HTTP 错误返回 Err，前端 `runSearch` 降级为 `SearchResultData.error`
 //! （失败降级不阻塞对话，）。
 
-use keyring::Entry;
 use serde::Serialize;
 use tauri::State;
 
 use crate::vault::{read_vault_config, VaultConfig, VaultState};
-
-/// keychain 的 service 名（对齐 `tauri.conf.json` 的 `identifier`，与 keychain.rs 一致）。
-const SERVICE: &str = "com.atelyx.app";
 
 /// 单条搜索结果（camelCase 对齐前端 `SearchResultItem`）。
 #[derive(Serialize)]
@@ -144,13 +140,8 @@ fn get_tavily_key(config: &VaultConfig) -> Result<String, String> {
         }
     }
     let vault_id = config.vault_id.as_deref().unwrap_or_default();
-    let entry = Entry::new(SERVICE, &format!("provider-{}-search-tavily", vault_id))
-        .map_err(|e| e.to_string())?;
-    match entry.get_password() {
-        Ok(s) => Ok(s),
-        Err(keyring::Error::NoEntry) => Ok(String::new()),
-        Err(e) => Err(e.to_string()),
-    }
+    // keychain 读写统一走 keychain 模块（同 service/username 拼法、NoEntry → 空串语义一致）
+    crate::commands::keychain::get_api_key(vault_id.to_string(), "search-tavily".to_string())
 }
 
 /// 简单百分号编码（UTF-8 字节；SearXNG 查询参数用）。

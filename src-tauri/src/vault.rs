@@ -12,16 +12,6 @@ use std::sync::Mutex;
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 
-/// 兼容字段：旧配置可能含「画布/笔记/附件」三目录名（`.atelyx/config.json` 的 `dirNames`），
-/// 保留类型以兼容读取，不驱动任何路径逻辑（仓库为自由文件夹结构）。
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct DirNames {
-    pub canvases: String,
-    pub notes: String,
-    pub attachments: String,
-}
-
 /// 磁盘文件缓存条目：mtime（纳秒）+ 长度作失效指纹——外部编辑/同步盘改动命中指纹变化，
 /// 命中克隆免每次保存重读重解析（乐观锁检查 + createdAt 保留 + 补丁基底共用）。
 pub struct CachedFile<T> {
@@ -112,8 +102,6 @@ pub struct CanvasFile {
     pub id: String,
     pub title: String,
     #[serde(default)]
-    pub viewport: serde_json::Value,
-    #[serde(default)]
     pub nodes: Vec<CanvasFileNode>,
     #[serde(default)]
     pub edges: Vec<CanvasFileEdge>,
@@ -170,7 +158,7 @@ pub struct CanvasFileRow {
 }
 
 /// 仓库文件树节点（`list_vault_tree`，文件面板全仓库树）。
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FileTreeNode {
     /// 文件名 / 文件夹名
@@ -206,7 +194,8 @@ pub(crate) fn read_dir_filtered(
             Some(n) => n.to_string(),
             None => continue,
         };
-        if name.starts_with('.') || exclude.iter().any(|e| e.as_str() == name) {
+        // 单段文件名与 is_excluded_rel 的整段判定等价（隐藏项/排除文件夹），过滤规则只此一处
+        if is_excluded_rel(&name, exclude) {
             continue;
         }
         let child_rel = if rel.is_empty() {
@@ -775,9 +764,6 @@ pub struct VaultConfig {
     pub sync_keys: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_explorer_sort: Option<String>,
-    /// 兼容字段：仓库三根目录名（自由文件夹结构不使用，仅兼容读取旧配置）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dir_names: Option<DirNames>,
     /// 文件面板排除的文件夹名（任何层级的同名文件夹不显示/不监听；设置页逗号分隔输入转数组）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exclude_folders: Option<Vec<String>>,
@@ -987,62 +973,6 @@ pub fn write_editor_chats_meta_file(root: &Path, file: &ChatMetaFile) -> Result<
     atomic_write(&path, &json)
 }
 
-// ===== 旧 editor-chats.json（迁移专用，仅读取）=====
-
-/// 旧 editor-chats.json 的 schema 版本（与前端 constants/editorChats.ts 的 EDITOR_CHATS_SCHEMA 对齐）。
-pub const EDITOR_CHATS_SCHEMA: &str = "atelyx-editor-chats/v3";
-
-/// 旧索引单条会话（迁移读取用：仅取 title/agentId 下沉到侧车）。
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct LegacyEditorChatSession {
-    pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<String>,
-    /// 消息正文 .jsonl 相对仓库根路径（`.atelyx/对话历史/<会话 id>.jsonl`）
-    #[serde(default)]
-    pub file: String,
-}
-
-/// 旧 editor-chats.json 根结构（迁移读取用）。
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct LegacyEditorChatsFile {
-    pub schema: String,
-    #[serde(default)]
-    pub sessions: Vec<LegacyEditorChatSession>,
-    #[serde(default)]
-    pub model_override: Option<EditorChatModelOverride>,
-    #[serde(default)]
-    pub effort_override: Option<String>,
-}
-
-/// 读旧 AI 对话面板会话索引（迁移专用：不存在/解析失败返回默认——手编辑损坏不阻塞）。
-pub fn read_editor_chats_file(root: &Path) -> Result<LegacyEditorChatsFile, String> {
-    let path = root.join(".atelyx").join("editor-chats.json");
-    if !path.exists() {
-        return Ok(LegacyEditorChatsFile::default());
-    }
-    let json = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let file = serde_json::from_str::<LegacyEditorChatsFile>(&json).unwrap_or_default();
-    // schema 校验：只认 v3——旧版存量（v1/v2）开发阶段不迁移，视为空历史（不报错）
-    if file.schema != EDITOR_CHATS_SCHEMA {
-        return Ok(LegacyEditorChatsFile::default());
-    }
-    Ok(file)
-}
-
-/// 删旧索引 editor-chats.json（迁移完成后调用；不存在视为成功——幂等）。
-pub fn delete_editor_chats_file(root: &Path) -> Result<(), String> {
-    let path = root.join(".atelyx").join("editor-chats.json");
-    if path.exists() {
-        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
 // ===== 会话消息正文（.atelyx/对话历史/*.jsonl）=====
 
 /// 校验并定位会话消息正文路径：必须位于 `.atelyx/对话历史/` 下且以 .jsonl 结尾（防越权读写任意文件）。
@@ -1191,7 +1121,7 @@ pub fn delete_chat_session_meta_file(root: &Path, file: &str) -> Result<(), Stri
 }
 
 /// 会话清单行（扫目录结果：一个会话 = 一个消息 .jsonl + 可选元数据侧车）。
-#[derive(Serialize, Deserialize, Clone, Default)]
+#[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatSessionRow {
     pub id: String,

@@ -9,13 +9,13 @@
 //! 仅当仓库开启 `syncKeys`（「API key 随仓库保存」，多设备同步）时前端才把 key 明文写入
 //! `config.json`（`vault.rs` 的 `VaultProvider.api_key` 为可选字段，默认不落盘 = 类型层守边界）。
 //!
-//! service = `com.atelyx.app`（对齐 tauri.conf.json identifier），
+//! service = `com.atelyx.app`（keychain 条目的独立命名空间，与 tauri.conf.json 的 identifier 无关），
 //! username = `provider-<vaultId>-<providerId>`（**按仓库隔离**：各仓库独立 key，
 //! 与仓库级配置 `VaultConfig.providers` 配套；Tavily key 的 providerId 传 `search-tavily`）。
 
 use keyring::Entry;
 
-/// keychain 的 service 名（对齐 `tauri.conf.json` 的 `identifier`）。
+/// keychain 的 service 名（keychain 条目的独立命名空间，不随应用 identifier 变化）。
 const SERVICE: &str = "com.atelyx.app";
 
 /// 按仓库 + provider id 构造 keychain username（key 按仓库隔离，防跨仓库搞混）。

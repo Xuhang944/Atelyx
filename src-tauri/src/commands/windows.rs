@@ -4,30 +4,10 @@
 //! （Rust 侧创建无需 JS 侧 webview 创建权限；url 同主入口，前端按 label 分流渲染单面板）。
 
 use serde::Deserialize;
-#[cfg(debug_assertions)]
-use std::io::Write;
 use tauri::{window::Color, AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
-#[cfg(debug_assertions)]
-use tauri::Emitter;
-
-/// 撕裂窗口诊断（仅 debug 构建）：追加写入 `app_data_dir/panel-diagnostic.log`
-/// （不依赖终端/console/DevTools，命令执行必然落盘）。内容：created（窗口创建）+ page Started/Finished + 实际 URL。
-#[cfg(debug_assertions)]
-fn log_panel(app: &AppHandle, msg: String) {
-    if let Ok(dir) = app.path().app_data_dir() {
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join("panel-diagnostic.log"))
-        {
-            let _ = writeln!(f, "{msg}");
-        }
-    }
-}
 
 /// 撕裂窗口加载地址：统一 `WebviewUrl::App("index.html")`（受信任协议，与主窗口同机制）。
-/// dev 下由 Tauri 解析到 devUrl；暂不用 External（排除其作为 build 挂起嫌疑）。
-fn panel_url(_app: &AppHandle) -> WebviewUrl {
+fn panel_url() -> WebviewUrl {
     WebviewUrl::App("index.html".into())
 }
 
@@ -60,14 +40,7 @@ pub async fn create_panel_window(
     if app.get_webview_window(&label).is_some() {
         return Ok(true);
     }
-    #[cfg(debug_assertions)]
-    {
-        println!("[panel:{label}] command called");
-        log_panel(&app, format!("[panel:{label}] command called"));
-    }
-    #[cfg(debug_assertions)]
-    let log_label = label.clone();
-    let builder = WebviewWindowBuilder::new(&app, &label, panel_url(&app))
+    let builder = WebviewWindowBuilder::new(&app, &label, panel_url())
         .title(title)
         .inner_size(bounds.width, bounds.height)
         .position(bounds.x, bounds.y)
@@ -77,32 +50,9 @@ pub async fn create_panel_window(
         .min_inner_size(320.0, 240.0)
         // 启动背景色 = 主窗口 tauri.conf.json 的 backgroundColor（#1e1e1e），防新建窗口白闪
         .background_color(Color(30, 30, 30, 255));
-    // 诊断（仅 debug）：页面加载状态 → 终端 + app_data_dir 日志文件 + 主窗口 emit（多通道，任意其一可见）
-    #[cfg(debug_assertions)]
-    let builder = builder.on_page_load(move |win, payload| {
-        let event = format!("{:?}", payload.event());
-        let url = payload.url().to_string();
-        println!("[panel:{log_label}] page {event} -> {url}");
-        log_panel(win.app_handle(), format!("[panel:{log_label}] page {event} -> {url}"));
-        let _ = win.app_handle().emit(
-            "panel-page-load",
-            serde_json::json!({ "label": log_label, "event": event, "url": url }),
-        );
-    });
     let win = builder.build();
-    #[cfg(debug_assertions)]
-    println!("[panel:{label}] build returned");
     match win {
         Ok(win) => {
-            #[cfg(debug_assertions)]
-            {
-                println!("[panel:{label}] created");
-                log_panel(&app, format!("[panel:{label}] created bounds={}x{}@{},{}", bounds.width, bounds.height, bounds.x, bounds.y));
-                let _ = app.emit(
-                    "panel-page-load",
-                    serde_json::json!({ "label": label, "event": "created", "url": "" }),
-                );
-            }
             let _ = win.set_focus();
         }
         Err(e) => {
