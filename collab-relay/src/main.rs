@@ -46,7 +46,6 @@ type Rooms = HashMap<String, Room>;
 type Room = HashMap<u64, PeerEntry>;
 
 struct PeerEntry {
-    peer_id: u64,
     nickname: String,
     color: String,
     device_name: String,
@@ -176,9 +175,9 @@ fn broadcast_peers(rooms: &Rooms, vault_id: &str) {
         return;
     };
     let peers: Vec<PeerInfo> = room
-        .values()
-        .map(|p| PeerInfo {
-            peer_id: p.peer_id,
+        .iter()
+        .map(|(id, p)| PeerInfo {
+            peer_id: *id,
             nickname: p.nickname.clone(),
             color: p.color.clone(),
             device_name: p.device_name.clone(),
@@ -188,6 +187,17 @@ fn broadcast_peers(rooms: &Rooms, vault_id: &str) {
     let payload = server_msg("peers", None, Some(peers), None, None, None, None);
     for p in room.values() {
         let _ = p.tx.send(payload.clone());
+    }
+}
+
+/// 把已构建的转发帧送房间内除发送者外的全部成员（presence/补丁/笔记同步共用转发循环）。
+fn forward_to_room(rooms: &mut Rooms, vault_id: &str, sender_id: u64, payload: Arc<String>) {
+    if let Some(room) = rooms.get_mut(vault_id) {
+        for (id, peer) in room.iter() {
+            if *id != sender_id {
+                let _ = peer.tx.send(payload.clone());
+            }
+        }
     }
 }
 
@@ -253,7 +263,6 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
         room.insert(
             peer_id,
             PeerEntry {
-                peer_id,
                 nickname: hello.nickname,
                 color: hello.color,
                 device_name: hello.device_name,
@@ -291,55 +300,39 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
                             }
                             let payload =
                                 server_msg("presence", Some(peer_id), None, Some(presence), None, None, None);
-                            for (id, peer) in room.iter() {
-                                if *id != peer_id {
-                                    let _ = peer.tx.send(payload.clone());
-                                }
-                            }
+                            forward_to_room(&mut rooms, &hello.vault_id, peer_id, payload);
                         }
                     }
                     // 表格内容补丁：不存储、不透传解析，原样转发房间内其他成员（客户端按 file 匹配）
                     "table-patch" => {
                         if let (Some(file), Some(patch)) = (msg.file, msg.patch) {
                             let mut rooms = hub.0.lock().unwrap();
-                            if let Some(room) = rooms.get_mut(&hello.vault_id) {
-                                let payload = server_msg(
-                                    "table-patch",
-                                    Some(peer_id),
-                                    None,
-                                    None,
-                                    Some(file),
-                                    Some(patch),
-                                    None,
-                                );
-                                for (id, peer) in room.iter() {
-                                    if *id != peer_id {
-                                        let _ = peer.tx.send(payload.clone());
-                                    }
-                                }
-                            }
+                            let payload = server_msg(
+                                "table-patch",
+                                Some(peer_id),
+                                None,
+                                None,
+                                Some(file),
+                                Some(patch),
+                                None,
+                            );
+                            forward_to_room(&mut rooms, &hello.vault_id, peer_id, payload);
                         }
                     }
                     // 画布内容补丁：与表格同构（不透明透传，客户端按 file 匹配当前打开的画布）
                     "canvas-patch" => {
                         if let (Some(file), Some(patch)) = (msg.file, msg.patch) {
                             let mut rooms = hub.0.lock().unwrap();
-                            if let Some(room) = rooms.get_mut(&hello.vault_id) {
-                                let payload = server_msg(
-                                    "canvas-patch",
-                                    Some(peer_id),
-                                    None,
-                                    None,
-                                    Some(file),
-                                    Some(patch),
-                                    None,
-                                );
-                                for (id, peer) in room.iter() {
-                                    if *id != peer_id {
-                                        let _ = peer.tx.send(payload.clone());
-                                    }
-                                }
-                            }
+                            let payload = server_msg(
+                                "canvas-patch",
+                                Some(peer_id),
+                                None,
+                                None,
+                                Some(file),
+                                Some(patch),
+                                None,
+                            );
+                            forward_to_room(&mut rooms, &hello.vault_id, peer_id, payload);
                         }
                     }
                     // 笔记协作同步 / awareness：不透明透传（base64 载荷），原样转发房间内其他成员
@@ -349,22 +342,16 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
                             let kind: &'static str =
                                 if msg.kind.as_str() == "note-sync" { "note-sync" } else { "note-aware" };
                             let mut rooms = hub.0.lock().unwrap();
-                            if let Some(room) = rooms.get_mut(&hello.vault_id) {
-                                let relayed = server_msg(
-                                    kind,
-                                    Some(peer_id),
-                                    None,
-                                    None,
-                                    Some(file),
-                                    None,
-                                    Some(payload),
-                                );
-                                for (id, peer) in room.iter() {
-                                    if *id != peer_id {
-                                        let _ = peer.tx.send(relayed.clone());
-                                    }
-                                }
-                            }
+                            let relayed = server_msg(
+                                kind,
+                                Some(peer_id),
+                                None,
+                                None,
+                                Some(file),
+                                None,
+                                Some(payload),
+                            );
+                            forward_to_room(&mut rooms, &hello.vault_id, peer_id, relayed);
                         }
                     }
                     "bye" => break,
