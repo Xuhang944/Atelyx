@@ -10,18 +10,11 @@ import type { GlobalProvider, ReasoningEffort } from "./provider";
 import type { LinkMode, SearchResultData } from "./node";
 import type { CANVAS_SCHEMA } from "@/constants/canvas";
 
-export interface CanvasViewport {
-  x: number;
-  y: number;
-  zoom: number;
-}
-
 /** `.atlx` 文件根结构。 */
 export interface CanvasFile {
   schema: typeof CANVAS_SCHEMA;
   id: string;
   title: string;
-  viewport: CanvasViewport;
   nodes: CanvasFileNode[];
   edges: CanvasFileEdge[];
   createdAt: number;
@@ -53,17 +46,10 @@ export interface ConversationFileData {
   model: string;
   /** 引用的 Agent 配置 id（仓库级 `.atelyx/agents.json`；缺省（未设置）= 按预置「对话」Agent 处理，旧文件无此字段兼容读取）。 */
   agentId?: string;
-  /** 系统提示词笔记引用（遗留字段：仅兼容读取，不再注入，见 agentId）。 */
-  systemPromptFile?: string;
   /** LLM 自动生成的话题标题（首轮对话完成后命名；旧文件无此字段兼容读取）。 */
   title?: string;
-  /** Agent 模式开关（遗留字段：仅兼容读取，不再生效，见 agentId）。 */
-  agentMode?: boolean;
-  /** Agent 模式启用的工具名列表（遗留字段：仅兼容读取，不再生效，见 agentId）。 */
-  agentTools?: string[];
   /** 节点级推理等级（缺省 = 不指定/跟随默认；旧文件无此字段兼容读取）。 */
   reasoningEffort?: ReasoningEffort;
-  /** conversationId 字段冗余保留以复用 Message 类型，读取时可忽略。 */
   messages: Message[];
 }
 
@@ -183,13 +169,6 @@ export type FileExplorerSortKey = "name-asc" | "name-desc" | "mtime-desc" | "mti
 /** 主题模式：仓库级设置，跟随系统 = 按 prefers-color-scheme 实时解析。 */
 export type ThemeMode = "light" | "dark" | "system";
 
-/** 兼容字段：仓库三个根目录的目录名（自由文件夹结构不使用，仅兼容读取 `.atelyx/config.json` 的 `dirNames`）。 */
-export interface DirNames {
-  canvases: string;
-  notes: string;
-  attachments: string;
-}
-
 /** 仓库级配置（.atelyx/config.json，不含 API key）。
  * 主题/强调色/字号/字体/自动恢复开关为应用级（global.json，见 GlobalConfig）。 */
 export interface VaultConfig {
@@ -199,8 +178,6 @@ export interface VaultConfig {
   modelProviderId?: string;
   /** 文件面板排序方式（缺省 = 前端默认 mtime-desc）。 */
   fileExplorerSort?: FileExplorerSortKey;
-  /** 兼容字段：仓库三根目录名（自由文件夹结构不使用；仅兼容读取旧配置）。 */
-  dirNames?: DirNames;
   /** 文件面板排除的文件夹名（任何层级同名文件夹不显示/不监听；设置页逗号分隔输入转数组）。 */
   excludeFolders?: string[];
   /** 附件导入默认文件夹（相对仓库根，可含子路径如 `assets/img`；缺省/空 = 仓库根目录）。 */

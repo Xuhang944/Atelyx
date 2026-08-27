@@ -92,15 +92,6 @@ export async function importTableImage(
 }
 
 /**
- * 迁移遗留内嵌图片（单元格值 `data:` 前缀）为表格附件路径引用，返回迁移后的表格
- * （无遗留条目时原样返回零开销；迁移失败由调用方降级按 dataURL 加载）。
- * 存量大表打开时一次性执行：迁移后 .atb 只存路径，保存不再全量序列化图片字节。
- */
-export async function migrateTableImages(file: string): Promise<TableFile> {
-  return invoke<TableFile>("migrate_table_images_vault", { file });
-}
-
-/**
  * 回收表格孤儿图片附件（切表/关闭表格时 fire-and-forget 调用）：删除附件目录中
  * 未被 .atb 任一 image 单元格引用的文件。会话内不调用——删除后 Ctrl+Z 可恢复引用；
  * 切表/关闭时该表撤销栈与显示缓存已清，无跨会话恢复路径。返回删除文件数。

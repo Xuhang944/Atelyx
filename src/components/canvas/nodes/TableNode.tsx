@@ -10,11 +10,11 @@
  * 无法经 props 回调，走事件桥接）。
  */
 import { AlertTriangle, Table as TableIcon, ExternalLink } from "lucide-react";
-import { useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 import type { TableData } from "@/types";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useVaultStore } from "@/stores/vaultStore";
+import { useInlineEdit } from "@/hooks/useInlineEdit";
 import {
   DEFAULT_TABLE_NODE_HEIGHT,
   DEFAULT_TABLE_NODE_WIDTH,
@@ -29,13 +29,17 @@ export const OPEN_TABLE_EVENT = "atelyx:open-table";
 export function TableNode({ id, data, width, height, selected }: NodeProps) {
   const { title, file, snapshot, fileMissing } = data as unknown as TableData;
   const readOnly = useCanvasStore((s) => s.readOnly);
-  const [renaming, setRenaming] = useState(false);
-  const [draftTitle, setDraftTitle] = useState("");
+  // 标题双击 inline 编辑（公共 useInlineEdit：Enter/失焦提交，Esc 取消并拦 blur 误提交）
+  const renameEdit = useInlineEdit({
+    value: title ?? "",
+    onCommit: (v) => {
+      void commitRename(v);
+    },
+  });
 
   /** 确认重命名：renameTable 改名 + 扫全部 .atlx 更新引用（模式同 TextNode 笔记节点）。 */
-  const commitRename = async () => {
+  const commitRename = async (draftTitle: string) => {
     const t = draftTitle.trim();
-    setRenaming(false);
     if (!t || t === title) return;
     try {
       const newFile = await useVaultStore.getState().renameTable(file, t);
@@ -88,18 +92,9 @@ export function TableNode({ id, data, width, height, selected }: NodeProps) {
       >
         <span className="inline-flex items-center gap-1 min-w-0 flex-1 overflow-hidden">
           <TableIcon size={14} className="flex-shrink-0" />
-          {renaming ? (
+          {renameEdit.editing ? (
             <input
-              value={draftTitle}
-              onChange={(e) => setDraftTitle(e.target.value)}
-              onBlur={() => commitRename()}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") commitRename();
-                else if (e.key === "Escape") {
-                  setDraftTitle(title ?? "");
-                  setRenaming(false);
-                }
-              }}
+              {...renameEdit.inputProps}
               autoFocus
               onClick={(e) => e.stopPropagation()}
               className="nodrag w-full min-w-0 rounded px-1 text-xs outline-none focus:ring-1 focus:ring-[var(--accent)]"
@@ -113,12 +108,7 @@ export function TableNode({ id, data, width, height, selected }: NodeProps) {
               className="truncate"
               title={fileMissing || readOnly ? undefined : "双击重命名"}
               onDoubleClick={
-                fileMissing || readOnly
-                  ? undefined
-                  : () => {
-                      setDraftTitle(title ?? "");
-                      setRenaming(true);
-                    }
+                fileMissing || readOnly ? undefined : renameEdit.start
               }
             >
               {title || "表格"}
@@ -160,21 +150,17 @@ export function TableNode({ id, data, width, height, selected }: NodeProps) {
             className="text-xs whitespace-pre-wrap break-words"
             style={{ color: "var(--text-secondary)", lineHeight: 1.6 }}
           >
-            {lines.length > 0 ? (
-              lines.map((l, i) => (
-                <div
-                  key={i}
-                  style={{
-                    color:
-                      i === 0 ? "var(--text-primary)" : "var(--text-secondary)",
-                  }}
-                >
-                  {l}
-                </div>
-              ))
-            ) : (
-              <span style={{ color: "var(--text-muted)" }}>（空）</span>
-            )}
+            {lines.map((l, i) => (
+              <div
+                key={i}
+                style={{
+                  color:
+                    i === 0 ? "var(--text-primary)" : "var(--text-secondary)",
+                }}
+              >
+                {l}
+              </div>
+            ))}
           </div>
         )}
       </div>

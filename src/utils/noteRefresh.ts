@@ -10,22 +10,20 @@
  * （刷新到磁盘权威，外部/AI 写入皆适用）。
  */
 
-export type TextNodeRefreshDecision = "consistent" | "keep" | "refresh";
+export type TextNodeRefreshDecision = "keep" | "refresh";
 
 /**
- * 判定单个文本节点对磁盘新内容的处理：
- * - `consistent`：节点正文已与磁盘一致，无需任何操作（与是否编辑过无关）。
- * - `keep`：节点自上次落盘后改过正文（`saved !== current`）且磁盘不同——本地编辑优先
+ * 判定单个文本节点对磁盘新内容的处理（前置条件：`current !== disk`，
+ * 已一致节点由调用方在进入本函数前排除）：
+ * - `keep`：节点自上次落盘后改过正文（`saved !== current`）——本地编辑优先
  *   （LWW），跳过刷新，防丢字；本地编辑随后经画布保存自然落盘。
  * - `refresh`：节点未改过正文（`saved === current`）或尚未落盘（`saved === undefined`）
- *   且磁盘不同——内存陈旧，刷新到磁盘最新。
+ *   ——内存陈旧，刷新到磁盘最新。
  */
 export function decideTextNodeRefresh(
   current: string,
   saved: string | undefined,
-  disk: string,
 ): TextNodeRefreshDecision {
-  if (current === disk) return "consistent";
   if (saved !== undefined && saved !== current) return "keep";
   return "refresh";
 }

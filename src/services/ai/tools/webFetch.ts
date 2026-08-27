@@ -2,23 +2,15 @@
  * 工具：抓取网页（web_fetch）。抓取指定 URL 的正文回填上下文，作为回答依据。不建画布产物节点。
  * 依赖 `capabilities.fetchUrl`（后端代理，规避浏览器 CORS）。
  */
-import { ToolArgsError } from "@/types";
-import { AGENT_TOOLS_META } from "@/constants/tools";
+import { ToolArgsError, errText } from "@/types";
 import { defineTool } from "./defineTool";
-
-const meta = AGENT_TOOLS_META.find((m) => m.id === "web_fetch")!;
 
 export interface WebFetchArgs {
   url: string;
 }
 
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
 export const WEB_FETCH_TOOL = defineTool<WebFetchArgs>({
   name: "web_fetch",
-  label: meta.label,
   parallelSafe: true,
   description: "抓取指定网页（URL）的正文内容，获取最新信息作为回答依据",
   parameters: {

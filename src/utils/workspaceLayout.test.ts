@@ -2,7 +2,7 @@
  * 工作区布局树操作契约测试（utils/workspaceLayout）。
  *
  * 覆盖：标签组操作（增删/激活/锁定/排序/切换视图）、分割/关闭、撕裂/停靠、撕裂窗口操作、
- * 旧 schema 迁移（view 字段 → 标签组、kind "area" → "panel"）、全局视图唯一与宿主判定、布局复制 id 重生成。
+ * 全局视图唯一与宿主判定、布局复制 id 重生成。
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -11,7 +11,6 @@ import {
   collectAllViews,
   collectPanels,
   collectTabs,
-  collectViewsInTree,
   detachedAddTab,
   detachedMoveTab,
   detachedRemoveTab,
@@ -22,7 +21,6 @@ import {
   findTabInDetached,
   findTabInTree,
   findViewHost,
-  migrateLegacyTree,
   moveTabWithinPanel,
   parentSplitOf,
   regenerateIds,
@@ -38,7 +36,6 @@ import {
   createTab,
   type DetachedWindow,
   type LayoutNode,
-  type PanelNode,
   type SplitNode,
 } from "@/types/workspaceLayout";
 
@@ -420,58 +417,6 @@ describe("视图唯一与宿主判定", () => {
     };
     expect(findTabInDetached([w], w.tabs[0]!.id)?.window.id).toBe("w1");
     expect(findTabInDetached([w], "nope")).toBeNull();
-  });
-});
-
-describe("旧 schema 迁移", () => {
-  it("view 字段面板（kind 旧 area）→ 单标签面板（id 保留，标签激活）", () => {
-    const legacy: LayoutNode = { kind: "area", id: "area-1", view: "canvas" } as never;
-    const migrated = migrateLegacyTree(legacy);
-    expect(migrated.kind).toBe("panel");
-    const panel = migrated as ReturnType<typeof createPanel>;
-    expect(panel.id).toBe("area-1");
-    expect(panel.tabs).toHaveLength(1);
-    expect(panel.tabs[0]!.view).toBe("canvas");
-    expect(panel.tabs[0]!.locked).toBe(false);
-    expect(panel.activeTabId).toBe(panel.tabs[0]!.id);
-  });
-
-  it("view = empty 面板 → 空面板", () => {
-    const legacy: LayoutNode = { kind: "area", id: "area-1", view: "empty" } as never;
-    const migrated = migrateLegacyTree(legacy);
-    expect(migrated.kind).toBe("panel");
-    const panel = migrated as ReturnType<typeof createPanel>;
-    expect(panel.tabs).toEqual([]);
-    expect(panel.activeTabId).toBeNull();
-  });
-
-  it("递归迁移 split 树（子面板逐个转标签组，split 结构保留）", () => {
-    const legacy: LayoutNode = {
-      kind: "split",
-      id: "split-1",
-      direction: "horizontal",
-      sizes: [50, 50],
-      children: [
-        { kind: "area", id: "a1", view: "files" },
-        { kind: "area", id: "a2", view: "canvas" },
-      ],
-    } as never;
-    const migrated = migrateLegacyTree(legacy);
-    const panels = collectPanels(migrated);
-    expect(panels.map((p) => p.id)).toEqual(["a1", "a2"]);
-    expect(collectViewsInTree(migrated)).toEqual(["files", "canvas"]);
-  });
-
-  it("已迁移的新形状（kind panel，含 tabs）原样返回且引用稳定", () => {
-    const tree = makePanel(["canvas"]);
-    expect(migrateLegacyTree(tree)).toBe(tree);
-  });
-
-  it("已迁移的新形状但 kind 仍为旧 area（含 tabs/activeTabId）→ 归一化为 panel", () => {
-    const legacy: PanelNode = { kind: "area", id: "p1", tabs: [], activeTabId: null } as never;
-    const migrated = migrateLegacyTree(legacy);
-    expect(migrated.kind).toBe("panel");
-    expect((migrated as PanelNode).tabs).toEqual([]);
   });
 });
 

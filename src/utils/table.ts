@@ -5,8 +5,6 @@
  * - `fieldDefaultWidth`：列宽按字段名自适应（CJK 双宽，钳制 [MIN_COL_WIDTH, MAX_COL_WIDTH]）。
  * - `tableToSnapshotText`：表格 → 注入文本快照（行限 `MAX_TABLE_INJECT_ROWS`；image → `[图 N 张]`；
  *   多行文本压单行空格；超行数截断标注）。
- * - `parseFillRows`：LLM 填行输出 → 行数据（剥 code fence → 截 `[`..`]` → JSON.parse，字段按名称
- *   匹配 + 类型强转兜底，image 不产出；失败返回空数组由调用方报错重试）。
  * - `computeColumnCalc`：按字段 calcType 统计全列，返回显示文本（数字统计 / 非空计数）。
  * - `computeTablePatch`：增量补丁计算（保存写盘与协作实时广播共用）。
  * - `tablesEqual`：磁盘表格与内存内容比对（watcher 回放判别）。

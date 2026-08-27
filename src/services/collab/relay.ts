@@ -19,6 +19,7 @@ import type {
   CollabHello,
   CollabPeer,
   CollabPresence,
+  RelayTestResult,
   TablePatch,
 } from "@/types";
 
@@ -30,26 +31,6 @@ const STALL_TIMEOUT_MS = HEARTBEAT_MS * 3;
 const MAX_RETRY_MS = 15_000;
 /** 连通性测试（检查连接）等待 hello-ack 的超时。 */
 const TEST_TIMEOUT_MS = 5_000;
-
-/** 中转地址规范化：补协议（ws://）与 /ws 路径（relay 唯一路由），
- *  如 `192.168.1.10:17701` → `ws://192.168.1.10:17701/ws`；空/无法解析的输入原样返回。 */
-export function normalizeRelayUrl(raw: string): string {
-  const input = raw.trim();
-  if (!input) return "";
-  const withProto = /^wss?:\/\//i.test(input) ? input : `ws://${input}`;
-  try {
-    const u = new URL(withProto);
-    return `${u.protocol}//${u.host}/ws`;
-  } catch {
-    return withProto;
-  }
-}
-
-/** 连通性测试结果（设置页「检查连接」展示）。 */
-export interface RelayTestResult {
-  ok: boolean;
-  message: string;
-}
 
 /**
  * 一次性连通性测试（设置页「检查连接」）：独立 WebSocket 连上后发探测 hello（随机房间 id），
@@ -107,16 +88,6 @@ export function testRelayConnection(
     ws.onclose = () => finish({ ok: false, message: "连接被对端关闭" });
   });
 }
-
-export type CollabClientMessage =
-  | ({ type: "hello" } & CollabHello)
-  | ({ type: "presence" } & CollabPresence)
-  | { type: "table-patch"; file: string; patch: TablePatch }
-  | { type: "canvas-patch"; file: string; patch: CanvasPatch }
-  | { type: "note-sync"; file: string; payload: string }
-  | { type: "note-aware"; file: string; payload: string }
-  | { type: "ping" }
-  | { type: "bye" };
 
 export type CollabServerMessage =
   | { type: "peers"; peers: CollabPeer[] }

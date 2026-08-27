@@ -15,7 +15,8 @@ export function useDraftSync<T>(value: T): [T, (v: T) => void] {
   return [draft, setDraft];
 }
 
-/** 防抖提交草稿：拖动/连续 onChange 场景（取色器），防抖 delay 后落盘（避免每帧一次配置原子写/relay 重连）。 */
+/** 防抖提交草稿：拖动/连续 onChange 场景（取色器），防抖 delay 后落盘（避免每帧一次配置原子写/relay 重连）。
+ *  组件卸载时若有未触发的防抖提交，立即补交最后一次改动（防抖草稿随组件生命周期，切走不丢最后一次输入）。 */
 export function useDebouncedDraft<T>(
   init: T,
   onCommit: (v: T) => void,
@@ -23,16 +24,25 @@ export function useDebouncedDraft<T>(
 ): [T, (v: T) => void] {
   const [draft, setDraft] = useState(init);
   const timerRef = useRef<number | null>(null);
+  const pendingRef = useRef<{ v: T } | null>(null);
   useEffect(() => {
     return () => {
-      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+      if (timerRef.current !== null) {
+        window.clearTimeout(timerRef.current);
+        timerRef.current = null;
+        if (pendingRef.current) onCommit(pendingRef.current.v);
+        pendingRef.current = null;
+      }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 卸载 flush 用挂载时的 onCommit：调用方传入的回调仅捕获稳定的 store action
   }, []);
   const commit = (v: T) => {
     setDraft(v);
+    pendingRef.current = { v };
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(() => {
       timerRef.current = null;
+      pendingRef.current = null;
       onCommit(v);
     }, delay);
   };

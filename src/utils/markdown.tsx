@@ -425,8 +425,8 @@ export interface WikiLocateOptions {
   onOpenUrl: (url: string) => void;
 }
 
-/** 拦截走系统浏览器的外部链接协议（与 MarkdownEditor LinkWidget 的过滤正则一致）。 */
-const EXTERNAL_LINK_RE = /^(https?:|mailto:|xmpp:)/i;
+/** 拦截走系统浏览器的外部链接协议（MarkdownEditor 链接装饰共用同一正则）。 */
+export const EXTERNAL_LINK_RE = /^(https?:|mailto:|xmpp:)/i;
 
 /**
  * 代码块容器：右上角悬浮复制按钮（hover 显现）。

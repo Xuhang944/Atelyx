@@ -11,21 +11,14 @@ import { ChevronDown, ChevronRight, ExternalLink, History, RefreshCw } from "luc
 import { useEffect, useMemo, useState } from "react";
 import { useAppStore } from "@/stores/appStore";
 import { useRepoHistoryStore } from "@/stores/repoHistoryStore";
-import { FileKindIcon, fileTitle, openFileByKind } from "@/components/common/FileKindIcon";
-import { HistoryModal } from "@/components/history/HistoryModal";
+import { FileKindIcon, openFileByKind } from "@/components/common/FileKindIcon";
+import { HistoryModal, ACTION_LABEL } from "@/components/history/HistoryModal";
+import { noteTitleFromFile } from "@/utils/filename";
 import { relTime } from "@/utils/time";
 import type { RepoHistoryEntry } from "@/types";
 
 /** 默认只列最近编辑的文件数（「显示全部」可展开全部）。 */
 const TOP_FILES_LIMIT = 15;
-
-const ACTION_LABEL: Record<string, string> = {
-  edit: "编辑",
-  restore: "回滚",
-  external: "外部",
-  create: "新建",
-  delete: "删除",
-};
 
 /**
  * 按文件分组的版本组。组内 entries 保持 Rust feed 的 ts 倒序（隐式契约：最新版 = entries[0]，
@@ -103,7 +96,7 @@ function FileGroup({
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </span>
         <FileKindIcon kind={group.kind} />
-        <span className="truncate flex-1">{fileTitle(group.file)}</span>
+        <span className="truncate flex-1">{noteTitleFromFile(group.file)}</span>
         <span className="text-[10px] flex-shrink-0" style={{ color: "var(--text-muted)" }}>
           {group.entries.length} 版 · {relTime(group.latestTs)}
         </span>

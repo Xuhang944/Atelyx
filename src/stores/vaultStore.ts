@@ -158,7 +158,7 @@ let watcherGen = 0;
 
 /**
  * renameNote/moveNote 共用核心：pendingRename 记录 + 服务调用 + 自写抑制 + 乐观锁基准 +
- * 画布节点同步（text file/systemPromptFile）+ 树刷新 + 重命名记录。
+ * 画布节点同步（text file）+ 树刷新 + 重命名记录。
  * newTitle 为 null = 移动（title 不变，只改 file）；否则 = 重命名（title 一并更新）。
  */
 async function applyNoteFileChange(oldFile: string, newFile: string, newTitle: string | null): Promise<void> {
@@ -169,7 +169,7 @@ async function applyNoteFileChange(oldFile: string, newFile: string, newTitle: s
     markSelfSave();
     // 磁盘 .atlx 已变：同步当前画布乐观锁基准，防重命名后自动保存被「已被外部修改」拒绝
     await useCanvasStore.getState().syncBaseUpdatedAt();
-    // 同步当前画布内引用该笔记的节点：text 节点 title + file、conversation 节点 systemPromptFile
+    // 同步当前画布内引用该笔记的节点：text 节点 title + file
     // （磁盘已被 rename_note 更新，此处同步内存防下次保存把旧值回写覆盖；
     //   同步后 watcher 旧路径事件按新路径匹配不到节点，天然不再误标缺失）
     const canvasState = useCanvasStore.getState();
@@ -179,11 +179,6 @@ async function applyNoteFileChange(oldFile: string, newFile: string, newTitle: s
           n.id,
           newTitle !== null ? { title: newTitle, file: newFile } : { file: newFile },
         );
-      } else if (
-        n.type === "conversation" &&
-        (n.data as { systemPromptFile?: string }).systemPromptFile === oldFile
-      ) {
-        canvasState.updateNodeData(n.id, { systemPromptFile: newFile });
       }
     }
     await useVaultStore.getState().loadFiles();
@@ -194,7 +189,7 @@ async function applyNoteFileChange(oldFile: string, newFile: string, newTitle: s
     // Agent 引用的提示词笔记同款同步（agents.json 的 systemPromptFile 指向旧路径失效）
     await useSettingsStore.getState().remapAgentPromptNote(oldFile, newFile);
     // 「上次打开」的笔记随路径更新（否则下次进入仓库尝试恢复旧路径）
-    useUiStateStore.getState().renameLastNote(oldFile, newFile);
+    useUiStateStore.getState().renameLastFile("note", oldFile, newFile);
   } finally {
     pendingRename = null;
   }
@@ -250,7 +245,7 @@ async function applyTableFileChange(oldFile: string, newFile: string, newTitle: 
     await useVaultStore.getState().loadFiles();
     lastTableRename = { oldFile, newFile };
     // 「上次打开」的表格随路径更新（否则下次进入仓库尝试恢复旧路径）
-    useUiStateStore.getState().renameLastTable(oldFile, newFile);
+    useUiStateStore.getState().renameLastFile("table", oldFile, newFile);
   } finally {
     pendingRename = null;
   }
@@ -279,21 +274,13 @@ async function applyFolderFileChange(oldDir: string, newDir: string): Promise<vo
     // 防下次保存把旧路径回写覆盖；同步后 watcher 旧路径事件按前缀匹配不到节点，天然不再误标缺失）
     const canvasState = useCanvasStore.getState();
     for (const n of canvasState.nodes) {
-      const d = n.data as { file?: string; systemPromptFile?: string };
+      const d = n.data as { file?: string };
       if (
         (n.type === "text" || n.type === "media") &&
         d.file &&
         d.file.startsWith(`${oldDir}/`)
       ) {
         canvasState.updateNodeData(n.id, { file: remapDirPrefix(d.file, oldDir, newDir) });
-      } else if (
-        n.type === "conversation" &&
-        d.systemPromptFile &&
-        d.systemPromptFile.startsWith(`${oldDir}/`)
-      ) {
-        canvasState.updateNodeData(n.id, {
-          systemPromptFile: remapDirPrefix(d.systemPromptFile, oldDir, newDir),
-        });
       }
     }
     // 系统提示词标记 / 文件夹图标颜色 / 展开集合 / 上次打开文件：前缀同步（防标记与恢复指向失效路径）
@@ -322,16 +309,6 @@ function collectByExt(
     }
   }
   return out;
-}
-
-/** 递归提取树中全部 `.md` 笔记（系统提示词下拉 / 笔记存在性检查共用）。 */
-function collectMdNotes(nodes: FileTreeNode[]): { name: string; file: string }[] {
-  return collectByExt(nodes, ".md");
-}
-
-/** 递归提取树中全部 `.atb` 表格（表格窗口联动 / AI 填行目标选择共用）。 */
-function collectAtbTables(nodes: FileTreeNode[]): { name: string; file: string }[] {
-  return collectByExt(nodes, ".atb");
 }
 
 /** 按相对路径查树节点（dir = "" 返回根容器）。 */
@@ -500,7 +477,7 @@ interface VaultFileState {
   /** 设置历史记录作者（进入仓库/身份变化时调用；组件不直连 service，走本 store）。 */
   noteHistorySetAuthor: (name: string, device: string) => void;
   /** 记录一条笔记历史版本（版本边界；连续编辑自动节流合并，不逐键记录）。 */
-  noteHistoryRecord: (file: string, content: string, action: "edit" | "restore" | "external", note?: string) => Promise<void>;
+  noteHistoryRecord: (file: string, content: string, action: "edit" | "restore", note?: string) => Promise<void>;
   /** 读取笔记历史版本列表（缺失/损坏 → 空数组，尽力而为）。 */
   noteHistoryLoad: (file: string) => Promise<NoteHistoryVersion[]>;
   /** 回滚笔记到指定版本：写回磁盘 + 记一条 restore 版本；返回回滚后的全文（供编辑器重载），失败返回 null。 */
@@ -582,7 +559,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     try {
       const tree = await listVaultTree();
       if (seq !== loadFilesSeq) return;
-      set({ tree, noteList: collectMdNotes(tree), tableList: collectAtbTables(tree) });
+      set({ tree, noteList: collectByExt(tree, ".md"), tableList: collectByExt(tree, ".atb") });
     } catch (e) {
       console.error("加载仓库文件树失败", e);
     }
@@ -614,7 +591,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     await deleteNote(file);
     // 删除的是「上次打开」的笔记：清空 uiState 记录（否则下次进入仓库尝试恢复已删文件）
     if (useUiStateStore.getState().lastNoteFile === file) {
-      useUiStateStore.getState().closeNote();
+      useUiStateStore.getState().closeFile("note");
     }
     await get().loadFiles();
   },
@@ -676,7 +653,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     await deleteTableVault(file);
     // 删除的是「上次打开」的表格：清空 uiState 记录（否则下次进入仓库尝试恢复已删文件）
     if (useUiStateStore.getState().lastTableFile === file) {
-      useUiStateStore.getState().closeTable();
+      useUiStateStore.getState().closeFile("table");
     }
     await get().loadFiles();
   },
@@ -710,7 +687,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     const hadCanvases = appStore.closeCanvasIfInDir(dir);
     // 删除的是「上次打开」的笔记：清空 uiState 记录（否则下次进入仓库尝试恢复已删文件）
     if (useUiStateStore.getState().lastNoteFile?.startsWith(`${dir}/`)) {
-      useUiStateStore.getState().closeNote();
+      useUiStateStore.getState().closeFile("note");
     }
     // 展开集合清理该目录及子目录条目（残留条目无害但保持整洁）
     useUiStateStore.getState().removeExpandedByDir(dir);

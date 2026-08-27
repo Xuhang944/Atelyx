@@ -8,7 +8,7 @@ import { ErrorBoundary } from "@/components/common/ErrorBoundary";
 import { LoadingScreen } from "@/components/common/LoadingScreen";
 import { useAppearance } from "@/hooks/useAppearance";
 import { getCurrentWindowLabel } from "@/services/window";
-import { PANEL_LABEL_PREFIX } from "@/stores/panelStore";
+import { PANEL_LABEL_PREFIX, usePanelStore } from "@/stores/panelStore";
 
 // 页面 lazy 分割：主包不含 CodeMirror/KaTeX/高亮语言包等重库，LoadingScreen 更快出现。
 // ReactFlowProvider 留在 App 层（页面组件自身的 useReactFlow hooks 需要它在组件外；
@@ -42,14 +42,6 @@ function MainWorkspaceApp() {
 
   /** 初始化未完成前渲染加载屏（循环扫光进度条），完成后按 view 渲染启动页/工作区。 */
   const [booting, setBooting] = useState(true);
-
-  // 全局屏蔽浏览器默认右键菜单：未定义自定义菜单的区域无任何反应。
-  // 已定义自定义菜单的区域（画布空白/节点/消息区/文件面板行等）自行 preventDefault，不受影响。
-  useEffect(() => {
-    const suppress = (e: MouseEvent) => e.preventDefault();
-    document.addEventListener("contextmenu", suppress);
-    return () => document.removeEventListener("contextmenu", suppress);
-  }, []);
 
   // 窗口形态随视图切换：启动页固定 960×640 不可调整，工作区恢复可调整（静默降级，串行队列）。
   // 窗口恒以启动页尺寸创建（tauri.conf.json），加载屏期间即小窗；booting 期间 view 变化触发的
@@ -86,7 +78,6 @@ function MainWorkspaceApp() {
       const autoEnterRoot = await init();
       await loadSettings();
       // 面板运行时初始化（协作连接改由 panelStore.syncCollabHost 按视图归属驱动）
-      const { usePanelStore } = await import("@/stores/panelStore");
       await usePanelStore.getState().initMain();
       if (autoEnterRoot) {
         await useAppStore.getState().selectVault(autoEnterRoot);

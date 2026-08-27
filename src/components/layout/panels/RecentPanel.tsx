@@ -8,7 +8,8 @@ import { useMemo } from "react";
 import { useAppStore } from "@/stores/appStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import { useVaultStore } from "@/stores/vaultStore";
-import { FileKindIcon, fileTitle, openFileByKind } from "@/components/common/FileKindIcon";
+import { FileKindIcon, openFileByKind } from "@/components/common/FileKindIcon";
+import { noteTitleFromFile } from "@/utils/filename";
 import { relTime } from "@/utils/time";
 import type { FileTreeNode } from "@/types/canvas";
 
@@ -74,7 +75,7 @@ export function RecentPanel() {
                 title={alive ? r.file : `${r.file}（已不存在）`}
               >
                 <FileKindIcon kind={r.kind} />
-                <span className="truncate flex-1">{fileTitle(r.file)}</span>
+                <span className="truncate flex-1">{noteTitleFromFile(r.file)}</span>
                 <span className="text-[10px] flex-shrink-0" style={{ color: "var(--text-muted)" }}>
                   {relTime(r.openedAt)}
                 </span>

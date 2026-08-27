@@ -1,4 +1,5 @@
 import { DropdownSelect, type DropdownOption } from "@/components/common/DropdownSelect";
+import { SettingCard } from "@/components/settings/SettingCard";
 import {
   MODEL_PAIR_SEP,
   buildModelChoices,
@@ -12,7 +13,7 @@ import { useSettingsStore } from "@/stores/settingsStore";
 /** 话题自动命名下拉「跟随默认模型」哨兵值（与任何模型 id 区分；空串 = 不启用）。 */
 const AUTO_NAMING_DEFAULT = "__default__";
 
-/** 模型服务：各功能使用的模型默认设置（目前仅对话已实现，其余占位）。 */
+/** 模型服务：默认模型与话题自动命名模型的仓库级设置。 */
 export function ModelServicesSettingsTab() {
   const vaultConfig = useSettingsStore((s) => s.vaultConfig);
   const config = useSettingsStore((s) => s.config);
@@ -48,27 +49,10 @@ export function ModelServicesSettingsTab() {
   return (
     <section className="flex-1 p-5 overflow-auto space-y-4">
       {/* 默认模型（已实现）：仓库级默认模型，存 .atelyx/config.json */}
-      <div
-        className="flex items-center justify-between p-3 rounded-lg border gap-3"
-        style={{
-          background: "var(--bg-primary)",
-          borderColor: "var(--border)",
-        }}
+      <SettingCard
+        title="默认模型"
+        description="未指定时的默认模型；留空 = 未指定（对话需手动选择模型）"
       >
-        <div>
-          <div
-            className="text-sm font-medium"
-            style={{ color: "var(--text-primary)" }}
-          >
-            默认模型
-          </div>
-          <div
-            className="text-xs mt-0.5"
-            style={{ color: "var(--text-muted)" }}
-          >
-            未指定时的默认模型；留空 = 未指定（对话需手动选择模型）
-          </div>
-        </div>
         <DropdownSelect
           value={defaultModelKey}
           onChange={(v) => {
@@ -87,30 +71,13 @@ export function ModelServicesSettingsTab() {
             border: "1px solid var(--input-border)",
           }}
         />
-      </div>
+      </SettingCard>
 
       {/* 话题自动命名：下拉选择（不启用 / 跟随默认模型 / 指定模型；话题命名一般用小模型） */}
-      <div
-        className="flex items-center justify-between p-3 rounded-lg border gap-3"
-        style={{
-          background: "var(--bg-primary)",
-          borderColor: "var(--border)",
-        }}
+      <SettingCard
+        title="话题自动命名"
+        description="首轮对话后自动生成简短标题；「不启用」= 关闭自动命名"
       >
-        <div>
-          <div
-            className="text-sm font-medium"
-            style={{ color: "var(--text-primary)" }}
-          >
-            话题自动命名
-          </div>
-          <div
-            className="text-xs mt-0.5"
-            style={{ color: "var(--text-muted)" }}
-          >
-            首轮对话后自动生成简短标题；「不启用」= 关闭自动命名
-          </div>
-        </div>
         <DropdownSelect
           value={autoNamingEnabled ? autoNamingModelValue || AUTO_NAMING_DEFAULT : ""}
           onChange={(v) => {
@@ -143,44 +110,7 @@ export function ModelServicesSettingsTab() {
             border: "1px solid var(--input-border)",
           }}
         />
-      </div>
-
-      {/* 输入建议（未实现，占位） */}
-      <div
-        className="flex items-center justify-between p-3 rounded-lg border gap-3 opacity-60"
-        style={{
-          background: "var(--bg-primary)",
-          borderColor: "var(--border)",
-        }}
-      >
-        <div>
-          <div
-            className="text-sm font-medium"
-            style={{ color: "var(--text-primary)" }}
-          >
-            输入建议
-          </div>
-          <div
-            className="text-xs mt-0.5"
-            style={{ color: "var(--text-muted)" }}
-          >
-            输入时的 AI 建议；未实现
-          </div>
-        </div>
-        <DropdownSelect
-          disabled
-          value=""
-          onChange={() => undefined}
-          options={[]}
-          placeholder="未实现"
-          className="text-sm rounded px-2 py-1 w-[200px] flex-shrink-0"
-          style={{
-            color: "var(--text-secondary)",
-            background: "var(--input-bg)",
-            border: "1px solid var(--input-border)",
-          }}
-        />
-      </div>
+      </SettingCard>
     </section>
   );
 }

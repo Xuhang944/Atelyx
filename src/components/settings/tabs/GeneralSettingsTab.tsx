@@ -3,7 +3,9 @@ import { DropdownSelect } from "@/components/common/DropdownSelect";
 import { ToggleSwitch } from "@/components/common/ToggleSwitch";
 import { SettingCard } from "@/components/settings/SettingCard";
 import { DEFAULT_ACCENT, foregroundFor } from "@/utils/color";
-import type { ThemeMode } from "@/types";
+import { useSettingsStore } from "@/stores/settingsStore";
+import { useAppStore } from "@/stores/appStore";
+import { useDraftSync, useDebouncedDraft } from "@/hooks/useDraftSync";
 
 /** 界面字体选项（value = CSS font-family；空串 = 跟随系统默认）。 */
 const FONT_OPTIONS: { label: string; value: string }[] = [
@@ -24,48 +26,54 @@ const ACCENT_PRESETS = [
   "#15803d",
 ];
 
-interface Props {
-  theme: ThemeMode;
-  toggleTheme: () => Promise<void>;
-  accentColor?: string;
-  accentDraft: string;
-  commitAccentDraft: (v: string) => void;
-  fontSizeDraft: string;
-  setFontSizeDraft: (v: string) => void;
-  commitFontSize: () => void;
-  fontFamily?: string;
-  setFontFamily: (v: string | undefined) => Promise<void>;
-  autoRestoreFiles: boolean;
-  setAutoRestoreFiles: (v: boolean) => Promise<void>;
-  defaultHomeLayout: boolean;
-  setDefaultHomeLayout: (v: boolean) => Promise<void>;
-  autoUpdate: boolean;
-  setAutoUpdate: (v: boolean) => Promise<void>;
-  syncKeys: boolean;
-  setSyncKeys: (v: boolean) => Promise<void>;
-}
+/** 通用面板（应用级外观 + 仓库级 key 同步开关）：草稿与状态自持，直接订阅 store。 */
+export function GeneralSettingsTab() {
+  // 应用级外观（跨仓库共享，global.json）：主题 / 强调色 / 字号 / 字体 / 自动恢复 / 主页布局 / 自动更新
+  const theme = useSettingsStore((s) => s.theme);
+  const toggleTheme = useSettingsStore((s) => s.toggleTheme);
+  const accentColor = useSettingsStore((s) => s.accentColor);
+  const setAccentColor = useSettingsStore((s) => s.setAccentColor);
+  const fontSize = useSettingsStore((s) => s.fontSize);
+  const setFontSize = useSettingsStore((s) => s.setFontSize);
+  const fontFamily = useSettingsStore((s) => s.fontFamily);
+  const setFontFamily = useSettingsStore((s) => s.setFontFamily);
+  const autoRestoreFiles = useSettingsStore((s) => s.autoRestoreFiles);
+  const setAutoRestoreFiles = useSettingsStore((s) => s.setAutoRestoreFiles);
+  const defaultHomeLayout = useSettingsStore((s) => s.defaultHomeLayout);
+  const setDefaultHomeLayout = useSettingsStore((s) => s.setDefaultHomeLayout);
+  const autoUpdate = useAppStore((s) => s.autoUpdate);
+  const setAutoUpdate = useAppStore((s) => s.setAutoUpdate);
+  // API key 随仓库保存（仓库级）
+  const vaultConfig = useSettingsStore((s) => s.vaultConfig);
+  const setSyncKeys = useSettingsStore((s) => s.setSyncKeys);
+  const syncKeys = !!vaultConfig?.syncKeys;
 
-/** 通用面板（应用级外观 + 仓库级 key 同步开关）。 */
-export function GeneralSettingsTab({
-  theme,
-  toggleTheme,
-  accentColor,
-  accentDraft,
-  commitAccentDraft,
-  fontSizeDraft,
-  setFontSizeDraft,
-  commitFontSize,
-  fontFamily,
-  setFontFamily,
-  autoRestoreFiles,
-  setAutoRestoreFiles,
-  defaultHomeLayout,
-  setDefaultHomeLayout,
-  autoUpdate,
-  setAutoUpdate,
-  syncKeys,
-  setSyncKeys,
-}: Props) {
+  // 强调色取色器草稿：拖动连续 onChange，防抖 200ms 后落盘（避免每帧一次配置原子写）
+  const [accentDraft, commitAccentDraft] = useDebouncedDraft(
+    accentColor ?? DEFAULT_ACCENT,
+    (v) => void setAccentColor(v),
+  );
+
+  // 字号用本地草稿 + blur 提交：受控 + 范围校验会拒绝输入中间态（如敲 "1" 准备输 15）导致无法输入
+  const [fontSizeDraft, setFontSizeDraft] = useDraftSync(
+    fontSize !== undefined ? String(fontSize) : "",
+  );
+
+  /** blur/Enter 提交字号；非法值回滚为当前配置值。 */
+  const commitFontSize = () => {
+    const v = fontSizeDraft.trim();
+    if (v === "") {
+      void setFontSize(undefined);
+      return;
+    }
+    const n = Number(v);
+    if (n >= 12 && n <= 20) {
+      void setFontSize(n);
+    } else {
+      setFontSizeDraft(fontSize !== undefined ? String(fontSize) : ""); // 非法值回滚
+    }
+  };
+
   return (
     <section className="flex-1 p-5 overflow-auto space-y-4">
       {/* 主题模式（应用级，跨仓库共享） */}

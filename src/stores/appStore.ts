@@ -195,6 +195,17 @@ async function refreshCanvasAndTree(): Promise<void> {
   await useVaultStore.getState().loadFiles();
 }
 
+/** 同目录现有画布行（画布 CRUD 防重名 siblings 计算，五处共用）：parentDir 命中 dir；
+ * excludeFile = 排除自身（移动场景为移动前的旧路径）。map 出 title 还是 baseName 由调用方定——
+ * title（无扩展名）与 baseName（含扩展名）属两个去重空间，不在此混同。 */
+function canvasesInDir(dir: string, excludeFile?: string): CanvasFileRow[] {
+  return useAppStore
+    .getState()
+    .canvases.filter(
+      (c) => parentDir(c.file) === dir && (excludeFile === undefined || c.file !== excludeFile),
+    );
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   view: "vaultSelect",
   vaultRoot: null,
@@ -227,7 +238,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       console.error("读取全局配置失败", e);
     }
     if (recents.length === 0) {
-      // 首启无最近仓库 → ensureDefaultVault 建默认仓库（+ 旧 SQLite 迁移）并登记；
+      // 首启无最近仓库 → ensureDefaultVault 建默认仓库并登记；
       // 本次不自动进入，展示启动页让用户选择/新建仓库
       try {
         const info = await ensureDefaultVault();
@@ -461,14 +472,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   openCanvas: (row) => {
     set({ currentCanvasId: row.id, currentCanvasFile: row.file });
     // 记录「上次打开」供下次进入仓库恢复（画布窗口已无标签概念，打开即唯一文件状态）
-    useUiStateStore.getState().recordOpenCanvas(row.file);
+    useUiStateStore.getState().recordOpenFile("canvas", row.file);
     // 记录最近打开（主页面板「最近打开」数据源）
     const vaultId = get().vaultId;
     if (vaultId) useUiStateStore.getState().recordRecentFile(row.file, "canvas", vaultId);
   },
   closeCanvas: () => {
     set({ currentCanvasId: null, currentCanvasFile: null });
-    useUiStateStore.getState().closeCanvas();
+    useUiStateStore.getState().closeFile("canvas");
     // 先落盘（防 debounce 窗口内丢改动）再清内存态；清空后不可写回
     void useCanvasStore.getState().flush().finally(() => {
       useCanvasStore.getState().resetCanvasState();
@@ -476,17 +487,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   openNote: (file, title) => {
     set({ currentNoteFile: file, currentNoteTitle: title });
-    useUiStateStore.getState().recordOpenNote(file);
+    useUiStateStore.getState().recordOpenFile("note", file);
     const vaultId = get().vaultId;
     if (vaultId) useUiStateStore.getState().recordRecentFile(file, "note", vaultId);
   },
   closeNote: () => {
     set({ currentNoteFile: null, currentNoteTitle: "" });
-    useUiStateStore.getState().closeNote();
+    useUiStateStore.getState().closeFile("note");
   },
   openTable: (file, title) => {
     set({ currentTableFile: file, currentTableTitle: title });
-    useUiStateStore.getState().recordOpenTable(file);
+    useUiStateStore.getState().recordOpenFile("table", file);
     const vaultId = get().vaultId;
     if (vaultId) useUiStateStore.getState().recordRecentFile(file, "table", vaultId);
     // 内容加载由 TableView 自载（同 CanvasView：openCanvas 不加载，视图挂载时按文件读盘）——
@@ -494,7 +505,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   closeTable: () => {
     set({ currentTableFile: null, currentTableTitle: "" });
-    useUiStateStore.getState().closeTable();
+    useUiStateStore.getState().closeFile("table");
     // 先落盘（防 debounce 窗口内丢改动）再清内存态；清空后不可写回
     void useTableStore.getState().flush().finally(() => {
       useTableStore.getState().clear();
@@ -502,15 +513,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   closeTableSilent: () => {
     set({ currentTableFile: null, currentTableTitle: "" });
-    useUiStateStore.getState().closeTable();
+    useUiStateStore.getState().closeFile("table");
     // 文件已删：flush 会写回重建，只清内存态与保存定时器
     useTableStore.getState().clear();
   },
   createCanvas: async (title = "未命名画布", dir = "") => {
     // 同名自动加序号（标题即文件名，保证同目录不重名），返回实际标题供 UI 提醒
-    const siblings = get()
-      .canvases.filter((c) => parentDir(c.file) === dir)
-      .map((c) => c.title);
+    const siblings = canvasesInDir(dir).map((c) => c.title);
     const actual = dedupeFilename(title, siblings);
     try {
       const { id, file } = await createCanvasVault(actual, dir);
@@ -524,8 +533,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   renameCanvas: async (row, title) => {
     // 同名自动加序号（排除自身，同目录），返回实际标题供 UI 提醒
-    const siblings = get()
-      .canvases.filter((c) => parentDir(c.file) === parentDir(row.file))
+    const siblings = canvasesInDir(parentDir(row.file))
       .map((c) => c.title)
       .filter((t) => t !== row.title);
     const actual = dedupeFilename(title, siblings);
@@ -537,7 +545,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       markSelfSave([row.file, newFile]);
       await useCanvasStore.getState().syncBaseUpdatedAt();
       // 同步当前画布 file（防下次保存写旧路径产生双文件）
-      useUiStateStore.getState().renameLastCanvas(row.file, newFile);
+      useUiStateStore.getState().renameLastFile("canvas", row.file, newFile);
       if (get().currentCanvasFile === row.file) {
         useCanvasStore.setState({ canvasFile: newFile });
       }
@@ -550,9 +558,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   moveCanvas: async (row, targetDir) => {
     // 保持文件名，目标文件夹同名自动加序号（排除自身 = 同目录移动 no-op）
     const name = baseName(row.file);
-    const siblings = get()
-      .canvases.filter((c) => parentDir(c.file) === targetDir && c.file !== row.file)
-      .map((c) => baseName(c.file));
+    const siblings = canvasesInDir(targetDir, row.file).map((c) => baseName(c.file));
     const safe = dedupeFilename(name, siblings);
     const newFile = targetDir ? `${targetDir}/${safe}` : safe;
     if (newFile === row.file) return row.file;
@@ -560,7 +566,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       await moveCanvasVault(row.file, newFile);
       markSelfSave([row.file, newFile]);
       // 当前打开的就是被移动的画布：同步 file，防下次保存写旧路径产生双文件
-      useUiStateStore.getState().renameLastCanvas(row.file, newFile);
+      useUiStateStore.getState().renameLastFile("canvas", row.file, newFile);
       if (get().currentCanvasFile === row.file) {
         useCanvasStore.setState({ canvasFile: newFile });
       }
@@ -574,9 +580,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   duplicateCanvas: async (row) => {
     // 同名自动加序号（同目录），返回实际标题供 UI 提醒
-    const siblings = get()
-      .canvases.filter((c) => parentDir(c.file) === parentDir(row.file))
-      .map((c) => c.title);
+    const siblings = canvasesInDir(parentDir(row.file)).map((c) => c.title);
     const actual = dedupeFilename(row.title, siblings);
     try {
       // 读磁盘原文 → 重写 id/title → 写新文件（write 的落盘路径由 title 决定，与 siblingPath 一致）
@@ -605,7 +609,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       // 删除的是「上次打开」的画布：清空 uiState 记录（否则下次进入仓库尝试恢复已删文件）
       if (useUiStateStore.getState().lastCanvasFile === row.file) {
-        useUiStateStore.getState().closeCanvas();
+        useUiStateStore.getState().closeFile("canvas");
       }
       set({
         currentCanvasId: row.id === currentCanvasId ? null : currentCanvasId,
@@ -623,7 +627,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       .map((c) => c.id);
     if (affectedIds.length > 0 && currentCanvasId && affectedIds.includes(currentCanvasId)) {
       useCanvasStore.getState().resetCanvasState();
-      useUiStateStore.getState().closeCanvas();
+      useUiStateStore.getState().closeFile("canvas");
       set({ currentCanvasId: null, currentCanvasFile: null });
     }
     return affectedIds.length > 0;
@@ -640,9 +644,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   convertWhiteboard: async (file) => {
     const title = stripExt(baseName(file));
     // 同名自动加序号（同目录现有 .atlx 标题）
-    const siblings = get()
-      .canvases.filter((c) => parentDir(c.file) === parentDir(file))
-      .map((c) => c.title);
+    const siblings = canvasesInDir(parentDir(file)).map((c) => c.title);
     try {
       const row = await convertWhiteboardToAtlx(file, title, siblings);
       markSelfSave(row.file);

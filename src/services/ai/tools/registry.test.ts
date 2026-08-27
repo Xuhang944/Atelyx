@@ -19,7 +19,6 @@ interface FakeToolOpts {
 function fakeTool(name: string, opts: FakeToolOpts = {}): ToolDefinition {
   return defineTool({
     name,
-    label: name,
     description: name,
     parameters: {},
     validate: (args) =>

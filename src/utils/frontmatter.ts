@@ -17,17 +17,6 @@ if (typeof (globalThis as { Buffer?: unknown }).Buffer === "undefined") {
   };
 }
 
-/** 可被属性面板内联编辑的 Frontmatter 值类型（未知类型只读展示，不进编辑契约）。 */
-export type EditableFrontmatterValue = string | string[];
-
-/** 笔记属性契约：约定键 + 动态键值对（属性面板）。 */
-export interface Frontmatter {
-  tags?: string[];
-  timeline?: string[];
-  status?: string;
-  [key: string]: string | string[] | undefined;
-}
-
 /** 解析结果：data 用宽类型保留未知类型值（数字/布尔/嵌套等，只读展示不破坏类型）。 */
 export interface ParsedFrontmatter {
   data: Record<string, unknown>;

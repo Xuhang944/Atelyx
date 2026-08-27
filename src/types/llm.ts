@@ -15,15 +15,6 @@ export interface LlmToolCall {
   arguments: string;
 }
 
-/** 单条令牌计量（缓存字段可选；`inputTokens` 为未缓存输入）。 */
-export interface TokenUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
-  reasoningTokens?: number;
-}
-
 /** 用户消息的多模态部分（适配器折成 content parts：text / image）。 */
 type UserParts = {
   /** 图片附件：data URL（vision）。 */
@@ -36,8 +27,6 @@ type UserParts = {
 type PlainLlmMessage = {
   role: "system" | "assistant" | "tool";
   text: string | null;
-  /** 模型思考过程（仅 assistant 携带；不进上下文，仅展示）。 */
-  reasoning?: string;
   /** assistant 带工具调用时 text 为 null（OpenAI 规范）。 */
   toolCalls?: LlmToolCall[];
   /** tool 消息回填时指向对应调用的 id。 */
@@ -53,31 +42,16 @@ type UserLlmMessage = {
 /** 提供者中立的对话消息。 */
 export type LlmMessage = PlainLlmMessage | UserLlmMessage;
 
-/** 模型为何停止（收敛到我们需要的子集）。 */
+/** 模型为何停止（收敛到我们需要的子集；用户停止/请求失败不产出 finish 事件，不走此枚举）。 */
 export type LlmFinishReason =
   | "stop"
   | "tool-calls"
-  | "max-tokens"
-  | "aborted"
-  | "error";
-
-/** 结构化错误码（稳定、可机器路由，不靠解析 message 字符串）。 */
-export type LlmErrorCode =
-  | "TRANSPORT"
-  | "HTTP"
-  | "CONTEXT_OVERFLOW"
-  | "QUOTA"
-  | "AUTH"
-  | "BAD_REQUEST"
-  | "EMPTY_RESPONSE"
-  | "TIMEOUT"
-  | "UNKNOWN";
+  | "max-tokens";
 
 /** 适配器原始流事件。tool-call 在参数累积完整后一次性发出。 */
 export type LlmStreamEvent =
   | { type: "text-delta"; text: string }
   | { type: "reasoning-delta"; text: string }
   | { type: "tool-call"; call: LlmToolCall }
-  | { type: "usage"; usage: TokenUsage }
   | { type: "finish"; reason: LlmFinishReason };
 

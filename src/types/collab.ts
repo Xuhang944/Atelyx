@@ -50,3 +50,9 @@ export interface CollabHello {
   color: string;
   deviceName: string;
 }
+
+/** 连通性测试结果（设置页「检查连接」展示）。 */
+export interface RelayTestResult {
+  ok: boolean;
+  message: string;
+}

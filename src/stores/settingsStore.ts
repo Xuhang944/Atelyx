@@ -11,6 +11,7 @@ import type {
   AiConfig,
   ChatTargetResult,
   FileExplorerSortKey,
+  GlobalConfig,
   GlobalProvider,
   GlobalSearchConfig,
   ProviderConfig,
@@ -169,8 +170,6 @@ interface SettingsState {
   removeAgent: (id: string) => Promise<void>;
   /** 复制 Agent（新 id + 名称加「副本」；写 .atelyx/agents.json）。 */
   duplicateAgent: (id: string) => Promise<void>;
-  /** 按 id 查找 Agent（未找到/无 id 返回 null——发送时降级为普通对话）。 */
-  resolveAgent: (id: string | undefined) => AgentConfig | null;
   /**
    * 解析 Agent 发送请求（画布/面板共用）：系统提示词（引用已注册提示词笔记实时读正文）+ 工具组装。
    * Agent 不存在返回 null；笔记缺失降级为不带系统提示词；tools 空 = 仅只读基础工具（read_file/glob/grep 恒并入）。
@@ -271,7 +270,7 @@ function cleanVaultConfig(vc: VaultConfig): VaultConfig {
   if (vc.search !== undefined) out.search = vc.search;
   if (vc.syncKeys !== undefined) out.syncKeys = vc.syncKeys;
   if (vc.vaultId !== undefined) out.vaultId = vc.vaultId;
-  // dirNames / temperature / defaultProviderId 字段不写回（配置中不再承载）
+  // temperature / defaultProviderId 字段不写回（配置中不再承载）
   return out;
 }
 
@@ -284,6 +283,17 @@ async function commitVault(patch: Partial<VaultConfig>): Promise<void> {
     await writeVaultConfig(cleanVaultConfig(vc));
   } catch (e) {
     console.error("保存仓库级配置失败", e);
+  }
+}
+
+/** 应用级配置写盘统一入口（各外观 setXxx 收敛于此）：先写内存再 patch 落 global.json，
+ * 失败仅记专属文案日志不打断 UI（外观丢失可重设，非关键路径）。 */
+async function commitGlobal(patch: Partial<GlobalConfig>, errMsg: string): Promise<void> {
+  useSettingsStore.setState(patch);
+  try {
+    await updateGlobalConfig(patch);
+  } catch (e) {
+    console.error(errMsg, e);
   }
 }
 
@@ -616,34 +626,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     await commitVault({ autoNamingModel: model ?? undefined });
   },
 
-  setFontSize: async (size) => {
-    set({ fontSize: size });
-    try {
-      await updateGlobalConfig({ fontSize: size });
-    } catch (e) {
-      console.error("保存字号配置失败", e);
-    }
-  },
+  setFontSize: (size) => commitGlobal({ fontSize: size }, "保存字号配置失败"),
 
-  setFontFamily: async (family) => {
-    set({ fontFamily: family });
-    try {
-      await updateGlobalConfig({ fontFamily: family });
-    } catch (e) {
-      console.error("保存字体配置失败", e);
-    }
-  },
+  setFontFamily: (family) => commitGlobal({ fontFamily: family }, "保存字体配置失败"),
 
   /** 切换主题模式：light → dark → system 循环（跟随系统 = 按系统外观实时解析）。应用级，写 global.json。 */
-  toggleTheme: async () => {
+  toggleTheme: () => {
     const next: ThemeMode =
       get().theme === "light" ? "dark" : get().theme === "dark" ? "system" : "light";
-    set({ theme: next });
-    try {
-      await updateGlobalConfig({ theme: next });
-    } catch (e) {
-      console.error("保存主题配置失败", e);
-    }
+    return commitGlobal({ theme: next }, "保存主题配置失败");
   },
 
   setFileExplorerSort: async (sortKey) => {
@@ -653,12 +644,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   /** 设应用级强调色（undefined = 恢复默认金色；只接受合法 hex 格式）。 */
   setAccentColor: async (color) => {
     if (color !== undefined && !/^#[0-9a-fA-F]{6}$/.test(color)) return;
-    set({ accentColor: color });
-    try {
-      await updateGlobalConfig({ accentColor: color });
-    } catch (e) {
-      console.error("保存强调色配置失败", e);
-    }
+    await commitGlobal({ accentColor: color }, "保存强调色配置失败");
   },
 
   setExcludeFolders: async (folders) => {
@@ -670,23 +656,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     await commitVault({ softLineBreak: enabled });
   },
 
-  setAutoRestoreFiles: async (enabled) => {
-    set({ autoRestoreFiles: enabled });
-    try {
-      await updateGlobalConfig({ autoRestoreFiles: enabled });
-    } catch (e) {
-      console.error("保存自动恢复配置失败", e);
-    }
-  },
+  setAutoRestoreFiles: (enabled) =>
+    commitGlobal({ autoRestoreFiles: enabled }, "保存自动恢复配置失败"),
 
-  setDefaultHomeLayout: async (enabled) => {
-    set({ defaultHomeLayout: enabled });
-    try {
-      await updateGlobalConfig({ defaultHomeLayout: enabled });
-    } catch (e) {
-      console.error("保存主页默认布局配置失败", e);
-    }
-  },
+  setDefaultHomeLayout: (enabled) =>
+    commitGlobal({ defaultHomeLayout: enabled }, "保存主页默认布局配置失败"),
 
   setCollabConfig: async (patch) => {
     set(patch);
@@ -811,21 +785,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
   },
 
-  /** 按 id 查找 Agent：空 id = 缺省解析为预置「对话」（只读 + 检索 + 联网，无写入/编辑）；未找到返回 null（发送时降级为普通对话）。 */
-  resolveAgent: (id) => {
-    if (!id) {
-      // 缺省 = 预置「对话」：对话节点/面板不显式选择时的默认行为（无系统提示词、只读 + 检索 + 联网）
-      return (
-        get().agents.find((a) => a.id === BUILTIN_AGENT_CHAT_ID) ??
-        BUILTIN_AGENTS[0] ??
-        null
-      );
-    }
-    return get().agents.find((a) => a.id === id) ?? null;
-  },
-
   resolveAgentRequest: async (agentId) => {
-    const agent = get().resolveAgent(agentId);
+    // 按 id 查找 Agent：空 id = 缺省解析为预置「对话」（对话节点/面板不显式选择时的默认行为：
+    // 无系统提示词、只读 + 检索 + 联网）；未找到返回 null（发送时降级为普通对话）
+    const agent = agentId
+      ? (get().agents.find((a) => a.id === agentId) ?? null)
+      : (get().agents.find((a) => a.id === BUILTIN_AGENT_CHAT_ID) ?? BUILTIN_AGENTS[0] ?? null);
     if (!agent) return null;
     // 系统提示词：引用已注册提示词笔记实时读正文（外部编辑即时生效，读失败降级）
     let systemPrompt: string | undefined;
@@ -893,11 +858,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const next = { ...cur };
     if (color) next[dir] = color;
     else delete next[dir];
-    const keys = Object.keys(next);
-    const finalNext = keys.length ? next : {};
-    set({ folderColors: finalNext });
+    set({ folderColors: next });
     try {
-      await writeFolderColors(finalNext);
+      await writeFolderColors(next);
     } catch (e) {
       console.error("保存文件夹图标颜色失败", e);
     }

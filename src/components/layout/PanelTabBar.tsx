@@ -43,7 +43,8 @@ export interface PanelTabBarProps {
   onSetTabView: (tabId: string, view: ViewKind) => void;
   /** 锁定/解锁整个面板（整块锁定，所有标签一起；锁定 = 不可移动标签/不可删除面板/不可关闭标签）。 */
   onTogglePanelLock: () => void;
-  onSplit: (direction: SplitDirection) => void;
+  /** 左右/上下分割（仅 allowSplit 时使用；撕裂窗口无面板树不传）。 */
+  onSplit?: (direction: SplitDirection) => void;
   /** 删除面板（整块删除含标签；撕裂窗口 = 关闭整个窗口）。 */
   onDeletePanel: () => void;
   onFocusHost: () => void;
@@ -322,7 +323,7 @@ export const PanelTabBar = memo(function PanelTabBar({
                   <MenuDivider />
                   <MenuItem
                     onClick={() => {
-                      onSplit("horizontal");
+                      onSplit?.("horizontal");
                       menu.close();
                     }}
                     className="text-xs"
@@ -331,7 +332,7 @@ export const PanelTabBar = memo(function PanelTabBar({
                   </MenuItem>
                   <MenuItem
                     onClick={() => {
-                      onSplit("vertical");
+                      onSplit?.("vertical");
                       menu.close();
                     }}
                     className="text-xs"

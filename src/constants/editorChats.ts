@@ -2,9 +2,6 @@
  * AI 对话面板相关常量。
  */
 
-/** 旧 `.atelyx/editor-chats.json` 的 schema 版本号（迁移检测用；Rust 侧 `vault.rs` 有同名常量，两端须保持一致）。 */
-export const EDITOR_CHATS_SCHEMA = "atelyx-editor-chats/v3" as const;
-
 /** `.atelyx/editor-chats-meta.json` 的 schema 版本号（面板级覆盖；Rust 侧 `vault.rs` 有同名常量，两端须保持一致）。 */
 export const EDITOR_CHATS_META_SCHEMA = "atelyx-editor-chats-meta/v1" as const;
 

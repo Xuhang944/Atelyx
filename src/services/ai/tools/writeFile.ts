@@ -2,24 +2,16 @@
  * 工具：写入文件（write_file）。把内容按指定相对路径写入仓库（原子写、自动建父目录），
  * 像编程工具写文件那样直接落盘；data.path 供画布判断是否建产物节点。依赖 `capabilities.writeFile`。
  */
-import { ToolArgsError } from "@/types";
-import { AGENT_TOOLS_META } from "@/constants/tools";
+import { ToolArgsError, errText } from "@/types";
 import { defineTool } from "./defineTool";
-
-const meta = AGENT_TOOLS_META.find((m) => m.id === "write_file")!;
 
 export interface WriteFileArgs {
   path: string;
   content: string;
 }
 
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
 export const WRITE_FILE_TOOL = defineTool<WriteFileArgs>({
   name: "write_file",
-  label: meta.label,
   description:
     "把内容写入仓库中指定路径的文件（相对仓库根路径；不存在则新建，存在则覆盖），原子写并自动创建父目录，返回写入结果",
   parameters: {

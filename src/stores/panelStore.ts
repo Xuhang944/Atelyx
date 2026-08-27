@@ -105,8 +105,6 @@ interface PanelStore {
   dragCandidate: DragCandidate | null;
   /** 本窗口当前 drop 命中（渲染指示器）。 */
   dropTarget: DropTargetInfo | null;
-  /** 当前活跃拖拽的屏幕坐标 + 视图（各窗口从广播同步；ghost 影子渲染用）。 */
-  dragGhost: { x: number; y: number; view: ViewKind } | null;
   /** 面板窗口最近上报的命中（主窗口 drag-end 解析用）。 */
   lastPanelTarget: DropTargetInfo | null;
   /** 本窗口屏幕位置缓存（屏幕坐标换算）。 */
@@ -176,6 +174,15 @@ function pointInRect(x: number, y: number, r: WindowRect | undefined): boolean {
   return x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height;
 }
 
+/** 标签条插入位：光标在标签前半 → 该标签下标，否则末尾（主/撕裂窗口命中测试共用）。 */
+function tabIndexAt(tabEls: HTMLElement[], cx: number): number {
+  for (let i = 0; i < tabEls.length; i++) {
+    const t = tabEls[i].getBoundingClientRect();
+    if (cx < t.left + t.width / 2) return i;
+  }
+  return tabEls.length;
+}
+
 /** 主窗口 drop 命中：按面板 DOM rect 计算 zone（头部 = tab 排序；四边缘 = 分割；中部 = 加标签）。 */
 function hitTestMainWindow(
   cx: number,
@@ -189,15 +196,12 @@ function hitTestMainWindow(
     // 头部条（tab 排序区）：面板 header 顶部 28px
     if (cy <= r.top + 28) {
       const tabEls = Array.from(el.querySelectorAll<HTMLElement>("[data-tab-id]"));
-      let idx = tabEls.length;
-      for (let i = 0; i < tabEls.length; i++) {
-        const t = tabEls[i].getBoundingClientRect();
-        if (cx < t.left + t.width / 2) {
-          idx = i;
-          break;
-        }
-      }
-      return { kind: "panel", window: windowId, panelId: el.dataset.dropPanel, zone: "tab", tabIndex: idx };
+      return {
+        window: windowId,
+        panelId: el.dataset.dropPanel,
+        zone: "tab",
+        tabIndex: tabIndexAt(tabEls, cx),
+      };
     }
     const w = r.width;
     const h = r.height;
@@ -211,7 +215,7 @@ function hitTestMainWindow(
             : r.bottom - cy < h * 0.12
               ? "bottom"
               : "center";
-    return { kind: "panel", window: windowId, panelId: el.dataset.dropPanel, zone };
+    return { window: windowId, panelId: el.dataset.dropPanel, zone };
   }
   return null;
 }
@@ -227,18 +231,10 @@ function hitTestPanelWindow(cx: number, cy: number, windowId: string): DropTarge
     const tr = tabbar.getBoundingClientRect();
     if (cy >= tr.top && cy <= tr.bottom) {
       const tabEls = Array.from(tabbar.querySelectorAll<HTMLElement>("[data-tab-id]"));
-      let idx = tabEls.length;
-      for (let i = 0; i < tabEls.length; i++) {
-        const t = tabEls[i].getBoundingClientRect();
-        if (cx < t.left + t.width / 2) {
-          idx = i;
-          break;
-        }
-      }
-      return { kind: "panel", window: windowId, zone: "tab", tabIndex: idx };
+      return { window: windowId, zone: "tab", tabIndex: tabIndexAt(tabEls, cx) };
     }
   }
-  return { kind: "panel", window: windowId, zone: "center" };
+  return { window: windowId, zone: "center" };
 }
 
 /** 结构签名（排除 sizes：resize 拖拽不广播 layout-changed 给撕裂窗口）。 */
@@ -412,6 +408,36 @@ export const usePanelStore = create<PanelStore>((set, get) => {
     }
   };
 
+  /**
+   * 拖拽结束共享骨架（finishDrag/cancelDrag 合流）：停左键轮询 + 清看门狗 + 广播 end +
+   * 清全套拖拽状态。坐标为 null = 取消路径，用会话最后已知屏幕坐标；
+   * cancelled = true 时主窗口不解析落点。
+   */
+  const endDrag = (screenX: number | null, screenY: number | null, cancelled: boolean): void => {
+    stopMousePoll();
+    if (dragWatchdog !== null) {
+      window.clearTimeout(dragWatchdog);
+      dragWatchdog = null;
+    }
+    const { drag, windowId } = get();
+    set({ dragCandidate: null });
+    if (!drag) return;
+    // 取消路径无实时坐标：用会话最后已知屏幕坐标
+    const x = screenX ?? drag.screenX;
+    const y = screenY ?? drag.screenY;
+    void bus.emitPanelDragEnd({ sourceWindow: windowId, screenX: x, screenY: y, cancelled, seq: drag.seq });
+    try {
+      // 主窗口本地拖拽：直接解析（广播可能不自送达）；seq 防重（end 广播自送达时跳过）
+      if (windowId === "main" && !cancelled && drag.seq !== lastResolvedSeq) {
+        lastResolvedSeq = drag.seq;
+        resolveDrop(x, y);
+      }
+    } finally {
+      // 无论解析是否异常，拖拽会话与指示器必须清理（防残留）
+      set({ drag: null, activeDrag: null, dropTarget: null, dragCandidate: null });
+    }
+  };
+
   return {
     role: "main",
     windowId: "main",
@@ -422,7 +448,6 @@ export const usePanelStore = create<PanelStore>((set, get) => {
     activeDrag: null,
     dragCandidate: null,
     dropTarget: null,
-    dragGhost: null,
     lastPanelTarget: null,
     windowPos: { x: 0, y: 0 },
     windowBounds: {},
@@ -552,7 +577,7 @@ export const usePanelStore = create<PanelStore>((set, get) => {
             break;
         }
       });
-      // 拖拽（外来）：记录 activeDrag / ghost / 命中 / 结束解析
+      // 拖拽（外来）：记录 activeDrag（ghost 影子同源于该状态）/ 命中 / 结束解析
       void bus.onPanelDragStart((payload: PanelDragStartPayload) => {
         if (get().drag) return; // 本地拖拽进行中，忽略外来
         set({
@@ -565,12 +590,12 @@ export const usePanelStore = create<PanelStore>((set, get) => {
             screenY: payload.screenY,
             seq: payload.seq,
           },
-          dragGhost: { x: payload.screenX, y: payload.screenY, view: payload.view },
         });
       });
       void bus.onPanelDragMove(({ screenX, screenY }) => {
         computeOwnHit(screenX, screenY);
-        set((s) => (s.dragGhost ? { dragGhost: { ...s.dragGhost, x: screenX, y: screenY } } : s));
+        // ghost 影子订阅 activeDrag：坐标随 move 广播推进（终点坐标以 end 广播为准，此处更新不影响落点解析）
+        set((s) => (s.activeDrag ? { activeDrag: { ...s.activeDrag, screenX, screenY } } : s));
       });
       void bus.onPanelDragEnd(({ screenX, screenY, cancelled, seq }) => {
         // 落点解析仅执行一次（seq 防重：主窗口本地 finishDrag 已解析时跳过）
@@ -578,7 +603,7 @@ export const usePanelStore = create<PanelStore>((set, get) => {
           lastResolvedSeq = seq;
           resolveDrop(screenX, screenY);
         }
-        set({ activeDrag: null, dropTarget: null, lastPanelTarget: null, dragGhost: null });
+        set({ activeDrag: null, dropTarget: null, lastPanelTarget: null });
         // 本窗口是源且本地会话未清理（释放事件丢失由轮询/看门狗兜底广播 end）→ 结束会话
         if (get().drag?.seq === seq) set({ drag: null, dragCandidate: null });
       });
@@ -684,10 +709,11 @@ export const usePanelStore = create<PanelStore>((set, get) => {
       });
       void bus.onPanelDragMove(({ screenX, screenY }) => {
         computeOwnHit(screenX, screenY);
-        set((s) => (s.dragGhost ? { dragGhost: { ...s.dragGhost, x: screenX, y: screenY } } : s));
+        // ghost 影子订阅 activeDrag：本窗口为源时非 null（随 move 推进坐标），接收外来拖拽时保持 null（不渲染）
+        set((s) => (s.activeDrag ? { activeDrag: { ...s.activeDrag, screenX, screenY } } : s));
       });
       void bus.onPanelDragEnd(({ seq }) => {
-        set({ dropTarget: null, dragGhost: null });
+        set({ dropTarget: null });
         // 本窗口是源且本地会话未清理（释放事件丢失由轮询/看门狗兜底广播 end）→ 结束会话
         if (get().drag?.seq === seq) set({ drag: null, dragCandidate: null, activeDrag: null });
       });
@@ -768,7 +794,7 @@ export const usePanelStore = create<PanelStore>((set, get) => {
         screenY,
         seq,
       };
-      set({ drag: session, activeDrag: session, dragGhost: { x: screenX, y: screenY, view: c.tab.view } });
+      set({ drag: session, activeDrag: session });
       void bus.emitPanelDragStart({
         sourceWindow: windowId,
         tabId: c.tab.id,
@@ -793,7 +819,6 @@ export const usePanelStore = create<PanelStore>((set, get) => {
       set({
         drag: { ...drag, screenX, screenY },
         activeDrag: { ...drag, screenX, screenY },
-        dragGhost: { x: screenX, y: screenY, view: drag.view },
       });
       void bus.emitPanelDragMove({ screenX, screenY });
       computeOwnHit(screenX, screenY);
@@ -801,48 +826,11 @@ export const usePanelStore = create<PanelStore>((set, get) => {
     },
 
     finishDrag: (clientX, clientY, cancelled) => {
-      stopMousePoll();
-      if (dragWatchdog !== null) {
-        window.clearTimeout(dragWatchdog);
-        dragWatchdog = null;
-      }
-      const drag = get().drag;
-      const { windowPos, windowId } = get();
-      const screenX = clientX + windowPos.x;
-      const screenY = clientY + windowPos.y;
-      set({ dragCandidate: null });
-      if (!drag) return;
-      void bus.emitPanelDragEnd({ sourceWindow: windowId, screenX, screenY, cancelled, seq: drag.seq });
-      try {
-        // 主窗口本地拖拽：直接解析（广播可能不自送达）；seq 防重（end 广播自送达时跳过）
-        if (windowId === "main" && !cancelled && drag.seq !== lastResolvedSeq) {
-          lastResolvedSeq = drag.seq;
-          resolveDrop(screenX, screenY);
-        }
-      } finally {
-        // 无论解析是否异常，拖拽会话与指示器必须清理（防残留）
-        set({ drag: null, activeDrag: null, dropTarget: null, dragCandidate: null, dragGhost: null });
-      }
+      const { windowPos } = get();
+      endDrag(clientX + windowPos.x, clientY + windowPos.y, cancelled);
     },
 
-    cancelDrag: () => {
-      stopMousePoll();
-      if (dragWatchdog !== null) {
-        window.clearTimeout(dragWatchdog);
-        dragWatchdog = null;
-      }
-      const { drag, windowId } = get();
-      set({ dragCandidate: null });
-      if (!drag) return;
-      void bus.emitPanelDragEnd({
-        sourceWindow: windowId,
-        screenX: drag.screenX,
-        screenY: drag.screenY,
-        cancelled: true,
-        seq: drag.seq,
-      });
-      set({ drag: null, activeDrag: null, dropTarget: null, dragCandidate: null, dragGhost: null });
-    },
+    cancelDrag: () => endDrag(null, null, true),
 
     panelSetActive: (tabId) => {
       const windowId = get().windowId;

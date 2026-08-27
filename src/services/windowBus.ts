@@ -27,8 +27,6 @@ export type DropZone = "center" | "left" | "right" | "top" | "bottom" | "tab";
 
 /** 一次命中的 drop 目标（本窗口计算，广播给主窗口在 drag-end 应用）。 */
 export interface DropTargetInfo {
-  /** 恒为 "panel"（主窗口面板与撕裂窗口均按面板命中；两者靠 `window` 区分）。 */
-  kind: "panel";
   /** 目标窗口 label（"main" 或 panel label）。 */
   window: string;
   /** 主窗口面板 id（撕裂窗口命中时为 undefined）。 */

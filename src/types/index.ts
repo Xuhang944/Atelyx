@@ -19,21 +19,16 @@ export type {
   Message,
 } from "./message";
 
-export {
-  EDITOR_CHATS_META_SCHEMA,
-  CHAT_HISTORY_DIR,
-  CHAT_MESSAGE_EXT,
-  CHAT_META_EXT,
-  type EditorChatRole,
-  type EditorChatMessage,
-  type EditorChatMessageRef,
-  type ChatSessionMeta,
-  type ChatSessionRow,
-  type EditorChatSession,
-  type EditorChatModelOverride,
-  type ChatMetaFile,
-  type LegacyEditorChatsFile,
-  type NoteRewriteRequest,
+export type {
+  EditorChatRole,
+  EditorChatMessage,
+  EditorChatMessageRef,
+  ChatSessionMeta,
+  ChatSessionRow,
+  EditorChatSession,
+  EditorChatModelOverride,
+  ChatMetaFile,
+  NoteRewriteRequest,
 } from "./chat";
 
 export type {
@@ -48,7 +43,6 @@ export type {
 export type { AgentConfig } from "./agent";
 
 export {
-  type CanvasViewport,
   type CanvasFile,
   type CanvasFileNode,
   type CanvasPatch,
@@ -64,7 +58,6 @@ export {
   type DeleteFolderResult,
   type FileTreeNode,
   type FileExplorerSortKey,
-  type DirNames,
   type GlobalSearchConfig,
   type SearchProvider,
   type ThemeMode,
@@ -84,10 +77,6 @@ export { UI_STATE_SCHEMA, type AppUiState, type RecentFileEntry } from "./uiStat
 export {
   VIEW_KINDS,
   HOME_LAYOUT_ID,
-  createDefaultLayouts,
-  createHomeLayout,
-  createTab,
-  createPanel,
   type ViewKind,
   type SplitDirection,
   type TabItem,
@@ -121,11 +110,13 @@ export type {
   CollabPeer,
   CollabHello,
   CollabLockClaim,
+  RelayTestResult,
 } from "./collab";
 
 export {
   UNKNOWN_TOOL_MSG_PREFIX,
   ToolArgsError,
+  errText,
   type ToolSchema,
   type ToolResult,
   type ToolCapabilities,
@@ -141,9 +132,7 @@ export {
 
 export type {
   LlmToolCall,
-  TokenUsage,
   LlmMessage,
   LlmFinishReason,
-  LlmErrorCode,
   LlmStreamEvent,
 } from "./llm";

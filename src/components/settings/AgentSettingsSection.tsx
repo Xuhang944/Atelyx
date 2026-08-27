@@ -13,7 +13,7 @@
  * 表单为本地草稿 + 显式「保存」提交（避免每键一次 agents.json 原子写）；
  * 切换选中 Agent 未保存改动丢弃。删除走 ConfirmDialog（同设置页惯例）。
  */
-import { Check, Copy, Plus, Sparkles, Trash2 } from "lucide-react";
+import { Copy, Plus, Sparkles, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
@@ -272,17 +272,9 @@ export function AgentSettingsSection() {
                 {AGENT_TOOLS_META.filter((t) => !t.readOnly).map((t) => {
                   const on = (draft?.tools ?? []).includes(t.id);
                   return (
-                    <button
+                    // 行用 label 承载点击（整行命中切换单一 onChange；原生 checkbox 内嵌 button 会双触发）
+                    <label
                       key={t.id}
-                      type="button"
-                      onClick={() => {
-                        const cur = draft?.tools ?? [];
-                        patchDraft({
-                          tools: on
-                            ? cur.filter((x) => x !== t.id)
-                            : [...cur, t.id],
-                        });
-                      }}
                       className="flex items-center gap-2 px-1 py-0.5 text-xs rounded hover:bg-[var(--hover)]"
                       style={{
                         color: on
@@ -290,20 +282,19 @@ export function AgentSettingsSection() {
                           : "var(--text-secondary)",
                       }}
                     >
-                      <span
-                        className="w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0"
-                        style={{
-                          borderColor: on ? "var(--accent)" : "var(--border)",
-                          background: on ? "var(--accent)" : "transparent",
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        onChange={() => {
+                          const cur = draft?.tools ?? [];
+                          patchDraft({
+                            tools: on
+                              ? cur.filter((x) => x !== t.id)
+                              : [...cur, t.id],
+                          });
                         }}
-                      >
-                        {on && (
-                          <Check
-                            size={10}
-                            style={{ color: "var(--accent-fg)" }}
-                          />
-                        )}
-                      </span>
+                        className="w-3.5 h-3.5 flex-shrink-0 accent-[var(--accent)]"
+                      />
                       <span className="flex items-center gap-1.5">
                         {t.label}
                         {t.needsSearch && !searchReady && (
@@ -315,7 +306,7 @@ export function AgentSettingsSection() {
                           </span>
                         )}
                       </span>
-                    </button>
+                    </label>
                   );
                 })}
               </div>

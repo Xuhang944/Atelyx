@@ -12,7 +12,8 @@ import { useAppStore } from "@/stores/appStore";
 import { useCollabStore } from "@/stores/collabStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { usePanelStore } from "@/stores/panelStore";
-import { FileKindIcon, fileTitle, openFileByKind } from "@/components/common/FileKindIcon";
+import { FileKindIcon, openFileByKind } from "@/components/common/FileKindIcon";
+import { noteTitleFromFile } from "@/utils/filename";
 import type { CollabPeer, CollabPresence } from "@/types";
 
 /** 取 presence 的打开文件清单（优先 openFiles，回退聚焦文件；无 → 空）。恒返回非空数组。 */
@@ -78,7 +79,7 @@ function MemberRow({
                 title={`打开 ${f.file}`}
               >
                 <FileKindIcon kind={f.view} />
-                <span className="truncate">{fileTitle(f.file)}</span>
+                <span className="truncate">{noteTitleFromFile(f.file)}</span>
                 {/* 仅远端标「正在查看」（首个聚焦文件）；自己行无聚焦概念，不标 */}
                 {!isSelf && i === 0 && files.length > 1 && (
                   <span className="text-[10px] flex-shrink-0" style={{ color: "var(--text-muted)" }}>

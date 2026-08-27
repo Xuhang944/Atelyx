@@ -37,7 +37,6 @@ import {
   findPanel,
   findTabInDetached,
   findTabInTree,
-  migrateLegacyTree,
   moveTabWithinPanel as moveTabWithinPanelOp,
   regenerateIds,
   removeTabFromPanel as removeTabFromPanelOp,
@@ -91,30 +90,18 @@ interface UiStateStore {
   expandDirs: (paths: string[]) => void;
   /** 「展开/收起全部」：dirPaths = 当前树全部文件夹路径；全部展开时切换为收起。 */
   toggleExpandAll: (dirPaths: string[]) => void;
-  /** 记录打开的画布文件（lastCanvasFile）。 */
-  recordOpenCanvas: (file: string) => void;
-  /** 记录打开的笔记文件（lastNoteFile）。 */
-  recordOpenNote: (file: string) => void;
-  /** 记录打开的表格文件（lastTableFile）。 */
-  recordOpenTable: (file: string) => void;
+  /** 记录打开的画布/笔记/表格文件（lastCanvasFile/lastNoteFile/lastTableFile，kind 区分）。 */
+  recordOpenFile: (kind: LastOpenFileKind, file: string) => void;
   /** 记录最近打开的文件（recentFiles：去重置顶 + 截断；kind 与 vaultId 由调用方提供）。 */
   recordRecentFile: (file: string, kind: RecentFileEntry["kind"], vaultId: string) => void;
-  /** 画布重命名/移动后同步 lastCanvasFile（旧路径命中才更新）。 */
-  renameLastCanvas: (oldFile: string, newFile: string) => void;
-  /** 笔记重命名/移动后同步 lastNoteFile（旧路径命中才更新）。 */
-  renameLastNote: (oldFile: string, newFile: string) => void;
-  /** 表格重命名/移动后同步 lastTableFile（旧路径命中才更新）。 */
-  renameLastTable: (oldFile: string, newFile: string) => void;
+  /** 画布/笔记/表格重命名/移动后同步上次打开记录（旧路径命中才更新，kind 区分）。 */
+  renameLastFile: (kind: LastOpenFileKind, oldFile: string, newFile: string) => void;
   /** 文件夹重命名后同步展开集合/上次打开文件（`oldDir/` 前缀 → `newDir/`）。 */
   renameByDir: (oldDir: string, newDir: string) => void;
   /** 文件夹删除后清理展开集合中该目录及子目录条目。 */
   removeExpandedByDir: (dir: string) => void;
-  /** 关闭画布：清空 lastCanvasFile。 */
-  closeCanvas: () => void;
-  /** 关闭笔记：清空 lastNoteFile。 */
-  closeNote: () => void;
-  /** 关闭表格：清空 lastTableFile。 */
-  closeTable: () => void;
+  /** 关闭画布/笔记/表格：清空对应的上次打开记录（kind 区分）。 */
+  closeFile: (kind: LastOpenFileKind) => void;
   /** 设置聚焦面板（点击面板时；null = 无聚焦）。 */
   setFocusedPanel: (panelId: string | null) => void;
 
@@ -201,6 +188,16 @@ function activeLayout(get: () => UiStateStore): WorkspaceLayout {
   );
 }
 
+/** 上次打开文件记录类别（画布/笔记/表格）。 */
+type LastOpenFileKind = "canvas" | "note" | "table";
+
+/** 类别 → 上次打开文件字段名映射（record/rename/close 三个 action 经此写各自字段）。 */
+const LAST_FILE_KEYS: Record<LastOpenFileKind, "lastCanvasFile" | "lastNoteFile" | "lastTableFile"> = {
+  canvas: "lastCanvasFile",
+  note: "lastNoteFile",
+  table: "lastTableFile",
+};
+
 /** 最近打开文件列表上限（去重置顶后截断）。 */
 const MAX_RECENT_FILES = 50;
 
@@ -273,6 +270,18 @@ function toDiskState(get: () => UiStateStore): AppUiState {
   };
 }
 
+/** 布局树形状校验（递归全树）：panel 必有 tabs 数组、split 必有 children 数组，
+ *  其余任何形状（旧磁盘遗留/损坏数据）判为非法，load 时整体回退默认布局。 */
+function isValidLayoutTree(node: unknown): boolean {
+  if (!node || typeof node !== "object") return false;
+  const n = node as { kind?: unknown; tabs?: unknown; children?: unknown };
+  if (n.kind === "panel") return Array.isArray(n.tabs);
+  if (n.kind === "split") {
+    return Array.isArray(n.children) && n.children.every((child) => isValidLayoutTree(child));
+  }
+  return false;
+}
+
 export const useUiStateStore = create<UiStateStore>((set, get) => {
   /** 更新激活布局的区域树并落盘（布局操作统一出口）。 */
   const updateActiveLayout = (updater: (tree: LayoutNode) => LayoutNode): void => {
@@ -306,6 +315,16 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
     persistDebounced();
   };
 
+  /** 写上次打开文件字段（kind → 字段映射统一出口：set 后统一走防抖落盘）。 */
+  const setLastFile = (kind: LastOpenFileKind, file: string | null): void => {
+    const patch: Partial<
+      Pick<UiStateStore, "lastCanvasFile" | "lastNoteFile" | "lastTableFile">
+    > = {};
+    patch[LAST_FILE_KEYS[kind]] = file;
+    set(patch);
+    persistDebounced();
+  };
+
   return {
   fileExplorerExpanded: new Set(),
   lastCanvasFile: null,
@@ -323,19 +342,13 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
     persistCtl.cancel();
     try {
       const disk = await readAppUiState();
-      // 旧 schema 兼容（v1 前磁盘数据）：树判别值 kind "area"（面板含 view 字段 / 已迁移形状）→ 归一化为 "panel"
-      // （聚焦字段旧名 focusedAreaId 已被 Rust 反序列化剥离，无迁移价值；缺失时兜底聚焦第一个面板）
+      // 布局树形状校验（递归全树：panel 必有 tabs 数组、split 必有 children 数组）——
+      // 无法识别/损坏的旧磁盘数据（含嵌在 split 深处的旧形状）整体回退默认布局，防渲染层崩溃且不可自愈
       const layouts = ensureHomeLayout(
         Array.isArray(disk.workspaceLayouts) &&
           disk.workspaceLayouts.length > 0 &&
-          disk.workspaceLayouts.every(
-            (l) =>
-              l &&
-              ((l.tree as { kind?: string } | undefined)?.kind === "area" ||
-                (l.tree as { kind?: string } | undefined)?.kind === "panel" ||
-                (l.tree as { kind?: string } | undefined)?.kind === "split"),
-          )
-          ? disk.workspaceLayouts.map((l) => ({ ...l, tree: migrateLegacyTree(l.tree) }))
+          disk.workspaceLayouts.every((l) => l && isValidLayoutTree(l.tree))
+          ? disk.workspaceLayouts
           : createDefaultLayouts(),
       );
       const activeLayoutId =
@@ -401,20 +414,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
     persistDebounced();
   },
 
-  recordOpenCanvas: (file) => {
-    set({ lastCanvasFile: file });
-    persistDebounced();
-  },
-
-  recordOpenNote: (file) => {
-    set({ lastNoteFile: file });
-    persistDebounced();
-  },
-
-  recordOpenTable: (file) => {
-    set({ lastTableFile: file });
-    persistDebounced();
-  },
+  recordOpenFile: (kind, file) => setLastFile(kind, file),
 
   recordRecentFile: (file, kind, vaultId) => {
     const next = [
@@ -425,22 +425,9 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
     persistDebounced();
   },
 
-  renameLastCanvas: (oldFile, newFile) => {
-    if (get().lastCanvasFile !== oldFile) return;
-    set({ lastCanvasFile: newFile });
-    persistDebounced();
-  },
-
-  renameLastNote: (oldFile, newFile) => {
-    if (get().lastNoteFile !== oldFile) return;
-    set({ lastNoteFile: newFile });
-    persistDebounced();
-  },
-
-  renameLastTable: (oldFile, newFile) => {
-    if (get().lastTableFile !== oldFile) return;
-    set({ lastTableFile: newFile });
-    persistDebounced();
+  renameLastFile: (kind, oldFile, newFile) => {
+    if (get()[LAST_FILE_KEYS[kind]] !== oldFile) return;
+    setLastFile(kind, newFile);
   },
 
   renameByDir: (oldDir, newDir) => {
@@ -474,20 +461,7 @@ export const useUiStateStore = create<UiStateStore>((set, get) => {
     persistDebounced();
   },
 
-  closeCanvas: () => {
-    set({ lastCanvasFile: null });
-    persistDebounced();
-  },
-
-  closeNote: () => {
-    set({ lastNoteFile: null });
-    persistDebounced();
-  },
-
-  closeTable: () => {
-    set({ lastTableFile: null });
-    persistDebounced();
-  },
+  closeFile: (kind) => setLastFile(kind, null),
 
   setFocusedPanel: (panelId) => {
     if (get().focusedPanelId === panelId) return;

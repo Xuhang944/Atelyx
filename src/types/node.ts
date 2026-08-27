@@ -21,7 +21,7 @@ export interface SearchResultData {
 
 /**
  * 各节点类型的专属 data 结构。
- * data 由各节点组件消费；DB 层以 JSON 字符串存于 nodes.data 列。
+ * data 由各节点组件消费，持久化为 `.atlx` 文件内嵌 JSON。
  */
 export interface ConversationData {
   providerId: string;
@@ -32,17 +32,8 @@ export interface ConversationData {
    * 缺省（未设置）= 按预置「对话」Agent 处理（无系统提示词、只读 + 检索 + 联网，无写入/编辑）。
    */
   agentId?: string;
-  /**
-   * 系统提示词笔记（相对仓库根 `.md` 路径，如 `笔记/提示词.md`）。
-   * 遗留字段：仅兼容读取，不再注入（缺省按「对话」Agent 处理）；选择 Agent 时清除，不提供编辑入口。
-   */
-  systemPromptFile?: string;
   /** LLM 自动生成的话题标题（首轮对话完成后命名，InspectorPanel 来源/血缘显示名用；缺省 = 未命名）。 */
   title?: string;
-  /** 启用 AI Agent 模式（缺省关 = 普通对话，不带任何工具）。遗留字段：仅兼容读取，不再生效（见 agentId）。 */
-  agentMode?: boolean;
-  /** Agent 模式启用的工具名列表（constants/tools.ts 的 AGENT_TOOLS_META id；缺省 = 全部工具）。遗留字段：仅兼容读取，不再生效（见 agentId）。 */
-  agentTools?: string[];
   /** 推理等级（本节点独立，随 .atlx 持久化；下发 `reasoning_effort`。缺省 = 不指定/跟随默认 与 providerId/model 正交独立）。 */
   reasoningEffort?: ReasoningEffort;
 }

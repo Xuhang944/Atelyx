@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react";
 import type { ReactNode } from "react";
+import { VIEW_LABELS } from "@/constants/views";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useAppStore } from "@/stores/appStore";
 import { useTableStore } from "@/stores/tableStore";
@@ -30,28 +31,28 @@ import { NoteView } from "@/components/layout/views/NoteView";
 import { TableView } from "@/components/layout/views/TableView";
 import { FilesView } from "@/components/layout/views/FilesView";
 import { SearchView } from "@/components/layout/views/SearchView";
-import { InspectorView } from "@/components/layout/views/InspectorView";
 import { AiChatView } from "@/components/layout/views/AiChatView";
-import { CollabRoomView } from "@/components/layout/views/CollabRoomView";
-import { CalendarView } from "@/components/layout/views/CalendarView";
-import { RepoHistoryView } from "@/components/layout/views/RepoHistoryView";
-import { RecentView } from "@/components/layout/views/RecentView";
+import { InspectorPanel } from "@/components/canvas/panels/InspectorPanel";
+import { CollabRoomPanel } from "@/components/canvas/panels/CollabRoomPanel";
+import { CalendarPanel } from "@/components/calendar/CalendarPanel";
+import { RepoHistoryPanel } from "@/components/history/RepoHistoryPanel";
+import { RecentPanel } from "@/components/layout/panels/RecentPanel";
 import type { ViewKind } from "@/types";
 
-/** 视图元信息（标签/头部共用）。 */
+/** 视图元信息（标签/头部共用；显示名单一来源 = VIEW_LABELS，图标在此维护）。 */
 export const VIEW_META: Record<ViewKind, { label: string; icon: ReactNode }> = {
-  canvas: { label: "画布", icon: <Palette size={13} /> },
-  note: { label: "笔记", icon: <FileText size={13} /> },
-  table: { label: "表格", icon: <TableIcon size={13} /> },
-  files: { label: "文件", icon: <Files size={13} /> },
-  search: { label: "搜索", icon: <Search size={13} /> },
-  inspector: { label: "属性", icon: <Info size={13} /> },
-  aichat: { label: "AI 对话", icon: <Sparkles size={13} /> },
-  collabroom: { label: "协作房间", icon: <Users size={13} /> },
-  calendar: { label: "日历", icon: <CalendarDays size={13} /> },
-  repohistory: { label: "仓库历史", icon: <History size={13} /> },
-  recent: { label: "最近打开", icon: <Clock size={13} /> },
-  empty: { label: "空面板", icon: <LayoutTemplate size={13} /> },
+  canvas: { label: VIEW_LABELS.canvas, icon: <Palette size={13} /> },
+  note: { label: VIEW_LABELS.note, icon: <FileText size={13} /> },
+  table: { label: VIEW_LABELS.table, icon: <TableIcon size={13} /> },
+  files: { label: VIEW_LABELS.files, icon: <Files size={13} /> },
+  search: { label: VIEW_LABELS.search, icon: <Search size={13} /> },
+  inspector: { label: VIEW_LABELS.inspector, icon: <Info size={13} /> },
+  aichat: { label: VIEW_LABELS.aichat, icon: <Sparkles size={13} /> },
+  collabroom: { label: VIEW_LABELS.collabroom, icon: <Users size={13} /> },
+  calendar: { label: VIEW_LABELS.calendar, icon: <CalendarDays size={13} /> },
+  repohistory: { label: VIEW_LABELS.repohistory, icon: <History size={13} /> },
+  recent: { label: VIEW_LABELS.recent, icon: <Clock size={13} /> },
+  empty: { label: VIEW_LABELS.empty, icon: <LayoutTemplate size={13} /> },
 };
 
 /** 按视图类型分派渲染（空视图 = 占位引导）。 */
@@ -68,17 +69,17 @@ export function ViewHost({ view, hostId }: { view: ViewKind; hostId: string }) {
     case "search":
       return <SearchView />;
     case "inspector":
-      return <InspectorView />;
+      return <InspectorPanel />;
     case "aichat":
       return <AiChatView />;
     case "collabroom":
-      return <CollabRoomView />;
+      return <CollabRoomPanel />;
     case "calendar":
-      return <CalendarView />;
+      return <CalendarPanel />;
     case "repohistory":
-      return <RepoHistoryView />;
+      return <RepoHistoryPanel />;
     case "recent":
-      return <RecentView />;
+      return <RecentPanel />;
     default:
       // 空面板：不渲染占位提示（右键头部/内容区可添加视图，≡ 菜单可分割/删除面板）
       return <div className="h-full w-full" style={{ background: "var(--bg-primary)" }} />;

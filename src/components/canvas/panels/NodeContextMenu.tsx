@@ -86,11 +86,6 @@ export function NodeContextMenu({ nodeId, x, y, onClose }: Props) {
             ? `${lockedByPeer?.nickname} 正在编辑该对话，禁止删除`
             : undefined
         }
-        style={
-          deleteDisabled
-            ? { color: "var(--text-muted)", cursor: "not-allowed" }
-            : undefined
-        }
       >
         <span className="inline-flex items-center gap-1.5">
           <Trash2 size={14} />

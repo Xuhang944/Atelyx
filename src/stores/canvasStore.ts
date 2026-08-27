@@ -35,10 +35,10 @@ import {
 } from "@/services/history";
 import {
   computeCanvasCollabPatch,
-  computeLockOwner,
   deserializeNodeForCollab,
   markCollabCanvasRename,
   mergeMessages,
+  resolveLockState,
   serializeCanvasSnapshot,
   summarizeCanvasSnapshot,
 } from "@/utils/canvasCollab";
@@ -176,8 +176,6 @@ interface CanvasState {
   streamingByConv: Record<string, boolean>;
   /** 拖线引用队列：conversationId → 待进输入框 @标签 的节点 id（不立即建边，发送时自动连线） */
   pendingMentionsByConv: Record<string, string[]>;
-  /** 拖线且已在历史注入过 → 待确认队列：conversationId → 节点 id（弹「连接 / 再次注入」菜单） */
-  pendingConfirmByConv: Record<string, string[]>;
   /** 全局错误提示（如未配置 AI provider） */
   error: string | null;
   loading: boolean;
@@ -242,10 +240,6 @@ interface CanvasState {
   queueMention: (conversationId: string, nodeId: string) => void;
   /** 清空某对话的拖线引用队列（输入框消费后）。 */
   clearPendingMentions: (conversationId: string) => void;
-  /** 拖线已注入节点的「再次注入」：走正常引用流程（输入框 @标签，发送时注入；边已存在不可断开）。 */
-  confirmConnect: (conversationId: string, nodeId: string) => void;
-  /** 清空某对话的待确认队列（菜单消费后）。 */
-  clearPendingConfirm: (conversationId: string) => void;
   /** 属性面板选中的节点 id（单击节点设置、单击空白清空；跨面板共享，null = 未选中）。 */
   selectedNodeId: string | null;
   /** 设置属性面板选中节点（null = 清空选中）。 */
@@ -344,7 +338,9 @@ interface CanvasState {
 const undoMgr = createUndoManager<Snapshot>({
   snapshot: () => {
     const { nodes, edges, messagesByConv } = useCanvasStore.getState();
-    return snapshot(nodes, edges, messagesByConv);
+    // 不可变更新保证引用即快照（零拷贝）：store 每次变更生成新数组/新消息对象，
+    // 历史引用不会被污染——深拷贝只会拖慢每次撤销/入栈（大画布 + 长对话尤甚）
+    return { nodes, edges, messagesByConv };
   },
   apply: (entry) =>
     useCanvasStore.setState({
@@ -409,25 +405,20 @@ let collabBroadcast: ((file: string, patch: CanvasPatch) => void) | null = null;
 
 /**
  * 协作锁主判定（本端视角，读最新 store 状态）：conversation 节点是否被其他对端独占编辑。
- * 用于 store 层内容写守卫（updateNodeData/send/regenerate）——UI 只读条覆盖常规路径，此为
- * 极窄竞态下的兜底（防两对端在锁传播窗口内同时写入同一节点）。规则与 useNodeCollab 一致：
- * 本端无锁声明 → 对端有声明即他人持锁；本端有声明 → computeLockOwner 确定性判定。
+ * 用于 store 层内容写守卫（updateNodeData/send/regenerate/deleteSelected）——UI 只读条覆盖
+ * 常规路径，此为极窄竞态下的兜底（防两对端在锁传播窗口内同时写入同一节点）。
+ * 收集与判定统一走 resolveLockState（与 useNodeCollab / ConversationNode 三处同源）。
  */
 function isConversationLockedByPeer(conversationId: string): boolean {
-  const mySince = useCanvasStore.getState().lockedConversations[conversationId];
+  const { lockedConversations } = useCanvasStore.getState();
   const { peers, myPeerId } = useCollabStore.getState();
-  if (mySince === undefined) {
-    return peers.some((p) => p.presence?.lockedNodes?.some((l) => l.id === conversationId));
-  }
-  if (myPeerId === null) return false;
-  const claims: { peerId: number; since: number }[] = [
-    { peerId: myPeerId, since: mySince },
-  ];
-  for (const p of peers) {
-    const c = p.presence?.lockedNodes?.find((l) => l.id === conversationId);
-    if (c) claims.push({ peerId: p.peerId, since: c.since });
-  }
-  return computeLockOwner(claims) !== myPeerId;
+  const { owner, lockedByMe } = resolveLockState(
+    conversationId,
+    lockedConversations[conversationId],
+    myPeerId,
+    peers,
+  );
+  return owner !== null && !lockedByMe;
 }
 
 /** 协作对端是否同画布在线（presence.file 命中当前画布 + view=canvas）：共享盘保存竞争时据此
@@ -455,36 +446,47 @@ function mergeCanvasWithDisk(
   const edges = [...disk.edges, ...localEdges.filter((e) => !diskEdgeIds.has(e.id))];
   const messagesByConv: Record<string, Message[]> = { ...disk.messagesByConv };
   for (const [convId, msgs] of Object.entries(localMessages)) {
-    const diskMsgs = disk.messagesByConv[convId] ?? [];
-    const diskIds = new Set(diskMsgs.map((m) => m.id));
-    const extras = msgs.filter((m) => !diskIds.has(m.id));
-    if (extras.length) messagesByConv[convId] = [...diskMsgs, ...extras];
+    // mergeMessages = 远端（磁盘）为基底 + 本地独有消息按 id 补入，与协作消息合并同源
+    const merged = mergeMessages(disk.messagesByConv[convId] ?? [], msgs);
+    if (merged.length) messagesByConv[convId] = merged;
   }
   return { nodes, edges, messagesByConv };
 }
 
 /**
- * 乐观锁冲突处理：协作对端同画布在场 → 自动三方合并收敛（共享盘多人保存竞争，避免冲突条
- * 满天飞，与表格 retryMergePersist 同策略）；否则弹冲突条（外部编辑，保持原行为不静默覆盖）。
- * 自动合并不中止进行中的流（本地消息按 id 补入保留，流续写照常）；合并产物随下一轮防抖落盘。
+ * 磁盘基底合并共享骨架（协作自动合并 handleSaveConflict / 手动合并 mergeFromDisk 共用）：
+ * 读盘 → 竞态守卫 → 磁盘基底入内存 + 同步落盘/广播基线 → 本地独有实体按 id 补入 → 防抖落盘。
+ * - guardBasis：入口捕获的画布身份，await 读盘后校验未切换/未清空即放弃（旧画布的磁盘内容
+ *   不得写进新画布，与 persistNow.finish 的守卫同策略——否则 local 已是新画布、data 是旧画布，
+ *   交叉污染）；null = 调用方自行保证读盘窗口内画布不变，不做守卫。
+ * - captureLocal：本地态捕获时机由调用方定义——自动合并取读盘后的最新内存态（缩小 await
+ *   窗口内新编辑丢失的竞态窗口）；手动合并取入口态（先中止流再读盘，流回调不会再写内存）。
+ * - clearUndo：整体替换消息状态的路径须清撤销栈（栈内旧消息快照不再适用）。
  */
-async function handleSaveConflict(): Promise<void> {
-  const canvasFile = useCanvasStore.getState().canvasFile;
-  const canvasId = useCanvasStore.getState().canvasId;
-  if (!canvasFile || !hasCollabPeerOnCanvas(canvasFile)) {
-    useCanvasStore.setState({ conflictPending: true });
-    return;
-  }
+async function mergeDiskIntoMemory(opts: {
+  canvasFile: string;
+  guardBasis: { canvasFile: string; canvasId: string | null } | null;
+  clearUndo: boolean;
+  resetLoading: boolean;
+  captureLocal: () => {
+    nodes: Node[];
+    edges: CanvasEdge[];
+    messagesByConv: Record<string, Message[]>;
+  };
+  onError: (e: unknown) => void;
+}): Promise<void> {
   try {
-    // 读盘完成后立刻快照本地（缩小 await 窗口内新编辑丢失的竞态，见 mergeFromDisk 注释）
-    const data = await loadCanvasVault(canvasFile);
-    const cur = useCanvasStore.getState();
-    // 竞态守卫：await 期间用户已切画布/清空 → 放弃本次合并（旧画布的磁盘内容不得写进新画布，
-    // 与 persistNow.finish 的守卫同策略——否则 localNodes 已是新画布、data 是旧画布，交叉污染）
-    if (cur.canvasFile !== canvasFile || cur.canvasId !== canvasId) return;
-    const localNodes = cur.nodes;
-    const localEdges = cur.edges;
-    const localMessages = cur.messagesByConv;
+    const data = await loadCanvasVault(opts.canvasFile);
+    if (opts.guardBasis) {
+      const cur = useCanvasStore.getState();
+      if (
+        cur.canvasFile !== opts.guardBasis.canvasFile ||
+        cur.canvasId !== opts.guardBasis.canvasId
+      ) {
+        return;
+      }
+    }
+    const local = opts.captureLocal();
     // 1) 以磁盘为基底入内存 + 落盘/广播基线（后续合并补丁只含本地独有实体，引用 diff）
     useCanvasStore.setState({
       canvasId: data.id,
@@ -495,22 +497,52 @@ async function handleSaveConflict(): Promise<void> {
       baseUpdatedAt: data.updatedAt,
       conflictPending: false,
       dirty: false,
+      ...(opts.resetLoading ? { loading: false } : {}),
     });
+    if (opts.clearUndo) undoMgr.clear();
     syncLastSaved();
     // 2) 合并本地独有实体回内存（基线仍为磁盘基底 → diff 非空，本地改动不丢）
-    const merged = mergeCanvasWithDisk(data, localNodes, localEdges, localMessages);
+    const merged = mergeCanvasWithDisk(data, local.nodes, local.edges, local.messagesByConv);
     useCanvasStore.setState({
       nodes: merged.nodes,
       edges: merged.edges,
       messagesByConv: merged.messagesByConv,
+      conflictPending: false,
       dirty: true,
     });
     // 3) 合并产物随下一轮防抖落盘（base 已同步为新磁盘版本，不再误冲突）
     schedulePersist();
   } catch (e) {
-    console.error("协作自动合并失败", e);
-    useCanvasStore.setState({ conflictPending: true });
+    opts.onError(e);
   }
+}
+
+/**
+ * 乐观锁冲突处理：协作对端同画布在场 → 自动三方合并收敛（共享盘多人保存竞争，避免冲突条
+ * 满天飞，与表格 retryMergePersist 同策略）；否则弹冲突条（外部编辑，保持原行为不静默覆盖）。
+ * 自动合并不中止进行中的流（本地消息按 id 补入保留，流续写照常）；合并产物随下一轮防抖落盘。
+ */
+async function handleSaveConflict(): Promise<void> {
+  const { canvasFile, canvasId } = useCanvasStore.getState();
+  if (!canvasFile || !hasCollabPeerOnCanvas(canvasFile)) {
+    useCanvasStore.setState({ conflictPending: true });
+    return;
+  }
+  await mergeDiskIntoMemory({
+    canvasFile,
+    guardBasis: { canvasFile, canvasId },
+    clearUndo: false,
+    resetLoading: false,
+    // 读盘完成后立刻快照本地（缩小 await 窗口内新编辑丢失的竞态窗口）
+    captureLocal: () => {
+      const cur = useCanvasStore.getState();
+      return { nodes: cur.nodes, edges: cur.edges, messagesByConv: cur.messagesByConv };
+    },
+    onError: (e) => {
+      console.error("协作自动合并失败", e);
+      useCanvasStore.setState({ conflictPending: true });
+    },
+  });
 }
 
 /**
@@ -820,6 +852,32 @@ function findConversationNode(conversationId: string): Node | undefined {
 }
 
 /**
+ * 流式回调公共写路径：守卫节点已删除（迟到回调不重建 messagesByConv 键，防孤儿消息复活），
+ * 定位占位 assistant 消息应用 patch；patch 返回 null = 移除该消息（空回复清理）。
+ * 仅写 messagesByConv——streamingByConv 复位等状态由各回调自行 set。
+ */
+function patchAssistant(
+  conversationId: string,
+  asstId: string,
+  patch: (m: Message) => Message | null,
+): void {
+  if (!findConversationNode(conversationId)) return;
+  useCanvasStore.setState((state) => {
+    const l = state.messagesByConv[conversationId] ?? [];
+    return {
+      messagesByConv: {
+        ...state.messagesByConv,
+        [conversationId]: l.flatMap((m) => {
+          if (m.id !== asstId) return [m];
+          const patched = patch(m);
+          return patched ? [patched] : [];
+        }),
+      },
+    };
+  });
+}
+
+/**
  * LLM 话题自动命名：一轮对话完成后为对话节点生成话题标题。
  * - 仅对尚无 title 的对话节点命名（首轮完成后一次，之后不覆盖）
  * - 统一走 streaming.ts 的公共命名管线（模型解析/延迟/超时与面板共用）
@@ -895,7 +953,6 @@ async function runStream(conversationId: string): Promise<void> {
         ...list,
         {
           id: asstId,
-          conversationId,
           role: "assistant",
           content: "",
           createdAt: asstTs,
@@ -961,28 +1018,14 @@ async function runStream(conversationId: string): Promise<void> {
       signal: controller.signal,
       // 增量写入占位消息（引擎 rAF 合并后每帧调用）
       applyBatch: ({ content, reasoning }) => {
-        // 节点已删除（流式中删对话节点）：丢弃迟到增量，不重建 messagesByConv 键（防孤儿消息复活）
-        if (!findConversationNode(conversationId)) return;
-        store.setState((state) => {
-          const l = state.messagesByConv[conversationId] ?? [];
-          return {
-            messagesByConv: {
-              ...state.messagesByConv,
-              [conversationId]: l.map((m) =>
-                m.id === asstId
-                  ? {
-                      ...m,
-                      ...(content ? { content: m.content + content } : {}),
-                      // 思考增量流入 steps（最后思考步拼接 / 工具轮之间自然分隔）
-                      ...(reasoning
-                        ? { steps: appendReasoning(m.steps ?? [], reasoning) }
-                        : {}),
-                    }
-                  : m,
-              ),
-            },
-          };
-        });
+        patchAssistant(conversationId, asstId, (m) => ({
+          ...m,
+          ...(content ? { content: m.content + content } : {}),
+          // 思考增量流入 steps（最后思考步拼接 / 工具轮之间自然分隔）
+          ...(reasoning
+            ? { steps: appendReasoning(m.steps ?? [], reasoning) }
+            : {}),
+        }));
       },
       onError: (err) => {
         // 节点已删除：abort 后回调迟到，不再写错误占位（messagesByConv 键已随删除清理）
@@ -993,28 +1036,18 @@ async function runStream(conversationId: string): Promise<void> {
         // 流式结果落盘属业务数据变更：作废 redo（undo 后流式回复不得被 Ctrl+Y 抹除）
         touchRedo();
         // 不静默降级：请求失败如实报错（[错误] 占位显示服务端具体信息，便于定位）
-        store.setState((state) => {
-          const l = state.messagesByConv[conversationId] ?? [];
-          return {
-            messagesByConv: {
-              ...state.messagesByConv,
-              [conversationId]: l.map((m) =>
-                m.id === asstId
-                  ? { ...m, content: m.content || `${ERROR_PREFIX} ${err.message}` }
-                  : m,
-              ),
-            },
-            streamingByConv: {
-              ...state.streamingByConv,
-              [conversationId]: false,
-            },
-          };
-        });
+        patchAssistant(conversationId, asstId, (m) => ({
+          ...m,
+          content: m.content || `${ERROR_PREFIX} ${err.message}`,
+        }));
+        store.setState((state) => ({
+          streamingByConv: { ...state.streamingByConv, [conversationId]: false },
+        }));
         // 持久化错误占位（[错误] 前缀会在下次请求历史中被过滤，不污染上下文）
         schedulePersist();
         abortControllers.delete(conversationId);
       },
-      onDone: ({ content, reasoning, timedOut, truncated, promoteNarration }) => {
+      onDone: ({ reasoning, timedOut, truncated, promoteNarration }) => {
         // 节点已删除：丢弃流收尾写入（防孤儿消息随补丁落盘），键已随删除清理
         if (!findConversationNode(conversationId)) {
           abortControllers.delete(conversationId);
@@ -1041,7 +1074,7 @@ async function runStream(conversationId: string): Promise<void> {
         }
         // onDone 最终化：最终回答轮叙述提升进 content + 输出上限截断提示（画布/面板共用）
         const finalized = finalizeReplyText({
-          content: m.content ?? content,
+          content: m.content,
           steps: m.steps ?? [],
           promoteNarration,
           truncated,
@@ -1053,83 +1086,38 @@ async function runStream(conversationId: string): Promise<void> {
           finalized.steps.length > 0,
         );
         if (decision.kind === "remove") {
-          store.setState((state) => {
-            const l = state.messagesByConv[conversationId] ?? [];
-            return {
-              messagesByConv: {
-                ...state.messagesByConv,
-                [conversationId]: l.filter((mm) => mm.id !== asstId),
-              },
-              streamingByConv: {
-                ...state.streamingByConv,
-                [conversationId]: false,
-              },
-            };
-          });
+          // 空回复：移除占位 assistant，避免残留空气泡
+          patchAssistant(conversationId, asstId, () => null);
         } else {
-          store.setState((state) => {
-            const l = state.messagesByConv[conversationId] ?? [];
-            return {
-              messagesByConv: {
-                ...state.messagesByConv,
-                [conversationId]: l.map((mm) =>
-                  mm.id === asstId
-                    ? {
-                        ...mm,
-                        content:
-                          decision.kind === "timeout-error"
-                            ? `${ERROR_PREFIX} ${TIMEOUT_ERROR_TEXT}`
-                            : finalized.content,
-                        steps: finalized.steps,
-                      }
-                    : mm,
-                ),
-              },
-              streamingByConv: {
-                ...state.streamingByConv,
-                [conversationId]: false,
-              },
-            };
-          });
+          patchAssistant(conversationId, asstId, (mm) => ({
+            ...mm,
+            content:
+              decision.kind === "timeout-error"
+                ? `${ERROR_PREFIX} ${TIMEOUT_ERROR_TEXT}`
+                : finalized.content,
+            steps: finalized.steps,
+          }));
         }
+        store.setState((state) => ({
+          streamingByConv: { ...state.streamingByConv, [conversationId]: false },
+        }));
         // messages 随 .atlx 增量补丁落盘（流式结束统一写，不逐 token 写）
         schedulePersist();
         abortControllers.delete(conversationId);
       },
       // 工具调用过程可视化：全量累积 runs 合并进占位消息 steps（思考→工具交错，随消息落 .atlx）
       onToolRuns: (runs) => {
-        // 节点已删除：工具过程块不再更新（消息键已清理）
-        if (!findConversationNode(conversationId)) return;
-        store.setState((state) => {
-          const l = state.messagesByConv[conversationId] ?? [];
-          return {
-            messagesByConv: {
-              ...state.messagesByConv,
-              [conversationId]: l.map((m) =>
-                m.id === asstId
-                  ? { ...m, steps: mergeToolRuns(m.steps ?? [], runs) }
-                  : m,
-              ),
-            },
-          };
-        });
+        patchAssistant(conversationId, asstId, (m) => ({
+          ...m,
+          steps: mergeToolRuns(m.steps ?? [], runs),
+        }));
       },
       // 工具轮叙述正文进 steps（渲染为该步的「思考行」）
       onNarration: (text) => {
-        if (!findConversationNode(conversationId)) return;
-        store.setState((state) => {
-          const l = state.messagesByConv[conversationId] ?? [];
-          return {
-            messagesByConv: {
-              ...state.messagesByConv,
-              [conversationId]: l.map((m) =>
-                m.id === asstId
-                  ? { ...m, steps: appendNarration(m.steps ?? [], text) }
-                  : m,
-              ),
-            },
-          };
-        });
+        patchAssistant(conversationId, asstId, (m) => ({
+          ...m,
+          steps: appendNarration(m.steps ?? [], text),
+        }));
       },
       executeTools: (calls) =>
         // 公共工具执行器（画布/面板共用）；差异仅产物节点：画布建搜索/写笔记节点，面板不建
@@ -1229,6 +1217,25 @@ function describeNodeAsInput(node: Node): { text: string; attach?: Attachment } 
 }
 
 /**
+ * 引用拼装（send 注入与 regenerate 重建共用）：`[引用文件：…]` 路径块 + `[引用：…]` 前缀块
+ * + 正文的统一叠放（文件块最前、引用块居中、正文垫底），块格式逐字一致。
+ * fileRefs 为空不加文件块；prefixParts 为空不加引用块。
+ */
+function assembleContentWithRefs(
+  content: string,
+  fileRefs: string[],
+  prefixParts: string[],
+): string {
+  const fileBlock = fileRefs.length
+    ? `[引用文件：\n${fileRefs.map((f) => `- ${f}`).join("\n")}]\n\n`
+    : "";
+  if (prefixParts.length)
+    return `${fileBlock}[引用：${prefixParts.join("\n\n")}]\n\n${content}`;
+  if (fileBlock) return `${fileBlock}${content}`;
+  return content;
+}
+
+/**
  * 用最新资产状态重建最后一条 user 消息（regenerate 前调用，扩展）：
  * - .md 笔记 @引用（refs.label 出现在 displayContent）：保留 @标题 原位，最新文件路径重拼「引用文件」块
  * - 非文件 @提及：就地替换为最新内容——与 send 侧「首处子串替换」语义一致
@@ -1273,26 +1280,47 @@ function rebuildUserContent(
     }
   }
   // 重建整体结构 = 文件块 + 连边引用前缀 + 正文（与 send 拼装顺序一致）
-  const fileBlock = fileRefs.length
-    ? `[引用文件：\n${fileRefs.map((f) => `- ${f}`).join("\n")}]\n\n`
-    : "";
-  if (prefixParts.length)
-    content = `${fileBlock}[引用：${prefixParts.join("\n\n")}]\n\n${content}`;
-  else if (fileBlock) content = `${fileBlock}${content}`;
+  content = assembleContentWithRefs(content, fileRefs, prefixParts);
   const attachments = (userMsg.attachments ?? []).map((a) =>
     a.sourceNodeId ? (attachByNode.get(a.sourceNodeId) ?? a) : a,
   );
   return { content, attachments: attachments.length ? attachments : undefined };
 }
 
-function snapshot(
-  nodes: Node[],
-  edges: Edge[],
-  messagesByConv: Record<string, Message[]>,
-): Snapshot {
-  // 不可变更新保证引用即快照（零拷贝）：store 每次变更生成新数组/新消息对象，
-  // 历史引用不会被污染——深拷贝只会拖慢每次撤销/入栈（大画布 + 长对话尤甚）
-  return { nodes, edges, messagesByConv };
+/**
+ * silent 刷新公共骨架（refreshText/Media/TableContent 共用）：按 type + file 收集引用节点
+ * （无引用直接返回，不触发读盘）→ produce 读盘并产出「节点 → data 补丁」函数 → silent set
+ * （直接改 nodes，不调 schedulePersist——变更来自磁盘，写回会回环；补丁在 set 时按最新节点
+ * 求值，await 读盘窗口内的其他编辑原样保留）→ 读失败统一 markFileMissing。
+ * produce 返回 null = 无需更新（不 set，防无谓的全量节点数组替换）。
+ */
+async function refreshFileNodes(
+  file: string,
+  type: "text" | "media" | "table",
+  produce: (
+    targets: Node[],
+  ) => Promise<((n: Node) => Record<string, unknown> | null) | null>,
+): Promise<void> {
+  const targets = useCanvasStore.getState().nodes.filter(
+    (n) =>
+      n.type === type &&
+      (n.data as unknown as TextData | MediaData | TableData).file === file,
+  );
+  if (targets.length === 0) return;
+  try {
+    const patchOf = await produce(targets);
+    if (!patchOf) return;
+    useCanvasStore.setState((s) => ({
+      nodes: s.nodes.map((n) => {
+        const patch = patchOf(n);
+        return patch
+          ? { ...n, data: { ...n.data, ...patch } as unknown as Node["data"] }
+          : n;
+      }),
+    }));
+  } catch {
+    useCanvasStore.getState().markFileMissing(file, type);
+  }
 }
 
 export const useCanvasStore = create<CanvasState>((set, get) => ({
@@ -1306,7 +1334,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   streamingByConv: {},
   lockedConversations: {},
   pendingMentionsByConv: {},
-  pendingConfirmByConv: {},
   error: null,
   selectedNodeId: null,
   loading: false,
@@ -1348,6 +1375,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         streamingByConv: {},
         // 切画布释放本端独占编辑锁（旧画布锁不得带进新画布）
         lockedConversations: {},
+        // 引用队列按对话节点 id 记键，跨画布无消费方，一并清空（防跨画布残留）
+        pendingMentionsByConv: {},
         loading: false,
       });
       undoMgr.clear();
@@ -1475,21 +1504,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         (e) => e.target === connection.target && e.source === connection.source,
       );
       if (alreadyConnected) {
-        // 已连接：该资产已被消费过（实线边）→ 弹「再次注入」菜单；未消费（虚线待发送）→ 无效果（防同轮重复引用）
+        // 已连接：未消费（虚线待发送）→ 无效果（防同轮重复引用）；已消费（实线边）→ 再次注入——
+        // 直接进输入框 @标签 队列（边已存在不可断开，发送时注入并保持实线）
         const injected = isAssetConsumed(
           messagesByConv[connection.target] ?? [],
           connection.source,
         );
         if (injected) {
-          set((state) => ({
-            pendingConfirmByConv: {
-              ...state.pendingConfirmByConv,
-              [connection.target]: [
-                ...(state.pendingConfirmByConv[connection.target] ?? []),
-                connection.source,
-              ],
-            },
-          }));
+          get().queueMention(connection.target, connection.source);
         }
         return;
       }
@@ -1497,7 +1519,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       // 属非入栈数据变更，必须作废 redo 栈（防 undo 后 Ctrl+Y 用旧快照抹掉本边）
       touchRedo();
       const nodesNow = get().nodes;
-      const edge = withHandles({ ...connection, animated: false }, nodesNow);
+      const edge = withHandles({ ...connection }, nodesNow);
       set({ edges: rfAddEdge(edge, get().edges) });
       get().queueMention(connection.target, connection.source);
       schedulePersist();
@@ -1513,7 +1535,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     const edge = withHandles(
       {
         ...connection,
-        animated: false,
         ...(isDataFlow ? {} : { directed: false, linkMode: "none" as const }),
       },
       nodesNow,
@@ -1538,24 +1559,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       const next = { ...state.pendingMentionsByConv };
       delete next[conversationId];
       return { pendingMentionsByConv: next };
-    });
-  },
-  confirmConnect: (conversationId, nodeId) => {
-    // 再次注入：走正常引用流程（输入框 @标签；边已存在——不可手动断开，消费后虚实自动转实线）
-    get().queueMention(conversationId, nodeId);
-    set((state) => {
-      const list = state.pendingConfirmByConv[conversationId] ?? [];
-      const next = { ...state.pendingConfirmByConv };
-      if (list.length <= 1) delete next[conversationId];
-      else next[conversationId] = list.filter((n) => n !== nodeId);
-      return { pendingConfirmByConv: next };
-    });
-  },
-  clearPendingConfirm: (conversationId) => {
-    set((state) => {
-      const next = { ...state.pendingConfirmByConv };
-      delete next[conversationId];
-      return { pendingConfirmByConv: next };
     });
   },
   onNodeDragStart: (_event, node) => {
@@ -1750,45 +1753,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       data: { title, file, snapshot, fileMissing } as unknown as Node["data"],
     });
   },
-  refreshTableContent: async (file, opts) => {
-    // 同一 .atb 可被多个 table 节点引用（同画布多节点），全部刷新（与 refreshTextContent 同构）
-    const ids = get()
-      .nodes.filter(
-        (n) =>
-          n.type === "table" && (n.data as unknown as TableData).file === file,
-      )
-      .map((n) => n.id);
-    if (ids.length === 0) return;
-    try {
+  refreshTableContent: (file, opts) =>
+    refreshFileNodes(file, "table", async (targets) => {
       const snapshot = opts?.snapshot ?? tableToSnapshotText(await readTableVault(file));
-      // silent set：直接改 nodes，不调 schedulePersist（变更来自磁盘，写回会回环）
-      set((s) => ({
-        nodes: s.nodes.map((n) =>
-          ids.includes(n.id)
-            ? {
-                ...n,
-                data: {
-                  ...n.data,
-                  snapshot,
-                  fileMissing: false,
-                } as unknown as Node["data"],
-              }
-            : n,
-        ),
-      }));
-    } catch {
-      get().markFileMissing(file, "table");
-    }
-  },
-  refreshTextContent: async (file) => {
-    // 同一 .md 可被多个 text 节点引用（同画布多节点），全部刷新（与 markFileMissing 更新全部节点同构）
-    const nodes = get().nodes;
-    const targets = nodes.filter(
-      (n) =>
-        n.type === "text" && (n.data as unknown as TextData).file === file,
-    );
-    if (targets.length === 0) return;
-    try {
+      const ids = new Set(targets.map((t) => t.id));
+      return (n) => (ids.has(n.id) ? { snapshot, fileMissing: false } : null);
+    }),
+  refreshTextContent: (file) =>
+    refreshFileNodes(file, "text", async (targets) => {
       const bodyMd = await readNote(file);
       // 逐节点判定刷新/跳过（见 utils/noteRefresh#decideTextNodeRefresh）：
       // - 节点正文 == 磁盘 → 已一致跳过；
@@ -1808,119 +1780,44 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         const savedBody = saved
           ? (saved.data as unknown as TextData).bodyMd
           : undefined;
-        if (decideTextNodeRefresh(cur, savedBody, bodyMd) === "refresh") {
+        if (decideTextNodeRefresh(cur, savedBody) === "refresh") {
           staleDecisions.set(n.id, cur);
         }
       }
-      if (staleDecisions.size === 0) return;
+      if (staleDecisions.size === 0) return null;
       // 同步磁盘基线（lastWrittenMd）：外部编辑刷新后用户「改回旧值」时脏检测能感知差异
       // （基线陈旧会导致回退被误判为「与上次写入一致」而跳过写盘，外部内容永久覆盖用户回退）
       recordNoteDiskContent(file, bodyMd);
-      // silent set：直接改 nodes，不调 schedulePersist（变更来自磁盘，写回会回环）
-      set((s) => ({
-        nodes: s.nodes.map((n) => {
-          const decCur = staleDecisions.get(n.id);
-          if (decCur === undefined) return n;
-          if (((n.data as unknown as TextData).bodyMd ?? "") !== decCur) return n;
-          return {
-            ...n,
-            data: {
-              ...n.data,
-              bodyMd,
-              fileMissing: false,
-            } as unknown as Node["data"],
-          };
-        }),
-      }));
-    } catch {
-      get().markFileMissing(file, "text");
-    }
-  },
-  refreshMediaContent: async (file) => {
-    // 同一附件可被多个 media 节点引用，全部刷新（与 markFileMissing 同构）
-    const ids = get()
-      .nodes.filter(
-        (n) =>
-          n.type === "media" && (n.data as unknown as MediaData).file === file,
-      )
-      .map((n) => n.id);
-    if (ids.length === 0) return;
-    try {
-      const existing = get().nodes.find((n) => n.id === ids[0])
-        ?.data as unknown as MediaData;
+      return (n) => {
+        const decCur = staleDecisions.get(n.id);
+        if (decCur === undefined) return null;
+        if (((n.data as unknown as TextData).bodyMd ?? "") !== decCur) return null;
+        return { bodyMd, fileMissing: false };
+      };
+    }),
+  refreshMediaContent: (file) =>
+    refreshFileNodes(file, "media", async (targets) => {
+      const existing = targets[0]?.data as unknown as MediaData;
+      const ids = new Set(targets.map((t) => t.id));
       if (existing.kind === "image") {
         const thumb = await readAttachmentDataUrl(file);
-        set((s) => ({
-          nodes: s.nodes.map((n) =>
-            ids.includes(n.id)
-              ? {
-                  ...n,
-                  data: {
-                    ...n.data,
-                    thumb,
-                    fileMissing: false,
-                  } as unknown as Node["data"],
-                }
-              : n,
-          ),
-        }));
-      } else {
-        const body = await readNote(file);
-        set((s) => ({
-          nodes: s.nodes.map((n) =>
-            ids.includes(n.id)
-              ? {
-                  ...n,
-                  data: {
-                    ...n.data,
-                    body,
-                    parseFailed: false,
-                    fileMissing: false,
-                  } as unknown as Node["data"],
-                }
-              : n,
-          ),
-        }));
+        return (n) => (ids.has(n.id) ? { thumb, fileMissing: false } : null);
       }
-    } catch {
-      get().markFileMissing(file, "media");
-    }
-  },
+      const body = await readNote(file);
+      return (n) =>
+        ids.has(n.id) ? { body, parseFailed: false, fileMissing: false } : null;
+    }),
   markFileMissing: (file, kind) => {
     set((s) => ({
-      nodes: s.nodes.map((n) => {
-        if (
-          kind === "text" &&
-          n.type === "text" &&
-          (n.data as unknown as TextData).file === file
-        ) {
-          return {
-            ...n,
-            data: { ...n.data, fileMissing: true } as unknown as Node["data"],
-          };
-        }
-        if (
-          kind === "media" &&
-          n.type === "media" &&
-          (n.data as unknown as MediaData).file === file
-        ) {
-          return {
-            ...n,
-            data: { ...n.data, fileMissing: true } as unknown as Node["data"],
-          };
-        }
-        if (
-          kind === "table" &&
-          n.type === "table" &&
-          (n.data as unknown as TableData).file === file
-        ) {
-          return {
-            ...n,
-            data: { ...n.data, fileMissing: true } as unknown as Node["data"],
-          };
-        }
-        return n;
-      }),
+      nodes: s.nodes.map((n) =>
+        n.type === kind &&
+        (n.data as unknown as TextData | MediaData | TableData).file === file
+          ? {
+              ...n,
+              data: { ...n.data, fileMissing: true } as unknown as Node["data"],
+            }
+          : n,
+      ),
     }));
   },
   reloadFromDisk: async () => {
@@ -1956,38 +1853,17 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     abortAutoTitle();
     groupDragState = null;
     dragInProgress = false;
-    try {
-      // 读磁盘最新作为合并基底（仅 .atlx；只读白板无冲突合并路径）
-      const data = await loadCanvasVault(canvasFile);
-      // 基底先入内存并记为「已落盘基线」：后续合并补丁只含本地独有实体（引用 diff，见 syncLastSaved）
-      set({
-        canvasId: data.id,
-        canvasTitle: data.title,
-        nodes: data.nodes,
-        edges: data.edges,
-        messagesByConv: data.messagesByConv,
-        baseUpdatedAt: data.updatedAt,
-        dirty: false,
-        conflictPending: false,
-        loading: false,
-      });
-      undoMgr.clear();
-      syncLastSaved();
-      // 合并：磁盘为基础 + 本地独有节点/边 + 本地独有消息按 id 补入（mergeCanvasWithDisk，与协作自动合并共用）
-      const merged = mergeCanvasWithDisk(data, localNodes, localEdges, localMessages);
-      set({
-        nodes: merged.nodes,
-        edges: merged.edges,
-        messagesByConv: merged.messagesByConv,
-        conflictPending: false,
-        dirty: true,
-      });
-      // 合并产物立即落盘（baseUpdatedAt 已同步为磁盘版本，不会误冲突）
-      schedulePersist();
-    } catch (e) {
-      console.error("合并磁盘失败", e);
-      useCanvasStore.setState({ error: "合并磁盘失败，请重试" });
-    }
+    await mergeDiskIntoMemory({
+      canvasFile,
+      guardBasis: null,
+      clearUndo: true,
+      resetLoading: true,
+      captureLocal: () => ({ nodes: localNodes, edges: localEdges, messagesByConv: localMessages }),
+      onError: (e) => {
+        console.error("合并磁盘失败", e);
+        useCanvasStore.setState({ error: "合并磁盘失败，请重试" });
+      },
+    });
   },
   addEdge: (edge) => {
     get().pushUndo();
@@ -2018,12 +1894,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   },
   getReferencedInputs: (conversationId) => {
     const { nodes, edges } = get();
-    // 跳过「连接」模式边（inject:false，仅连线不注入）与无向边（directed:false，白板连线无消费语义）
+    // 跳过无向边（directed:false，白板连线无消费语义）
     const upstream = edges.filter(
-      (e) =>
-        e.target === conversationId &&
-        e.directed !== false &&
-        (e.data as { inject?: boolean } | undefined)?.inject !== false,
+      (e) => e.target === conversationId && e.directed !== false,
     );
     const inputs: ReferencedInput[] = [];
     for (const edge of upstream) {
@@ -2187,23 +2060,20 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       .map((r) => r.content)
       .filter(Boolean)
       .join("\n\n");
-    finalContent = refText
-      ? `[引用：${refText}]\n\n${finalContent}`
-      : finalContent;
 
     // 「引用文件」路径块：@提及 .md（已恢复 @出现顺序）+ 连边 .md 合并，同 nodeId 去重——
     // 与 FILE_REFERENCE_PROMPT 引导对应，模型据此用 read_file 读取正文
-    const seenFiles = new Set<string>();
+    const seenNodeIds = new Set<string>();
     const uniqueFileRefs = [...fileRefs.reverse(), ...edgeFileRefs].filter((r) => {
-      if (seenFiles.has(r.nodeId)) return false;
-      seenFiles.add(r.nodeId);
+      if (seenNodeIds.has(r.nodeId)) return false;
+      seenNodeIds.add(r.nodeId);
       return true;
     });
-    if (uniqueFileRefs.length) {
-      finalContent = `[引用文件：\n${uniqueFileRefs
-        .map((r) => `- ${r.file}`)
-        .join("\n")}]\n\n${finalContent}`;
-    }
+    finalContent = assembleContentWithRefs(
+      finalContent,
+      uniqueFileRefs.map((r) => r.file),
+      refText ? [refText] : [],
+    );
     const refs = [...extraRefs, ...mentionRefs];
     const allAttachments = [...attachments, ...mentionAtts];
 
@@ -2219,7 +2089,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     const { id: userId, ts: userTs } = nowId();
     const userMsg: Message = {
       id: userId,
-      conversationId,
       role: "user",
       content: finalContent,
       // 气泡显示原始输入（含 @提及 标记），避免展示就地替换后的一大篇正文
@@ -2400,7 +2269,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     const baseTs = Date.now();
     const childMsgs = copied.map((m, i) => ({
       id: crypto.randomUUID(),
-      conversationId: childId,
       role: m.role,
       content: m.content,
       // 分支保留完整步骤（叙述/工具/思考）：叙述-only 消息正文在 steps，缺省则分支显示为空
@@ -2468,7 +2336,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       streamingByConv: {},
       lockedConversations: {},
       pendingMentionsByConv: {},
-      pendingConfirmByConv: {},
       error: null,
       selectedNodeId: null,
       saving: false,
@@ -2582,9 +2449,17 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     }
     if (deletedConvIds.length) {
       set((state) => {
-        const next = { ...state.messagesByConv };
-        for (const id of deletedConvIds) delete next[id];
-        return { messagesByConv: next };
+        const nextMessages = { ...state.messagesByConv };
+        const nextMentions = { ...state.pendingMentionsByConv };
+        for (const id of deletedConvIds) {
+          delete nextMessages[id];
+          // 未消费的引用队列一并清理（节点删除后无消费方，防陈旧队列残留）
+          delete nextMentions[id];
+        }
+        return {
+          messagesByConv: nextMessages,
+          pendingMentionsByConv: nextMentions,
+        };
       });
     }
   },

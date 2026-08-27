@@ -1,50 +1,53 @@
+import { useState } from "react";
 import { RotateCcw } from "lucide-react";
 import { ToggleSwitch } from "@/components/common/ToggleSwitch";
 import { SettingCard } from "@/components/settings/SettingCard";
-import { randomPeerColor, type RelayTestResult } from "@/stores/collabStore";
+import { normalizeRelayUrl, randomPeerColor, useCollabStore } from "@/stores/collabStore";
+import { useSettingsStore } from "@/stores/settingsStore";
+import type { RelayTestResult } from "@/types";
+import { useDraftSync, useDebouncedDraft } from "@/hooks/useDraftSync";
 
-/** 协作配置补丁（与 settingsStore.setCollabConfig 的结构兼容）。 */
-type CollabConfigPatch = Partial<{
-  collabEnabled: boolean;
-  collabRelayUrl: string;
-  collabNickname: string;
-  collabColor: string;
-}>;
+/** 多人协作面板（应用级）：局域网中转——同仓库在线成员经 relay 实时互见（presence）。草稿与连接测试自持，直接订阅 store。 */
+export function CollabSettingsTab() {
+  // 协作中转（应用级）：开关 + 地址 + 昵称/颜色 + 常驻连接状态
+  const collabEnabled = useSettingsStore((s) => s.collabEnabled);
+  const collabRelayUrl = useSettingsStore((s) => s.collabRelayUrl);
+  const collabNickname = useSettingsStore((s) => s.collabNickname);
+  const collabColor = useSettingsStore((s) => s.collabColor);
+  const setCollabConfig = useSettingsStore((s) => s.setCollabConfig);
+  const collabConnected = useCollabStore((s) => s.connected);
 
-interface Props {
-  collabEnabled: boolean;
-  setCollabConfig: (patch: CollabConfigPatch) => Promise<void>;
-  collabConnected: boolean;
-  runConnectionTest: () => Promise<void>;
-  testing: boolean;
-  testResult: RelayTestResult | null;
-  relayUrlDraft: string;
-  setRelayUrlDraft: (v: string) => void;
-  commitRelayUrl: () => void;
-  collabNicknameDraft: string;
-  setCollabNicknameDraft: (v: string) => void;
-  commitCollabNickname: () => void;
-  collabColorDraft: string;
-  commitCollabColorDraft: (v: string) => void;
-}
+  // 协作地址/昵称草稿（blur/Enter 提交，避免每键一次 IPC）
+  const [relayUrlDraft, setRelayUrlDraft] = useDraftSync(collabRelayUrl);
+  const commitRelayUrl = () => {
+    // 只输 host:port 也能用：自动补全 ws:// 与 /ws 后存盘
+    void setCollabConfig({ collabRelayUrl: normalizeRelayUrl(relayUrlDraft) });
+  };
+  const [collabNicknameDraft, setCollabNicknameDraft] = useDraftSync(collabNickname);
+  const commitCollabNickname = () => {
+    void setCollabConfig({ collabNickname: collabNicknameDraft.trim() });
+  };
+  // 协作身份色草稿：取色器拖动连续触发 onChange，防抖 200ms 后落盘（同强调色模式）
+  const [collabColorDraft, commitCollabColorDraft] = useDebouncedDraft(
+    collabColor || "#e06c75",
+    (v) => void setCollabConfig({ collabColor: v }),
+  );
 
-/** 多人协作面板（应用级）：局域网中转——同仓库在线成员经 relay 实时互见（presence）。 */
-export function CollabSettingsTab({
-  collabEnabled,
-  setCollabConfig,
-  collabConnected,
-  runConnectionTest,
-  testing,
-  testResult,
-  relayUrlDraft,
-  setRelayUrlDraft,
-  commitRelayUrl,
-  collabNicknameDraft,
-  setCollabNicknameDraft,
-  commitCollabNickname,
-  collabColorDraft,
-  commitCollabColorDraft,
-}: Props) {
+  // 检查中转连接：执行中 / 结果
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<RelayTestResult | null>(null);
+  const runConnectionTest = async () => {
+    // 先提交草稿地址（使已测试的地址即保存的配置），再一次性探测 relay（独立连接，不影响常驻）
+    commitRelayUrl();
+    setTesting(true);
+    setTestResult(null);
+    try {
+      setTestResult(await useCollabStore.getState().testConnection(relayUrlDraft));
+    } finally {
+      setTesting(false);
+    }
+  };
+
   return (
     <section className="flex-1 p-5 overflow-auto space-y-4">
       {/* 开关：开启即连接（地址/身份变化即时重建连接） */}

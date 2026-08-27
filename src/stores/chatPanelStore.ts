@@ -1,7 +1,5 @@
 import { create } from "zustand";
 import {
-  readLegacyEditorChats,
-  deleteLegacyEditorChats,
   listChatSessions,
   readChatSessionMeta,
   writeChatSessionMeta,
@@ -33,7 +31,6 @@ import { createPersistController } from "@/utils/persist";
 import { useSettingsStore } from "./settingsStore";
 import { useAppStore } from "./appStore";
 import {
-  EDITOR_CHATS_SCHEMA,
   EDITOR_CHATS_META_SCHEMA,
   CHAT_HISTORY_DIR,
   CHAT_MESSAGE_EXT,
@@ -45,7 +42,6 @@ import type {
   EditorChatModelOverride,
   EditorChatSession,
   ChatMetaFile,
-  LegacyEditorChatsFile,
   NoteRewriteRequest,
   ProviderConfig,
   ReasoningEffort,
@@ -171,8 +167,8 @@ function chatMetaFilePath(sessionId: string): string {
 
 /**
  * 序列化会话消息 → JSONL 文本（一行一条消息记录，紧凑 JSON）。
- * 只写持久化字段：reasoningContent 为遗留字段不落盘（见 types/chat.ts）；id/createdAt 稳定持久化，
- * refs（@引用）/steps（含工具步）结构化持久化，重开会话完整恢复。
+ * 只写持久化字段：id/createdAt 稳定持久化，refs（@引用）/steps（含工具步）结构化持久化，
+ * 重开会话完整恢复。
  */
 function serializeChatMessages(messages: EditorChatMessage[]): string {
   return messages
@@ -413,56 +409,6 @@ async function persistNow(guardVaultId?: string | null): Promise<void> {
   // 写盘期间若又有新变更（schedule 已置 dirty + 挂新 timer），保留 dirty 由下一轮再写，
   // 防成功回调吞掉新编辑（消息/侧车/覆盖各有脏集合保护，dirty 仅作 flush 总门）
   if (persistCtl.version === versionAtStart) dirty = false;
-}
-
-/**
- * 一次性迁移：旧 `.atelyx/editor-chats.json`（v3）→ 每会话元数据侧车 + 面板覆盖文件，然后删索引。
- * 幂等（侧车已存在则不覆盖——其他设备可能已迁移；删索引幂等）；任一步失败不阻塞，下次 load 重试。
- * 迁移后会话清单完全由 `.atelyx/对话历史/` 目录派生（无整文件索引）。
- */
-async function migrateLegacyIndex(): Promise<void> {
-  let legacy: LegacyEditorChatsFile;
-  try {
-    legacy = await readLegacyEditorChats();
-  } catch {
-    return;
-  }
-  if (legacy.schema !== EDITOR_CHATS_SCHEMA || !legacy.sessions.length) return;
-  await Promise.all(
-    legacy.sessions.map(async (s) => {
-      const metaFile = chatMetaFilePath(s.id);
-      try {
-        const existing = await readChatSessionMeta(metaFile);
-        if (existing) return;
-        await writeChatSessionMeta(metaFile, {
-          id: s.id,
-          ...(s.title !== undefined ? { title: s.title } : {}),
-          ...(s.agentId !== undefined ? { agentId: s.agentId } : {}),
-        });
-      } catch {
-        // 单会话迁移失败不阻塞整体
-      }
-    }),
-  );
-  if (legacy.modelOverride || legacy.effortOverride) {
-    try {
-      const existing = await readEditorChatsMeta();
-      if (!existing.modelOverride && !existing.effortOverride) {
-        await writeEditorChatsMeta({
-          schema: EDITOR_CHATS_META_SCHEMA,
-          modelOverride: legacy.modelOverride,
-          effortOverride: legacy.effortOverride,
-        });
-      }
-    } catch {
-      // 覆盖迁移失败不阻塞
-    }
-  }
-  try {
-    await deleteLegacyEditorChats();
-  } catch {
-    // 删除失败不阻塞（下次 load 幂等重试）
-  }
 }
 
 /**
@@ -860,8 +806,6 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
       ...(force || prevVault !== vaultId ? { sessions: [], activeSessionId: null } : {}),
     });
     try {
-      // 一次性迁移：旧 editor-chats.json → 元数据侧车 + 面板覆盖，然后删索引（幂等，失败不阻塞）
-      await migrateLegacyIndex();
       // 读面板级覆盖（设备偏好）
       const f = await readEditorChatsMeta();
       // 会话清单 = 扫 .atelyx/对话历史/ 目录（无整文件索引）+ 逐个读消息 .jsonl（读失败降级空消息，不阻塞面板）

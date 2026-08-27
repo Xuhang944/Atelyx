@@ -2,11 +2,8 @@
  * 工具：编辑文件（edit_file）。对仓库内任意文本文件做行级修改：每项 oldText 唯一精确匹配、
  * 块间不重叠，全部校验通过后统一替换（原子写）。依赖 `capabilities.editFile`。不建产物节点。
  */
-import { ToolArgsError } from "@/types";
-import { AGENT_TOOLS_META } from "@/constants/tools";
+import { ToolArgsError, errText } from "@/types";
 import { defineTool } from "./defineTool";
-
-const meta = AGENT_TOOLS_META.find((m) => m.id === "edit_file")!;
 
 export interface EditEntry {
   oldText: string;
@@ -18,13 +15,8 @@ export interface EditFileArgs {
   edits: EditEntry[];
 }
 
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
 export const EDIT_FILE_TOOL = defineTool<EditFileArgs>({
   name: "edit_file",
-  label: meta.label,
   description:
     "修改仓库中文件的指定文本：edits 每项 oldText 必须与文件现有文本精确匹配且唯一（不唯一请扩充上下文），全部匹配后统一替换，返回修改结果",
   parameters: {

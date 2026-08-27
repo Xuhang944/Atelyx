@@ -4,11 +4,9 @@
  * 可选 path 限定文件/目录、include 限定单一正向 glob 过滤文件。
  * 依赖 `capabilities.grep`（Rust `grep_vault`）。只读，不建产物节点。
  */
-import { ToolArgsError, type GrepMatchRow } from "@/types";
-import { AGENT_TOOLS_META, GREP_MAX_LINE_BYTES, GREP_MAX_MATCHES } from "@/constants/tools";
+import { ToolArgsError, errText, type GrepMatchRow } from "@/types";
+import { GREP_MAX_LINE_BYTES, GREP_MAX_MATCHES } from "@/constants/tools";
 import { defineTool } from "./defineTool";
-
-const meta = AGENT_TOOLS_META.find((m) => m.id === "grep")!;
 
 export interface GrepArgs {
   pattern: string;
@@ -34,10 +32,6 @@ function validateInclude(include: string): void {
   }
 }
 
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
 /** 匹配行按文件分组（首见顺序）→ 模型可读正文：每文件一行路径 + 逐行「Line N: text」。 */
 function formatGrepMatches(matches: GrepMatchRow[]): string {
   const byFile = new Map<string, GrepMatchRow[]>();
@@ -55,7 +49,6 @@ function formatGrepMatches(matches: GrepMatchRow[]): string {
 
 export const GREP_TOOL = defineTool<GrepArgs>({
   name: "grep",
-  label: meta.label,
   parallelSafe: true,
   description:
     "用正则表达式搜索仓库内文件内容，返回匹配行（带行号、按文件分组）。" +

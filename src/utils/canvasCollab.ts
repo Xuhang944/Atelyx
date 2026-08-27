@@ -16,6 +16,7 @@ import type {
   CanvasFileEdge,
   CanvasFileNode,
   CanvasPatch,
+  CollabPeer,
   Message,
 } from "@/types";
 
@@ -74,8 +75,9 @@ export function diffCanvasEntities(
   return { upsertNodeIds, removedNodeIds, upsertEdgeIds, removedEdgeIds };
 }
 
-/** 运行时边 → 协作补丁边（与 `toFileEdge` 同构；createdAt 接收端不关心，传 0）。 */
-function serializeEdgeForCollab(e: CanvasEdge): CanvasFileEdge {
+/** 运行时边 → 磁盘/协作补丁边（磁盘全量写、增量补丁与 `canvas-patch` 广播共用同一形态；
+ * createdAt 传 0——Rust 落盘时保留原值，协作接收端不关心）。 */
+export function serializeEdgeForCollab(e: CanvasEdge): CanvasFileEdge {
   return {
     id: e.id,
     source: e.source,
@@ -105,7 +107,6 @@ export function serializeCanvasSnapshot(
     schema: CANVAS_SCHEMA,
     id: canvasId,
     title,
-    viewport: { x: 0, y: 0, zoom: 1 },
     nodes: nodes.map((n) => serializeNodeForCollab(n, messagesByConv)),
     edges: edges.map(serializeEdgeForCollab),
     createdAt: 0,
@@ -272,6 +273,38 @@ export function computeLockOwner(claims: { peerId: number; since: number }[]): n
     }
   }
   return owner;
+}
+
+/** 单节点独占锁判定结果（resolveLockState 返回，调用方按需取用）。 */
+export interface LockResolution {
+  /** 确定性锁主 peerId；无任何锁声明 = null。 */
+  owner: number | null;
+  /** 本端是否为锁主（无本端声明或未接入协作时恒 false）。 */
+  lockedByMe: boolean;
+}
+
+/**
+ * 单节点独占编辑锁统一判定（canvasStore 写守卫 / useNodeCollab / ConversationNode 发送前校验
+ * 三处同源）：收集本端声明（lockedConversations 记录的 since）+ 对端 presence.lockedNodes 声明
+ * （仅按 nodeId 匹配，锁跨视图保活），经 computeLockOwner 确定性判定锁主。本端声明仅在
+ * myPeerId 已分配时参与——未接入协作时声明无判定意义，结果与「无对端声明」一致。
+ */
+export function resolveLockState(
+  nodeId: string,
+  mySince: number | undefined,
+  myPeerId: number | null,
+  peers: CollabPeer[],
+): LockResolution {
+  const claims: { peerId: number; since: number }[] = [];
+  if (mySince !== undefined && myPeerId !== null) {
+    claims.push({ peerId: myPeerId, since: mySince });
+  }
+  for (const p of peers) {
+    const c = p.presence?.lockedNodes?.find((l) => l.id === nodeId);
+    if (c) claims.push({ peerId: p.peerId, since: c.since });
+  }
+  const owner = computeLockOwner(claims);
+  return { owner, lockedByMe: owner !== null && owner === myPeerId };
 }
 
 /** 协作画布重命名抑制窗口（ms）：对端收到远端 title 补丁已同步新路径，watcher 收到

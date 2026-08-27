@@ -15,7 +15,7 @@ export type CalcType = "sum" | "avg" | "max" | "min" | "count";
 /**
  * 单元格值：text/singleSelect = string；number/duration = number（秒）；image = 字符串数组（多图），
  * 条目 = 表格附件相对仓库根路径（`.atelyx/attachments/<tableId>/…`，图片外置）；
- * 遗留文件兼容 `data:` 内嵌 dataURL（加载迁移为附件路径，显示层两者均支持）。
+ * 旧文件兼容读取 `data:` 内嵌 dataURL（显示层透传；新写入一律为附件路径）。
  */
 export type CellValue = string | number | string[];
 

@@ -21,9 +21,6 @@ import type { LinkMode } from "@/types";
  * id 取边 id 保证唯一。
  */
 
-const SOLID_STYLE = { strokeDasharray: undefined as string | undefined };
-const DASHED_STYLE = { strokeDasharray: "8 4" };
-
 /** 数据流箭头色（金色，跟随主题 --accent）与关联箭头色（灰，与关联边描边同源变量）。 */
 const GOLD = "var(--accent)";
 const GRAY = "var(--xy-edge-stroke-default, #94a3b8)";
@@ -68,27 +65,27 @@ export function DataFlowEdge({
   targetPosition,
   selected,
 }: EdgeProps) {
-  // 只订阅「本边的虚实判定」派生（useShallow 引用稳定：节点移动/流式增量不触发重渲染）
-  const { style, isLink, linkMode } = useCanvasStore(
+  // 只订阅「本边的虚实判定」派生（useShallow 逐字段比较：节点移动/流式增量不触发重渲染）
+  const { dashed, isLink, linkMode } = useCanvasStore(
     useShallow((s) => {
       const edge = s.edges.find((e) => e.id === id);
       // 关联边（directed:false）：恒实线、无消费语义
       if (edge?.directed === false) {
-        return { style: SOLID_STYLE, isLink: true, linkMode: edge.linkMode ?? "none" };
+        return { dashed: false, isLink: true, linkMode: edge.linkMode ?? "none" };
       }
       const src = s.nodes.find((n) => n.id === source);
       const tgt = s.nodes.find((n) => n.id === target);
-      if (!src || !tgt) return { style: SOLID_STYLE, isLink: false, linkMode: "none" as LinkMode };
+      if (!src || !tgt) return { dashed: false, isLink: false, linkMode: "none" as LinkMode };
       // 数据流资产引用边：虚线 = 未消费（待注入）；已消费（历史 refs/attachments 含 source）→ 实线
       const isAssetConsumption =
         (src.type === "text" || src.type === "media" || src.type === "search") &&
         tgt.type === "conversation";
       if (isAssetConsumption) {
         const injected = isAssetConsumed(s.messagesByConv[target] ?? [], source);
-        return { style: injected ? SOLID_STYLE : DASHED_STYLE, isLink: false, linkMode: "none" as LinkMode };
+        return { dashed: !injected, isLink: false, linkMode: "none" as LinkMode };
       }
       // 数据流产出边（对话 → 资产）恒实线
-      return { style: SOLID_STYLE, isLink: false, linkMode: "none" as LinkMode };
+      return { dashed: false, isLink: false, linkMode: "none" as LinkMode };
     })
   );
   const readOnly = useCanvasStore((s) => s.readOnly);
@@ -122,7 +119,8 @@ export function DataFlowEdge({
         style={{
           stroke,
           strokeWidth: selected ? 2 : 1.5,
-          ...style,
+          // 虚线 = 未消费的资产引用边（8 4）；其余实线不设 strokeDasharray
+          strokeDasharray: dashed ? "8 4" : undefined,
         }}
       />
       <EdgeLabelRenderer>

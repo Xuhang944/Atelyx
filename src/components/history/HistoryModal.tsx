@@ -29,12 +29,10 @@ interface Props {
   onRollback?: (content: string) => void;
 }
 
-const ACTION_LABEL: Record<HistoryVersion["action"], string> = {
+/** 版本行为 → 中文文案（历史面板共用单一来源）；未知/旧值回落显示原始 action。 */
+export const ACTION_LABEL: Record<string, string> = {
   edit: "编辑",
   restore: "回滚",
-  external: "外部修订",
-  create: "新建",
-  delete: "删除",
 };
 
 const KIND_LABEL: Record<HistoryKind, string> = {

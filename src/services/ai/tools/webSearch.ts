@@ -3,10 +3,7 @@
  * 依赖 `capabilities.search`；依赖搜索源配置（needsSearch，未配置时由调用方剔除）。
  */
 import { ToolArgsError } from "@/types";
-import { AGENT_TOOLS_META } from "@/constants/tools";
 import { defineTool } from "./defineTool";
-
-const meta = AGENT_TOOLS_META.find((m) => m.id === "web_search")!;
 
 export interface WebSearchArgs {
   query: string;
@@ -14,7 +11,6 @@ export interface WebSearchArgs {
 
 export const WEB_SEARCH_TOOL = defineTool<WebSearchArgs>({
   name: "web_search",
-  label: meta.label,
   parallelSafe: true,
   description: "联网搜索获取最新信息，返回网页标题、摘要与链接（可作为回答依据）",
   parameters: {

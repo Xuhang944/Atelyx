@@ -14,7 +14,6 @@ import type {
   Attachment,
   Role,
   ReasoningEffort,
-  TokenUsage,
   ToolSchema,
   LlmFinishReason,
   LlmMessage,
@@ -263,7 +262,6 @@ export async function* streamRequest(
           receivedAnyEvent = true;
           const choice = json.choices?.[0];
           if (choice?.finish_reason) stopReason = choice.finish_reason;
-          if (json.usage) yield { type: "usage", usage: toUsage(json.usage) };
           const delta = choice?.delta;
           if (!delta) continue;
           if (delta.content) yield { type: "text-delta", text: delta.content };
@@ -328,26 +326,6 @@ function mapStopReason(finishReason?: string): LlmFinishReason {
   return "stop";
 }
 
-function toUsage(u: Record<string, unknown>): TokenUsage {
-  // 部分供应商把缓存命中折进 prompt_tokens；此处原样透传，token-meter 如需再换算
-  return {
-    inputTokens: Number(u.prompt_tokens) || 0,
-    outputTokens: Number(u.completion_tokens) || 0,
-    ...(u.prompt_tokens_details && typeof u.prompt_tokens_details === "object"
-      ? {
-          cacheReadTokens: Number((u.prompt_tokens_details as Record<string, unknown>).cached_tokens) || undefined,
-        }
-      : {}),
-    ...(u.completion_tokens_details &&
-    typeof u.completion_tokens_details === "object" &&
-    Number((u.completion_tokens_details as Record<string, unknown>).reasoning_tokens)
-      ? {
-          reasoningTokens: Number((u.completion_tokens_details as Record<string, unknown>).reasoning_tokens),
-        }
-      : {}),
-  };
-}
-
 /**
  * 发起流式聊天请求（消费 streamRequest + 重试策略），对外保留回调 API。
  * 失败降级：可重试的传输级失败（网络/5xx/429）按指数退避（尊重 retry-after），其余走 onError；
@@ -386,8 +364,6 @@ export async function streamChat(
           case "reasoning-delta":
             callbacks.onReasoningDelta?.(event.text);
             break;
-          case "usage":
-            break; // 当前不消费计量；如后续接入 token-meter 在此接线
           case "tool-call":
             toolCalls.push(event.call);
             break;

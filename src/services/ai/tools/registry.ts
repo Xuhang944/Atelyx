@@ -7,13 +7,11 @@ import type {
   ToolExecContext,
   ToolExecResult,
   ToolResult,
-  ToolSchema,
   LlmMessage,
   LlmToolCall,
 } from "@/types";
-import { UNKNOWN_TOOL_MSG_PREFIX } from "@/types";
+import { UNKNOWN_TOOL_MSG_PREFIX, errText } from "@/types";
 import { MAX_PARALLEL_TOOL_CALLS } from "@/constants/tools";
-import { toToolSchema } from "./defineTool";
 
 /** 一次执行结束后的回填工具消息 + 可视化结果 + 原始结果（供调用方 hooks 消费 data 建产物）。 */
 export interface ToolDispatchResult {
@@ -21,10 +19,6 @@ export interface ToolDispatchResult {
   results: ToolExecResult[];
   /** 已成功执行（未被中止跳过）的原始结果，含 data（画布据此建产物节点）。 */
   outcomes: Array<{ name: string; id: string; result: ToolResult }>;
-}
-
-function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }
 
 /** 解析工具调用参数 JSON（非法抛 ToolArgsError，由 validate 决定更具体语义）。 */
@@ -37,10 +31,6 @@ function parseArgs(json: string): unknown {
 }
 
 export interface ToolRegistry {
-  /** 按名取定义（无则 undefined）。 */
-  get(name: string): ToolDefinition | undefined;
-  /** 全部名册（发给模型）。 */
-  toSchemas(): ToolSchema[];
   /** 运行前摘要（气泡工具块展示，容忍残缺参数）。 */
   summarize(name: string, argsJson: string): string;
   /**
@@ -58,10 +48,6 @@ export interface ToolRegistry {
 /** 由一组工具定义构建按名分发注册表。 */
 export function createToolRegistry(defs: ToolDefinition[]): ToolRegistry {
   const byName = new Map(defs.map((d) => [d.name, d]));
-
-  const get = (name: string): ToolDefinition | undefined => byName.get(name);
-
-  const toSchemas = (): ToolSchema[] => defs.map(toToolSchema);
 
   const summarize = (name: string, argsJson: string): string => {
     const def = byName.get(name);
@@ -105,7 +91,7 @@ export function createToolRegistry(defs: ToolDefinition[]): ToolRegistry {
       try {
         args = def.validate(parseArgs(call.arguments));
       } catch (e) {
-        const msg = `工具参数错误：${errorText(e)}`;
+        const msg = `工具参数错误：${errText(e)}`;
         slots[index] = {
           message: { role: "tool", text: msg, toolCallId: call.id },
           result: { id: call.id, ok: false, summary: msg, detail: msg },
@@ -118,7 +104,7 @@ export function createToolRegistry(defs: ToolDefinition[]): ToolRegistry {
       try {
         result = await def.execute(args as Record<string, unknown>, exec);
       } catch (e) {
-        result = { ok: false, summary: errorText(e) };
+        result = { ok: false, summary: errText(e) };
       }
       // 用户已中止：副作用可能已发生，但结果不回填（引擎下一轮携已 abort 的 signal 收敛）
       if (exec.signal.aborted) return;
@@ -186,5 +172,5 @@ export function createToolRegistry(defs: ToolDefinition[]): ToolRegistry {
     return { messages, results, outcomes };
   };
 
-  return { get, toSchemas, summarize, dispatch };
+  return { summarize, dispatch };
 }

@@ -7,21 +7,9 @@
  * 与画布对话（types/message.ts）的差异：面板是纯文本对话，
  * 无 attachments/refs/system 消息——错误占位用 content 的 `[错误]` 前缀标记（同 runStream 约定）。
  */
-import {
-  EDITOR_CHATS_META_SCHEMA,
-  CHAT_HISTORY_DIR,
-  CHAT_MESSAGE_EXT,
-  CHAT_META_EXT,
-} from "@/constants/editorChats";
-import type { AgentStep, ToolRun } from "./message";
+import { EDITOR_CHATS_META_SCHEMA } from "@/constants/editorChats";
+import type { AgentStep } from "./message";
 import type { ReasoningEffort } from "./provider";
-
-export {
-  EDITOR_CHATS_META_SCHEMA,
-  CHAT_HISTORY_DIR,
-  CHAT_MESSAGE_EXT,
-  CHAT_META_EXT,
-};
 
 export type EditorChatRole = "user" | "assistant";
 
@@ -64,11 +52,6 @@ export interface EditorChatMessage {
    */
   steps?: AgentStep[];
   /**
-   * 模型思考过程（`delta.reasoning_content` 流式累积）。
-   * 仅作气泡折叠展示，不进 API 历史上下文；遗留字段（见 `steps`），不落盘。
-   */
-  reasoningContent?: string;
-  /**
    * user 消息气泡显示用：发送时的原始输入，与 content 分离——content 含「引用文件」
    * 路径块（@引用），气泡避免展示注入内容。
    * 随消息 .jsonl 记录持久化（displayContent 字段）。
@@ -76,8 +59,6 @@ export interface EditorChatMessage {
   displayContent?: string;
   /** 该 user 消息发送时拖入的笔记引用（气泡显示只读 @chip，点击打开笔记）；随 .jsonl 记录持久化。 */
   refs?: EditorChatMessageRef[];
-  /** Agent 模式工具调用过程。遗留：见 `steps`（工具步随消息记录持久化）。 */
-  toolRuns?: ToolRun[];
   /** 真实创建时间（发送时生成，随 .jsonl 记录持久化，恢复不重排）。 */
   createdAt: number;
 }
@@ -127,18 +108,5 @@ export interface ChatMetaFile {
   schema: typeof EDITOR_CHATS_META_SCHEMA;
   modelOverride: EditorChatModelOverride | null;
   /** 面板级推理等级覆盖（null = 不指定/跟随默认；与模型覆盖正交，跟随仓库默认时也可单独设置）。 */
-  effortOverride: ReasoningEffort | null;
-}
-
-/** 旧 `.atelyx/editor-chats.json` 结构（一次性迁移读取用，见 chatPanelStore.load）。 */
-export interface LegacyEditorChatsFile {
-  schema: string;
-  sessions: {
-    id: string;
-    title?: string;
-    agentId?: string;
-    file: string;
-  }[];
-  modelOverride: EditorChatModelOverride | null;
   effortOverride: ReasoningEffort | null;
 }

@@ -4,14 +4,14 @@
  *
  * - 选中高亮：同一画布（presence.file + view=canvas）且 selection.kind==="node" 命中。
  * - 锁主：所有声明（本端 `lockedConversations` + 对端 presence.lockedNodes，仅按 nodeId 匹配，
- *   不按 file/view 过滤——锁跨视图保活）经 `computeLockOwner` 确定性判定（since 最小、同 since
+ *   不按 file/view 过滤——锁跨视图保活）经 `resolveLockState` 确定性判定（since 最小、同 since
  *   按 peerId 取小）。本端非锁主 → 只读；发送前须校验 `iOwnLock`。
  * - 生成中：对端 presence.streamingNodeIds 命中（仅按 nodeId，同锁）。
  */
 import { useCollabStore } from "@/stores/collabStore";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useAppStore } from "@/stores/appStore";
-import { computeLockOwner } from "@/utils/canvasCollab";
+import { resolveLockState } from "@/utils/canvasCollab";
 import type { CollabPeer } from "@/types";
 
 export interface NodeCollabState {
@@ -39,22 +39,12 @@ export function useNodeCollab(nodeId: string): NodeCollabState {
       p.presence.selection.nodeId === nodeId,
   );
   // 锁/流式按 nodeId 匹配（不依赖 presence.file/view——锁跨视图保活，用户看表格/笔记期间仍持锁）
-  const claimPeers = peers.filter((p) => p.presence?.lockedNodes?.some((l) => l.id === nodeId));
   const streamingPeers = peers.filter((p) => p.presence?.streamingNodeIds?.includes(nodeId));
 
-  const mySince = myLocks[nodeId];
-  const claims: { peerId: number; since: number }[] = [];
-  if (mySince !== undefined && myPeerId !== null) {
-    claims.push({ peerId: myPeerId, since: mySince });
-  }
-  for (const p of claimPeers) {
-    const c = p.presence!.lockedNodes!.find((l) => l.id === nodeId);
-    if (c) claims.push({ peerId: p.peerId, since: c.since });
-  }
-  const owner = computeLockOwner(claims);
-  const iOwnLock = owner !== null && owner === myPeerId;
+  const { owner, lockedByMe } = resolveLockState(nodeId, myLocks[nodeId], myPeerId, peers);
+  const iOwnLock = lockedByMe;
   const lockedByPeer =
-    owner !== null && !iOwnLock ? (claimPeers.find((p) => p.peerId === owner) ?? null) : null;
+    owner !== null && !iOwnLock ? (peers.find((p) => p.peerId === owner) ?? null) : null;
 
   return { selectingPeers, streamingPeers, lockedByPeer, iOwnLock };
 }

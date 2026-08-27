@@ -9,7 +9,6 @@ import type { FileTreeNode } from "@/types";
 
 /** 拖拽幽灵（pointer 模拟拖拽时跟随鼠标；下方追加悬停目标的动作提示）。 */
 export interface DragGhost {
-  kind: "note" | "attachment" | "canvas" | "table" | "folder";
   label: string;
   x: number;
   y: number;
@@ -43,7 +42,7 @@ export function useVaultDrag(onNotice: (message: string) => void) {
         // 位置变化超 2px 才 setState（pointermove 高频触发，节流避免每帧重渲染整个面板）
         const moved = !d.active || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 2;
         dragRef.current = { ...d, active: true, x: e.clientX, y: e.clientY };
-        if (moved) setDragGhost({ kind: d.kind, label: d.title ?? d.name, x: e.clientX, y: e.clientY });
+        if (moved) setDragGhost({ label: d.title ?? d.name, x: e.clientX, y: e.clientY });
         // 拖拽悬停目标文件夹：高亮可放入（变化才 setState）；文件行（data-file）内部不视为目标（防误判根目录）
         const hit = document.elementFromPoint(e.clientX, e.clientY);
         const dirEl = hit?.closest<HTMLElement>("[data-dir]");

@@ -77,7 +77,6 @@ export interface PendingAttachment {
 
 export interface Message {
   id: string;
-  conversationId: string;
   role: Role;
   content: string;
   /**

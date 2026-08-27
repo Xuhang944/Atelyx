@@ -8,10 +8,8 @@
 import { create } from "zustand";
 import {
   connectCollabRelay,
-  normalizeRelayUrl,
   testRelayConnection,
   type CollabRelayHandle,
-  type RelayTestResult,
 } from "@/services/collab/relay";
 import {
   receiveAwareness,
@@ -24,9 +22,7 @@ import { useAppStore } from "@/stores/appStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useNoteCollabStore } from "@/stores/noteCollabStore";
-import type { CollabPeer, CollabPresence } from "@/types";
-
-export { normalizeRelayUrl, type RelayTestResult } from "@/services/collab/relay";
+import type { CollabPeer, CollabPresence, RelayTestResult } from "@/types";
 
 /** 本端 presence 广播节流（选中高频变化合并，不刷屏 relay）。 */
 const BROADCAST_THROTTLE_MS = 100;
@@ -78,6 +74,20 @@ let subscribed = false;
 export function randomPeerColor(): string {
   const palette = ["#e06c75", "#61afef", "#98c379", "#e5c07b", "#c678dd", "#56b6c2", "#d19a66"];
   return palette[Math.floor(Math.random() * palette.length)];
+}
+
+/** 中转地址规范化：补协议（ws://）与 /ws 路径（relay 唯一路由），
+ *  如 `192.168.1.10:17701` → `ws://192.168.1.10:17701/ws`；空/无法解析的输入原样返回。 */
+export function normalizeRelayUrl(raw: string): string {
+  const input = raw.trim();
+  if (!input) return "";
+  const withProto = /^wss?:\/\//i.test(input) ? input : `ws://${input}`;
+  try {
+    const u = new URL(withProto);
+    return `${u.protocol}//${u.host}/ws`;
+  } catch {
+    return withProto;
+  }
 }
 
 function establishConnection(): void {

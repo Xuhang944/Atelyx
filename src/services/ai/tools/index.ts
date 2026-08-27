@@ -48,11 +48,9 @@ export interface AgentToolAssembly {
   tools: ToolSchema[];
   /** web_search 被勾选但搜索源未配置（调用方据此提示）。 */
   skippedWebSearch: boolean;
-  /** 勾选里已不存在的工具 id（存量数据兼容，静默忽略不崩）。 */
-  unknownIds: string[];
 }
 
-/** 按勾选 id + 搜索配置组装工具名册；未知 id 静默忽略（不迁移存量数据）。
+/** 按勾选 id + 搜索配置组装工具名册；未知 id 静默忽略（不在名册即不并入）。
  * 只读基础工具（read_file/glob/grep）恒并入，不依赖勾选——它们是 Agent 的基础能力；
  * 可勾选工具（web_search/web_fetch/edit_file/write_file）按 enabledIds 并入，web_search 未配置搜索源时剔除。 */
 export function buildAgentTools(
@@ -61,8 +59,6 @@ export function buildAgentTools(
 ): AgentToolAssembly {
   const tools: ToolSchema[] = [];
   let skippedWebSearch = false;
-  const known = new Set(AGENT_TOOLS.map((t) => t.name));
-  const unknownIds = enabledIds.filter((id) => !known.has(id));
   for (const def of AGENT_TOOLS) {
     if (def.name === "web_search" && !searchReady) {
       skippedWebSearch = true;
@@ -72,7 +68,7 @@ export function buildAgentTools(
     if (!READONLY_TOOL_IDS.includes(def.name) && !enabledIds.includes(def.name)) continue;
     tools.push({ name: def.name, description: def.description, parameters: def.parameters });
   }
-  return { tools, skippedWebSearch, unknownIds };
+  return { tools, skippedWebSearch };
 }
 
 /**

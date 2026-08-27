@@ -22,7 +22,10 @@ import {
   parseWhiteboard,
 } from "@/utils/whiteboard";
 import { tableToSnapshotText } from "@/utils/table";
-import { diffCanvasEntities } from "@/utils/canvasCollab";
+import {
+  diffCanvasEntities,
+  serializeEdgeForCollab,
+} from "@/utils/canvasCollab";
 import { coalesceAgentSteps, normalizeAgentSteps } from "@/utils/agentSteps";
 import { readTableVault } from "@/services/table";
 import {
@@ -39,7 +42,6 @@ import {
   type ChatMetaFile,
   type ChatSessionMeta,
   type ChatSessionRow,
-  type LegacyEditorChatsFile,
   type FileTreeNode,
   type Message,
   type TableData,
@@ -221,16 +223,6 @@ export async function readFolderColors(): Promise<Record<string, string>> {
 /** 写文件夹图标颜色映射（原子写 .atelyx/folder-colors.json，独立于 config.json）。 */
 export async function writeFolderColors(colors: Record<string, string>): Promise<void> {
   await invoke("write_folder_colors", { colors });
-}
-
-/** 读旧 AI 对话面板会话索引（.atelyx/editor-chats.json，一次性迁移用；不存在/损坏返回默认空文件；消息正文在消息 .jsonl）。 */
-export async function readLegacyEditorChats(): Promise<LegacyEditorChatsFile> {
-  return invoke<LegacyEditorChatsFile>("read_editor_chats");
-}
-
-/** 删旧 AI 对话面板会话索引（.atelyx/editor-chats.json，迁移完成后调用；幂等）。 */
-export async function deleteLegacyEditorChats(): Promise<void> {
-  await invoke("delete_legacy_editor_chats");
 }
 
 /** 扫 .atelyx/对话历史/ 列出全部会话（消息 .jsonl + 可选元数据侧车；会话清单 = 扫目录，无整文件索引）。
@@ -525,20 +517,6 @@ async function toFileNode(
   };
 }
 
-/** 运行时边 → 磁盘边（createdAt 传 0，Rust 保留原值）。 */
-function toFileEdge(e: CanvasEdge): CanvasFileEdge {
-  return {
-    id: e.id,
-    source: e.source,
-    target: e.target,
-    sourceHandle: e.sourceHandle ?? undefined,
-    targetHandle: e.targetHandle ?? undefined,
-    directed: e.directed,
-    linkMode: e.linkMode,
-    createdAt: 0,
-  };
-}
-
 /**
  * 运行时 → 磁盘 CanvasFile（保存/全量写共用）。
  * - text 节点：写 `.md` + 剥离 bodyMd，data 只留 `{title, file}`（脏检测由 toFileNode 门控）
@@ -558,12 +536,11 @@ async function runtimeToCanvasFile(
   for (const n of nodes) {
     fileNodes.push(await toFileNode(n, messagesByConv));
   }
-  const fileEdges: CanvasFileEdge[] = edges.map(toFileEdge);
+  const fileEdges: CanvasFileEdge[] = edges.map(serializeEdgeForCollab);
   return {
     schema: CANVAS_SCHEMA,
     id: canvasId,
     title,
-    viewport: { x: 0, y: 0, zoom: 1 },
     nodes: fileNodes,
     edges: fileEdges,
     createdAt: 0,
@@ -613,7 +590,7 @@ export async function patchCanvasVault(opts: {
   }
   const upsertEdges: CanvasFileEdge[] = edges
     .filter((e) => upsertEdgeIds.has(e.id))
-    .map(toFileEdge);
+    .map(serializeEdgeForCollab);
 
   if (
     upsertNodes.length === 0 &&
@@ -672,7 +649,7 @@ export async function persistCanvasVault(
 
 /** 读 .canvas 文件原文（按相对仓库根路径；无写命令——白板格式保持只读）。 */
 export async function readWhiteboardVault(file: string): Promise<string> {
-  return invoke<string>("read_whiteboard_canvas", { file });
+  return invoke<string>("read_note", { file });
 }
 
 /**

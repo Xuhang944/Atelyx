@@ -113,10 +113,8 @@ export interface ToolExecContext {
 
 /** 自包含工具模块（defineTool 产出）。 */
 export interface ToolDefinition<A = Record<string, unknown>> {
-  /** 工具名（发给模型，也是注册表/UI 的联结 id）。 */
+  /** 工具名（发给模型，也是注册表的联结 id）。 */
   name: string;
-  /** UI 设置浮层显示名。 */
-  label: string;
   description: string;
   /** 发给模型的 JSON Schema。 */
   parameters: Record<string, unknown>;
@@ -138,12 +136,17 @@ export interface ToolDefinition<A = Record<string, unknown>> {
 /** 工具注册表中「未知工具」的错误消息文本。 */
 export const UNKNOWN_TOOL_MSG_PREFIX = "未知工具：";
 
-/** 工具模块构建期/参数校验失败。 */
+/** 工具参数校验失败（由各工具的 validate 抛出）。 */
 export class ToolArgsError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ToolArgsError";
   }
+}
+
+/** 从 catch 到的未知抛出值提取可读消息（工具层错误摘要统一走此收敛）。 */
+export function errText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
 
 /** 单个工具执行结果的可视化摘要（消息气泡工具块）。 */

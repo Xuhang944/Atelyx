@@ -1,31 +1,28 @@
 /**
- * AI 请求错误：结构化错误码 + 分类纯函数。
+ * AI 请求错误：LlmError 错误载体 + 错误文本判定纯函数。
  *
- * - `LlmError`：带稳定 `code`（机器可路由，不靠解析 message 字符串），可选 `status`/`retryAfterMs`。
- * - `classifyMessage` / `toLlmError`：从 HTTP 状态 / 错误文本综合归类出稳定 `code`（含 retryable 判定）。
- *   合并了原错误分类的 `isRetryableError`/`isContextOverflow` 判定，并增强
- *   对 context-window / quota 的识别（quota/auth 快速失败，transport/5xx/429 重试）。
+ * - `LlmError`：AI 请求错误载体，附 `status` 与 `retryAfterMs`（重试策略优先尊重服务端 retry-after）。
+ * - 错误判定只有两个出口：传输级可重试（`isTransportRetryable` → `isRetryableError`，供重试策略）
+ *   与上下文溢出（`isContextOverflow` → `withOverflowHint` 追加友好提示）；
+ *   其余错误（配额耗尽/鉴权失败/参数错误/其余未知）不区分类别，统一不重试、原始文案直出。
+ * - 配额/鉴权等终态特征在 `isTransportRetryable` 内优先否决，防止 HTTP 429/5xx 状态兜底误重试。
  *
- * 分类规则只在这一个文件维护，client / streaming / 调用方共用。
+ * 判定规则只在这一个文件维护，client 与各调用方共用。
  */
-import type { LlmErrorCode } from "@/types";
 
 /** 上下文溢出错误的友好提示（追加到原始错误消息后展示）。 */
 const OVERFLOW_HINT = "上下文过长：建议精简对话、去掉多余引用，或新建分支继续";
 
-/** 结构化 AI 错误（稳定 code 路由，不再靠字符串正则猜测）。 */
+/** 结构化 AI 错误载体（附 HTTP 状态与服务端要求的重试等待，供重试策略消费）。 */
 export class LlmError extends Error {
-  readonly code: LlmErrorCode;
   readonly status?: number;
   readonly retryAfterMs?: number;
 
   constructor(
     message: string,
-    code: LlmErrorCode,
     opts?: { status?: number; retryAfterMs?: number; cause?: unknown },
   ) {
     super(message, opts?.cause !== undefined ? { cause: opts.cause } : undefined);
-    this.code = code;
     this.status = opts?.status;
     this.retryAfterMs = opts?.retryAfterMs;
     this.name = "LlmError";
@@ -52,6 +49,14 @@ const NON_RETRYABLE_PATTERNS = [
   /invalid\s*(api\s*)?key|unauthorized|unauthorised|forbidden/i,
 ];
 
+/** 账号配额/余额耗尽特征（终态，区别于瞬时限流）。 */
+const QUOTA_PATTERNS = [
+  /insufficient[\s_-]+(?:quota|balance|credits?)/i,
+  /quota[\s_-]+(?:exceeded|exhausted|reached)|usage[\s_-]+limit[\s_-]+(?:exceeded|reached)/i,
+  /(?:balance|credits?)[\s_-]+(?:exhausted|depleted)/i,
+  /out\s*of\s*(?:credits?|budget)/i,
+];
+
 /** 上下文溢出特征（请求超过模型 context window）。 */
 const CONTEXT_OVERFLOW_PATTERNS = [
   /prompt\s+is\s+too\s+long/i,
@@ -62,52 +67,39 @@ const CONTEXT_OVERFLOW_PATTERNS = [
   /reduce\s+the\s+length\s+of\s+the\s+messages/i,
 ];
 
-/** 账号配额/余额耗尽特征（终态，区别于瞬时限流）。 */
-const QUOTA_PATTERNS = [
-  /insufficient[\s_-]+(?:quota|balance|credits?)/i,
-  /quota[\s_-]+(?:exceeded|exhausted|reached)|usage[\s_-]+limit[\s_-]+(?:exceeded|reached)/i,
-  /(?:balance|credits?)[\s_-]+(?:exhausted|depleted)/i,
-  /out\s*of\s*(?:credits?|budget)/i,
-];
-
+/** 提取错误文本中的 HTTP 状态码（无则 null）。 */
 function matchStatus(msg: string): number | null {
   const m = msg.match(/HTTP\s+(\d{3})/);
   return m ? Number(m[1]) : null;
 }
 
-/** 根据错误文本判定错误码（正文优先，其次 HTTP 状态兜底）。 */
-function classifyMessage(text: string): LlmErrorCode {
-  if (CONTEXT_OVERFLOW_PATTERNS.some((re) => re.test(text))) return "CONTEXT_OVERFLOW";
-  if (QUOTA_PATTERNS.some((re) => re.test(text))) return "QUOTA";
-  if (NON_RETRYABLE_PATTERNS.some((re) => re.test(text))) return "AUTH";
-  if (RETRYABLE_PATTERNS.some((re) => re.test(text))) return "TRANSPORT";
-  const status = matchStatus(text);
-  if (status !== null) {
-    if (status === 429 || status >= 500) return "TRANSPORT";
-    if (status === 401 || status === 403) return "AUTH";
-    if (status === 400) return "BAD_REQUEST";
-    return "HTTP";
-  }
-  return "UNKNOWN";
+/**
+ * 根据错误文本判定是否传输级可重试（网络抖动 / 限流 / 服务端临时故障，HTTP 429/5xx 状态兜底）。
+ * 顺序敏感：溢出与终态特征（配额/鉴权）优先否决——即便 HTTP 状态是 429/5xx 也不重试
+ * （配额耗尽是账号终态，重试无法恢复）。
+ */
+function isTransportRetryable(message: string): boolean {
+  if (CONTEXT_OVERFLOW_PATTERNS.some((re) => re.test(message))) return false;
+  if (QUOTA_PATTERNS.some((re) => re.test(message))) return false;
+  if (NON_RETRYABLE_PATTERNS.some((re) => re.test(message))) return false;
+  if (RETRYABLE_PATTERNS.some((re) => re.test(message))) return true;
+  const status = matchStatus(message);
+  return status !== null && (status === 429 || status >= 500);
 }
 
 /** 该错误是否可重试（传输级 / 5xx / 429；quota/auth/其余快速失败）。 */
 export function isRetryableError(err: Error): boolean {
-  if (err instanceof LlmError) {
-    return err.code === "TRANSPORT";
-  }
-  return classifyMessage(err.message) === "TRANSPORT";
+  return isTransportRetryable(err.message);
 }
 
 /** 该错误是否表示上下文溢出（超长请求不再裸报错，降级为友好提示）。 */
 function isContextOverflow(err: Error): boolean {
-  if (err instanceof LlmError) return err.code === "CONTEXT_OVERFLOW";
   return CONTEXT_OVERFLOW_PATTERNS.some((re) => re.test(err.message));
 }
 
 /**
  * 上下文溢出错误追加友好提示（防用户看到裸 API 报错不知所措）。
- * 已带 code 的 LlmError 直接补文案，不双重包装。
+ * 仅命中溢出判定才包装一次，其余原样返回。
  */
 export function withOverflowHint(err: Error): Error {
   if (isContextOverflow(err)) {
@@ -118,14 +110,13 @@ export function withOverflowHint(err: Error): Error {
 
 /**
  * 从 HTTP 状态 / 错误文本 / retry-after 组装 LlmError。
- * 传输级失败携带 `retryAfterMs`（供 retry 策略）；配额/鉴权快速失败。
+ * 透传 `status` 与 `retryAfterMs`（供 retry 策略优先尊重服务端 retry-after）。
  */
 export function toLlmError(
   message: string,
   opts?: { status?: number; retryAfterMs?: number; cause?: unknown },
 ): LlmError {
-  const code = classifyMessage(message);
-  return new LlmError(message, code, {
+  return new LlmError(message, {
     status: opts?.status,
     retryAfterMs: opts?.retryAfterMs,
     cause: opts?.cause,

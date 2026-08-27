@@ -144,13 +144,7 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
     onOpenVaultPathNote: handleOpenVaultPathNote,
     onCreateNote: handleCreateNote,
   });
-  // 气泡操作回调稳定化（memo 生效前提）
-  const handleRollback = useCallback(
-    (messageId: string) => {
-      rollbackTo(messageId);
-    },
-    [rollbackTo]
-  );
+  // 气泡操作回调稳定化（memo 生效前提）；rollbackTo 为 store action 引用恒稳定，onRollback 直传
   const handleRegenerate = useCallback(() => void regenerate(), [regenerate]);
   // @chip 点击打开笔记（稳定引用，气泡 memo 生效前提）；onOpenNote 由 AiChatView 传 store action（稳定）
   const handleRefChipClick = useCallback(
@@ -436,22 +430,11 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
                   steps={m.steps}
                   isStreaming={isStreamingMsg}
                   markdownComponents={chatMarkdownComponents}
-                  streamingPlaceholder={
-                    <span
-                      className="inline-flex items-center gap-1 text-xs"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      <Loader2 size={12} className="animate-spin" /> 生成中…
-                    </span>
-                  }
                   copyText={m.role === "user" ? (m.displayContent ?? m.content) : assistantReplyText(m)}
                   messageId={m.id}
                   canRollback={!isStreamingMsg && m.role === "assistant" && assistantReplyText(m).trim() !== ""}
-                  onRollback={handleRollback}
+                  onRollback={rollbackTo}
                   onRegenerate={canRegenerate ? handleRegenerate : undefined}
-                  userBubbleClass="bg-[var(--bg-tertiary)]"
-                  assistantBubbleStyle={{ background: "var(--bg-primary)", border: "1px solid var(--border)" }}
-                  paddingClass="px-3 py-2 text-sm leading-relaxed min-w-0"
                 />
               );
             })
@@ -466,8 +449,7 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
         <div className="relative">
           {/* 输入框内底部工具条：左 Agent/模型；右 发送/停止 */}
           <div className="absolute inset-x-0 bottom-3 z-10 px-1.5 flex items-center gap-0.5">
-          {/* Agent 选择：选中的 Agent 提供系统提示词与工具（发送时实时解析）；缺省「对话」= 普通对话。
-              选择 Agent 时清除旧会话遗留字段（systemPromptFile 不再生效，按动作迁移） */}
+          {/* Agent 选择：选中的 Agent 提供系统提示词与工具（发送时实时解析）；缺省「对话」= 普通对话 */}
           <DropdownSelect
             value={agentId ?? ""}
             onChange={(v) => setAgentId(v || undefined)}

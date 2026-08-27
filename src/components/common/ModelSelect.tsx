@@ -37,10 +37,6 @@ interface ModelSelectProps {
   className?: string;
   style?: CSSProperties;
   title?: string;
-  /** 弹层层级（画布节点内需高过选中抬升，传 z-[1100]）。 */
-  zClass?: string;
-  /** 弹出方向（透传 usePopupAnchor；缺省向下 + 下方不足向上翻转）。 */
-  align?: "top" | "bottom";
 }
 
 /** 菜单项通用行（根菜单 / 子面板返回行）。 */
@@ -122,11 +118,9 @@ export function ModelSelect({
   className,
   style,
   title,
-  zClass = "z-[1100]",
-  align,
 }: ModelSelectProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const { anchor, toggle, close } = usePopupAnchor(triggerRef, align ? { align } : undefined);
+  const { anchor, toggle, close } = usePopupAnchor(triggerRef);
   const [pane, setPane] = useState<Pane>("root");
 
   const hasOverride = !!(providerId && model);
@@ -172,7 +166,7 @@ export function ModelSelect({
         anchor={anchor}
         onClose={close}
         triggerRef={triggerRef}
-        zClass={zClass}
+        zClass="z-[1100]"
         widthClass="w-48"
         repositionDeps={[pane]}
       >

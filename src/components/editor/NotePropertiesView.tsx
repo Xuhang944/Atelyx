@@ -21,7 +21,7 @@ interface Props {
   /** 提交新 data（NoteEditor 负责拼回完整 content）。 */
   onUpdate: (next: Record<string, unknown>) => void;
   /** 切到源码模式（格式错误时用户可查看/修复原始 YAML）。 */
-  onOpenSource?: () => void;
+  onOpenSource: () => void;
 }
 
 /** 正在编辑的位置：index 存在 = 数组第 index 项，否则 = 单值字段。 */
@@ -330,16 +330,14 @@ export function NotePropertiesView({ data, parseError, onUpdate, onOpenSource }:
       {parseError ? (
         <div className="text-xs py-1 flex items-center gap-2" style={{ color: "#f87171" }}>
           <span>YAML 格式错误，请检查（属性面板暂不可编辑）</span>
-          {onOpenSource && (
-            <button
-              className="px-1.5 py-0.5 rounded border hover:opacity-80 flex-shrink-0"
-              style={{ borderColor: "#f87171" }}
-              onClick={onOpenSource}
-              title="切换到源码模式查看并修复 YAML"
-            >
-              打开源码模式
-            </button>
-          )}
+          <button
+            className="px-1.5 py-0.5 rounded border hover:opacity-80 flex-shrink-0"
+            style={{ borderColor: "#f87171" }}
+            onClick={onOpenSource}
+            title="切换到源码模式查看并修复 YAML"
+          >
+            打开源码模式
+          </button>
         </div>
       ) : entries.length === 0 ? (
         <div className="text-xs py-1" style={{ color: "var(--text-muted)" }}>

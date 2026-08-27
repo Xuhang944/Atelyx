@@ -31,15 +31,10 @@ interface Props {
   prefixIcon?: ReactNode;
   /** options 为空时弹层内显示的占位提示（缺省 = 不显示提示，空列表）。 */
   emptyText?: ReactNode;
-  disabled?: boolean;
   /** 触发按钮样式（尺寸/颜色/边框等），完全覆盖组件默认结构类之外的样式。 */
   className?: string;
   style?: CSSProperties;
   title?: string;
-  /** 透传到触发按钮（如标题栏语言下拉的无障碍语义）。 */
-  "aria-label"?: string;
-  /** 透传到触发按钮（标题栏内使用时排除拖拽区域）。 */
-  "data-tauri-drag-region"?: "true" | "false";
 }
 
 export function DropdownSelect({
@@ -49,12 +44,9 @@ export function DropdownSelect({
   placeholder,
   prefixIcon,
   emptyText,
-  disabled,
   className,
   style,
   title,
-  "aria-label": ariaLabel,
-  "data-tauri-drag-region": dataTauriDragRegion,
 }: Props) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const { anchor, toggle, close } = usePopupAnchor(triggerRef);
@@ -67,13 +59,10 @@ export function DropdownSelect({
         ref={triggerRef}
         type="button"
         onClick={toggle}
-        disabled={disabled}
         title={title}
-        aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={!!anchor}
-        data-tauri-drag-region={dataTauriDragRegion}
-        className={`flex items-center gap-1 min-w-0 cursor-pointer outline-none focus:ring-1 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50 ${className ?? ""}`}
+        className={`flex items-center gap-1 min-w-0 cursor-pointer outline-none focus:ring-1 focus:ring-[var(--accent)] ${className ?? ""}`}
         style={style}
       >
         {prefixIcon}

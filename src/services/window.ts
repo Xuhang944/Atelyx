@@ -1,7 +1,7 @@
 /**
  * 当前窗口控制 service（decorations: false 自定义标题栏/全屏用）。
  */
-import { getCurrentWindow, type Window } from "@tauri-apps/api/window";
+import { getAllWindows, getCurrentWindow, type Window } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { invoke } from "@tauri-apps/api/core";
 import type { WindowRect } from "@/services/windowBus";
@@ -149,7 +149,6 @@ export async function isMouseLeftDown(): Promise<boolean | null> {
 /** 按 label 关闭其他窗口（主窗口回收被拖空/移除的撕裂窗口用；窗口不存在时静默跳过）。 */
 export async function closeWindowByLabel(label: string): Promise<void> {
   try {
-    const { getAllWindows } = await import("@tauri-apps/api/window");
     for (const win of await getAllWindows()) {
       if (win.label === label) {
         await win.close();

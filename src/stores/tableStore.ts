@@ -12,7 +12,6 @@ import {
   cleanupTableAttachments,
   exportTableXlsx,
   importTableImage,
-  migrateTableImages,
   patchTableVault,
   readTableVault,
   saveImageToDownloads,
@@ -177,11 +176,6 @@ const undoMgr = createUndoManager<TableSnapshot>({
     }),
 });
 
-/** 非入栈变更后作废 redo 栈（标准撤销语义——undo 后产生新变更，Ctrl+Y 不得再恢复旧快照）。 */
-function touchRedo(): void {
-  undoMgr.touchRedo();
-}
-
 /** 进行中的编辑会话（双击/覆盖进入；null = 无会话）。 */
 let sessionCell: { rowId: string; fieldId: string } | null = null;
 /** 会话入栈时的 undo 栈深：中止时栈深未变（期间无其他操作插入）才丢弃该会话的空撤销单元。 */
@@ -306,6 +300,25 @@ async function retryMergePersist(
 }
 
 /**
+ * 从当前内存内容构建 `.atb` 全量快照（历史存档/磁盘全量重建/xlsx 导出三处收敛）：
+ * schema/id/title/fields/rows 取当前 state，createdAt: 0 = 快照展示占位（磁盘真实 createdAt
+ * 由 write_table_vault 落盘保留）；updatedAt 缺省 = 当前时间，extra 覆盖个别字段。
+ */
+function buildTableSnapshot(extra?: Partial<TableFile>): TableFile {
+  const s = useTableStore.getState();
+  return {
+    schema: TABLE_SCHEMA,
+    id: s.id,
+    title: s.title,
+    fields: s.fields,
+    rows: s.rows,
+    createdAt: 0,
+    updatedAt: Date.now(),
+    ...extra,
+  };
+}
+
+/**
  * 记录表格历史版本（保存成功后的存档点）：以内存当前内容构建 `.atb` 格式快照 → 记一条 edit 版本
  * （60s 内连续编辑合并为一版，不逐键）。快照取内存（与保存同源，免每次存档多一次读盘 IPC——
  * 历史尽力而为，不阻塞保存流程）。
@@ -313,15 +326,7 @@ async function retryMergePersist(
 function recordTableHistory(file: string): void {
   const s = useTableStore.getState();
   if (s.tableFile !== file) return; // 切表竞态：只记当前表格
-  const snapshot: TableFile = {
-    schema: TABLE_SCHEMA,
-    id: s.id,
-    title: s.title,
-    fields: s.fields,
-    rows: s.rows,
-    createdAt: 0, // 快照展示用；回滚经 write_table_vault 保留磁盘真实 createdAt
-    updatedAt: Date.now(),
-  };
+  const snapshot = buildTableSnapshot();
   void recordHistoryVersion("table", file, {
     content: JSON.stringify(snapshot),
     action: "edit",
@@ -390,15 +395,7 @@ const persistCtl = createPersistController<boolean>({
         const latest = useTableStore.getState();
         if (latest.tableFile !== tableFile) return;
         const updatedAt = await writeTableVault(
-          {
-            schema: TABLE_SCHEMA,
-            id: latest.id,
-            title: latest.title,
-            fields: latest.fields,
-            rows: latest.rows,
-            createdAt: 0,
-            updatedAt: Date.now(),
-          },
+          buildTableSnapshot(),
           tableFile,
           force ? undefined : latest.baseUpdatedAt,
         );
@@ -504,6 +501,28 @@ function syncBroadcastBaseline(): void {
   broadcastBaselineRows = s.rows;
 }
 
+/**
+ * 复位表格运行时态（load 失败降级 / clear 清空共用同一份 13 字段字面量，防两处漂移）：
+ * tableFile 清空后不可写回，选中/冲突/编辑回退标记一并归零。error = 本次复位的原因文案（null = 正常清空）。
+ */
+function resetTableState(error: string | null): void {
+  useTableStore.setState({
+    tableFile: null,
+    id: "",
+    title: "",
+    fields: [],
+    rows: [],
+    baseUpdatedAt: 0,
+    dirty: false,
+    saving: false,
+    conflictPending: false,
+    error,
+    selectedRowId: null,
+    selection: null,
+    undoResetCell: null,
+  });
+}
+
 /** 协作对端是否同表在线：其内存/撤销栈可能仍引用附件文件（共享盘文件多人共用），
  * 本端单方回收会使其破图——有对端在线时跳过回收（磁盘堆积可接受，数据安全优先）；
  * 亦用于 watcher 判别「磁盘写入是对端保存的广播回放（内容已应用，不得重载回退）」。 */
@@ -556,17 +575,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
     // 换表清上一张表图片显示缓存（路径含 tableId 目录段不会撞，防长会话内存累积）
     clearTableImageCache();
     try {
-      // 存量表格图片迁移（内嵌 dataURL → 附件路径，一次性）：迁移后 .atb 只存路径引用，
-      // 保存不再全量序列化图片字节（大表多图保存提速的主路径）；失败降级按内嵌使用
-      let migrationFailed = false;
-      let table: TableFile;
-      try {
-        table = await migrateTableImages(file);
-      } catch (e) {
-        console.error("表格图片迁移失败（按内嵌 dataURL 继续使用）", e);
-        migrationFailed = true;
-        table = await readTableVault(file);
-      }
+      const table = await readTableVault(file);
       set({
         tableFile: file,
         id: table.id,
@@ -582,29 +591,12 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
         selection: null,
         undoResetCell: null,
       });
-      if (migrationFailed) {
-        set({ error: "表格图片迁移失败，已按内嵌方式继续使用（保存可能较慢）" });
-      }
       // 已落盘基线 = 加载的磁盘状态（后续保存按引用 diff，未变实体不重写）
       syncLastSaved();
     } catch (e) {
       console.error("加载表格失败", e);
       // 复位文件态：读失败时上一张表的内容/路径不得残留——继续编辑会写进错误的表文件
-      set({
-        tableFile: null,
-        id: "",
-        title: "",
-        fields: [],
-        rows: [],
-        baseUpdatedAt: 0,
-        dirty: false,
-        saving: false,
-        conflictPending: false,
-        error: e instanceof Error ? e.message : String(e),
-        selectedRowId: null,
-        selection: null,
-        undoResetCell: null,
-      });
+      resetTableState(e instanceof Error ? e.message : String(e));
     }
   },
 
@@ -639,21 +631,7 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
       );
     }
     clearTableImageCache();
-    set({
-      tableFile: null,
-      id: "",
-      title: "",
-      fields: [],
-      rows: [],
-      baseUpdatedAt: 0,
-      dirty: false,
-      saving: false,
-      conflictPending: false,
-      error: null,
-      selectedRowId: null,
-      selection: null,
-      undoResetCell: null,
-    });
+    resetTableState(null);
     syncLastSaved();
   },
 
@@ -678,8 +656,8 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
           : r,
       ),
     }));
-    // 编辑会话的提交（入栈点在会话入口：选中打字/双击）；任何新变更作废 redo
-    touchRedo();
+    // 编辑会话的提交（入栈点在会话入口：选中打字/双击）；任何新变更作废 redo（undo 后产生新变更，Ctrl+Y 不得恢复旧快照）
+    undoMgr.touchRedo();
     schedulePersist();
   },
 
@@ -744,8 +722,9 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
         filters: [{ name: "Excel 工作簿", extensions: ["xlsx"] }],
       });
       if (!target) return false;
+      // 对话框等待期间内存可能被协作补丁改写：沿用弹出前捕获的内容导出
       await exportTableXlsx(
-        { schema: TABLE_SCHEMA, id, title, fields, rows, createdAt: 0, updatedAt: baseUpdatedAt },
+        buildTableSnapshot({ id, title, fields, rows, updatedAt: baseUpdatedAt }),
         target,
       );
       return true;

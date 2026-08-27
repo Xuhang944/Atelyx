@@ -3,11 +3,9 @@
  * 大文件按 offset/limit 分段读取（单行/单次字节受 Rust 侧截断约束），页脚引导模型继续翻页——
  * 不硬拒大文件，也不整文件回填撑爆上下文。依赖 `capabilities.readFile`。只读，不建产物节点。
  */
-import { ToolArgsError } from "@/types";
-import { AGENT_TOOLS_META, READ_WINDOW_DEFAULT_LINES } from "@/constants/tools";
+import { ToolArgsError, errText } from "@/types";
+import { READ_WINDOW_DEFAULT_LINES } from "@/constants/tools";
 import { defineTool } from "./defineTool";
-
-const meta = AGENT_TOOLS_META.find((m) => m.id === "read_file")!;
 
 export interface ReadFileArgs {
   path: string;
@@ -15,10 +13,6 @@ export interface ReadFileArgs {
   offset: number;
   /** 返回行数上限（默认 READ_WINDOW_DEFAULT_LINES）。 */
   limit: number;
-}
-
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }
 
 function positiveInt(v: unknown, fallback: number, name: string): number {
@@ -31,7 +25,6 @@ function positiveInt(v: unknown, fallback: number, name: string): number {
 
 export const READ_FILE_TOOL = defineTool<ReadFileArgs>({
   name: "read_file",
-  label: meta.label,
   parallelSafe: true,
   description:
     "分页读取仓库中指定文本文件（相对仓库根路径），返回带行号的内容。结果含总行数与页脚提示；大文件用 offset/limit 分段继续读取（offset=上一段页脚提示的行号）。",

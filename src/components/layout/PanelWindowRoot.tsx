@@ -141,7 +141,6 @@ export function PanelWindowRoot() {
           const target = !(tabs.length > 0 && tabs.every((t) => t.locked));
           tabs.forEach((t) => usePanelStore.getState().panelSetLocked(t.id, target));
         }}
-        onSplit={() => undefined}
         onDeletePanel={() => void closeWindow()}
         onFocusHost={() => useUiStateStore.getState().setFocusedPanel(windowId)}
       />

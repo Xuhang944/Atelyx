@@ -4,11 +4,9 @@
  * 模式不含「/」时匹配任意深度的文件名（「*」即整棵树），含「/」才锚定层级。
  * 依赖 `capabilities.glob`（Rust `glob_vault`）。只读，不建产物节点。
  */
-import { ToolArgsError } from "@/types";
-import { AGENT_TOOLS_META, GLOB_MAX_RESULTS } from "@/constants/tools";
+import { ToolArgsError, errText } from "@/types";
+import { GLOB_MAX_RESULTS } from "@/constants/tools";
 import { defineTool } from "./defineTool";
-
-const meta = AGENT_TOOLS_META.find((m) => m.id === "glob")!;
 
 export interface GlobArgs {
   pattern: string;
@@ -16,13 +14,8 @@ export interface GlobArgs {
   path?: string;
 }
 
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
 export const GLOB_TOOL = defineTool<GlobArgs>({
   name: "glob",
-  label: meta.label,
   parallelSafe: true,
   description:
     "按 glob 模式查找仓库内文件路径（相对仓库根；只返回文件、不含目录；跳过隐藏目录与排除文件夹）。" +

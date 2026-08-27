@@ -99,50 +99,56 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * 相邻节点订阅：入向来源（in）/ 出向消费方（out）/ 无向关联端点（assoc）。
+ * find 节点 → 过滤邻边 → 映射回节点 → filter(Boolean)；assoc 双向匹配并按对端 id 去重
+ * （自由线同一对端可有多条连线）。
+ *
+ * useShallow 返回「数组」：元素是稳定节点引用，浅比较逐元素有效，未变不触发重渲染；
+ * 空态必须返回 EMPTY_NODES 模块常量——返回新建数组/含新建数组字段的对象时 useShallow
+ * 判等恒失效，触发 React「getSnapshot should be cached」+ 无限重渲染。
+ */
+function useAdjacentNodes(nodeId: string | null, dir: "in" | "out" | "assoc"): FlowNode[] {
+  return useCanvasStore(
+    useShallow((s) => {
+      const n = nodeId ? s.nodes.find((x) => x.id === nodeId) : undefined;
+      if (!n) return EMPTY_NODES;
+      // 无向关联边双向匹配端点，按对端 id 去重
+      if (dir === "assoc") {
+        const ids = new Set<string>();
+        for (const e of s.edges) {
+          if (e.directed !== false) continue;
+          if (e.source === n.id) ids.add(e.target);
+          else if (e.target === n.id) ids.add(e.source);
+        }
+        return [...ids]
+          .map((id) => s.nodes.find((x) => x.id === id))
+          .filter((x): x is FlowNode => !!x);
+      }
+      // 只含有向数据流边：无向关联边不表达消费/来源（独立「关联」分区展示）；
+      // in = 入边取 source（来源），out = 出边取 target（消费方），均排除自环
+      return s.edges
+        .filter(
+          (e) =>
+            e.directed !== false &&
+            (dir === "in"
+              ? e.target === n.id && e.source !== n.id
+              : e.source === n.id && e.target !== n.id),
+        )
+        .map((e) => s.nodes.find((x) => x.id === (dir === "in" ? e.source : e.target)))
+        .filter((x): x is FlowNode => !!x);
+    })
+  );
+}
+
 export function InspectorPanel() {
-  // 窄化订阅：节点引用（未变时稳定）+ 入边源/出边目标数组。
-  // 注意用 useShallow 返回「数组」（元素是稳定节点引用，浅比较逐元素有效）；
-  // 不能返回含新建数组字段的对象——useShallow 按字段 Object.is 比较会判定不等、
-  // 缓存永远失效，触发 React「getSnapshot should be cached」+ 无限重渲染。
+  // 窄化订阅：节点引用（未变时稳定）+ 相邻节点数组（useAdjacentNodes 内 useShallow 比较）
   const nodeId = useCanvasStore((s) => s.selectedNodeId);
   const node = useCanvasStore((s) => (nodeId ? s.nodes.find((x) => x.id === nodeId) : undefined));
-  const sources = useCanvasStore(
-    useShallow((s) => {
-      const n = nodeId ? s.nodes.find((x) => x.id === nodeId) : undefined;
-      if (!n) return EMPTY_NODES;
-      // 只含有向数据流边：无向关联边不表达消费/来源（独立「关联」分区展示）
-      return s.edges
-        .filter((e) => e.target === n.id && e.source !== n.id && e.directed !== false)
-        .map((e) => s.nodes.find((x) => x.id === e.source))
-        .filter((x): x is FlowNode => !!x);
-    })
-  );
-  const targets = useCanvasStore(
-    useShallow((s) => {
-      const n = nodeId ? s.nodes.find((x) => x.id === nodeId) : undefined;
-      if (!n) return EMPTY_NODES;
-      return s.edges
-        .filter((e) => e.source === n.id && e.target !== n.id && e.directed !== false)
-        .map((e) => s.nodes.find((x) => x.id === e.target))
-        .filter((x): x is FlowNode => !!x);
-    })
-  );
+  const sources = useAdjacentNodes(nodeId, "in");
+  const targets = useAdjacentNodes(nodeId, "out");
   // 无向关联边端点（去重）：关联是自由线，不记入消费/来源列表
-  const associations = useCanvasStore(
-    useShallow((s) => {
-      const n = nodeId ? s.nodes.find((x) => x.id === nodeId) : undefined;
-      if (!n) return EMPTY_NODES;
-      const ids = new Set<string>();
-      for (const e of s.edges) {
-        if (e.directed !== false) continue;
-        if (e.source === n.id) ids.add(e.target);
-        else if (e.target === n.id) ids.add(e.source);
-      }
-      return [...ids]
-        .map((id) => s.nodes.find((x) => x.id === id))
-        .filter((x): x is FlowNode => !!x);
-    })
-  );
+  const associations = useAdjacentNodes(nodeId, "assoc");
   // 只订阅选中对话的消息数（number，流式期间长度不变不重渲染；全量 messagesByConv 会每帧刷新面板）
   const msgCount = useCanvasStore((s) => (nodeId ? (s.messagesByConv[nodeId]?.length ?? 0) : 0));
   const updateNodeData = useCanvasStore((s) => s.updateNodeData);
@@ -260,15 +266,7 @@ export function InspectorPanel() {
             </SectionTitle>
             <DropdownSelect
               value={agentId ?? ""}
-              onChange={(v) =>
-                updateNodeData(node.id, {
-                  agentId: v || undefined,
-                  // 选择 Agent 时清除遗留字段（systemPromptFile/agentMode/agentTools 不再生效，按动作迁移）
-                  systemPromptFile: undefined,
-                  agentMode: undefined,
-                  agentTools: undefined,
-                })
-              }
+              onChange={(v) => updateNodeData(node.id, { agentId: v || undefined })}
               options={agents.map((a) => ({ value: a.id, label: a.name }))}
               placeholder="对话"
               emptyText="暂无 Agent（设置 → Agent 新建）"

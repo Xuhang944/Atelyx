@@ -50,6 +50,7 @@ import type { Awareness } from "y-protocols/awareness";
 import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import { useAppStore } from "@/stores/appStore";
 import { useVaultStore } from "@/stores/vaultStore";
+import { EXTERNAL_LINK_RE } from "@/utils/markdown";
 
 // ===== 主题 =====
 
@@ -440,7 +441,7 @@ function buildDecorations(
       // `<https://x>` 角括号 Autolink：剥括号，url/label 用括号内内容
       const inner = text.length >= 2 && text[0] === "<" && text[text.length - 1] === ">" ? text.slice(1, -1) : text;
       const parsed = c.name === "Autolink" ? { label: inner, url: inner } : parseBracketLink(text);
-      if (!parsed || !/^(https?:|mailto:|xmpp:)/i.test(parsed.url)) {
+      if (!parsed || !EXTERNAL_LINK_RE.test(parsed.url)) {
         // 非外链（相对路径/wiki 语法等）：标记保持原文，不隐藏
         for (const m of c.marks) marksToShow.add(rangeKey(m));
         continue;

@@ -1,23 +1,32 @@
 import { SettingCard } from "@/components/settings/SettingCard";
+import { useSettingsStore } from "@/stores/settingsStore";
+import { useDraftSync } from "@/hooks/useDraftSync";
 
-interface Props {
-  excludeDraft: string;
-  setExcludeDraft: (v: string) => void;
-  commitExcludeFolders: () => void;
-  attachmentDraft: string;
-  setAttachmentDraft: (v: string) => void;
-  commitAttachmentFolder: () => void;
-}
+/** 文件与路径面板（仓库级）：草稿自持 + blur 提交（避免每键一次 IPC），直接订阅 store。 */
+export function FilesSettingsTab() {
+  const vaultConfig = useSettingsStore((s) => s.vaultConfig);
+  const setExcludeFolders = useSettingsStore((s) => s.setExcludeFolders);
+  const setAttachmentFolder = useSettingsStore((s) => s.setAttachmentFolder);
 
-/** 文件与路径面板（仓库级）。 */
-export function FilesSettingsTab({
-  excludeDraft,
-  setExcludeDraft,
-  commitExcludeFolders,
-  attachmentDraft,
-  setAttachmentDraft,
-  commitAttachmentFolder,
-}: Props) {
+  // 排除文件夹/附件文件夹用本地草稿 + blur 提交（避免每键一次 IPC）
+  const [excludeDraft, setExcludeDraft] = useDraftSync(
+    vaultConfig?.excludeFolders?.join(", ") ?? "",
+  );
+  const commitExcludeFolders = () => {
+    const list = excludeDraft
+      .split(/[,，]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    void setExcludeFolders(list);
+  };
+  const [attachmentDraft, setAttachmentDraft] = useDraftSync(
+    vaultConfig?.attachmentFolder ?? "",
+  );
+  const commitAttachmentFolder = () => {
+    const v = attachmentDraft.trim();
+    void setAttachmentFolder(v || undefined);
+  };
+
   return (
     <section className="flex-1 p-5 overflow-auto space-y-4">
       {/* 排除文件夹：逗号分隔；不显示在文件面板、不参与监听 */}

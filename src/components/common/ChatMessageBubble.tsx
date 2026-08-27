@@ -3,8 +3,9 @@
  *
  * 收敛两处的重复实现：气泡容器 + @引用胶囊（按原文位置内嵌）+ 附件缩略 + 思考折叠 +
  * Markdown 渲染 + 操作按钮组（复制/回到此处/分支/重新生成）。
- * user/assistant 消息统一 Markdown 渲染；差异由 props 表达：配色变体、@胶囊 点击行为
+ * user/assistant 消息统一 Markdown 渲染；差异由 props 表达：@胶囊 点击行为
  * （画布 = 定位节点，面板 = 打开笔记）、附件（仅画布有）、分支/重新生成（入口各自）。
+ * 气泡配色/内边距/流式占位两入口恒同值，内联为模块级常量（调用点不再传，memo 引用恒稳定）。
  *
  * memo 生效前提：markdownComponents 必须 useMemo 稳定化、onRollback/onBranch 等
  * 回调 useCallback——流式期间历史消息靠引用不变跳过重渲染（assistant 消息无 refs/
@@ -38,6 +39,23 @@ import { splitMentions } from "@/utils/text";
 import { groupAgentSteps } from "@/utils/agentSteps";
 import type { AgentStep, Attachment, ToolRun } from "@/types";
 
+/** 两入口恒同值的气泡样式（画布/面板同款）：模块级单例，memo 浅比较引用恒稳定。 */
+const USER_BUBBLE_CLASS = "bg-[var(--bg-tertiary)]";
+const ASSISTANT_BUBBLE_STYLE: CSSProperties = {
+  background: "var(--bg-primary)",
+  border: "1px solid var(--border)",
+};
+const BUBBLE_PADDING_CLASS = "px-3 py-2 text-sm leading-relaxed min-w-0";
+/** 流式且无内容时的占位（画布/面板同款）。 */
+const STREAMING_PLACEHOLDER = (
+  <span
+    className="inline-flex items-center gap-1 text-xs"
+    style={{ color: "var(--text-muted)" }}
+  >
+    <Loader2 size={12} className="animate-spin" /> 生成中…
+  </span>
+);
+
 interface ChatMessageBubbleProps {
   /** 消息归属：user = 右对齐 + 用户底色；assistant = 左对齐。 */
   role: "user" | "assistant";
@@ -59,8 +77,6 @@ interface ChatMessageBubbleProps {
   steps?: AgentStep[];
   /** 是否进行中的流式消息（思考块折叠态显示等待动画）。 */
   isStreaming: boolean;
-  /** 流式且无内容时的占位（调用方不传时 = "..."）。 */
-  streamingPlaceholder?: ReactNode;
   /** 历史消息附件缩略（仅画布消息有；面板消息无附件）。 */
   attachments?: Attachment[];
   /** 附件图片右键 → 拉出为媒体节点（仅画布传）。 */
@@ -77,12 +93,6 @@ interface ChatMessageBubbleProps {
   onBranch?: (messageId: string) => void;
   /** 重新生成（仅 AI 对话面板有）。 */
   onRegenerate?: () => void;
-  /** user 气泡底色类（画布与面板均 = bg-tertiary 灰底）。 */
-  userBubbleClass?: string;
-  /** assistant 气泡额外样式（两入口同款 = bg-primary + 边框）。 */
-  assistantBubbleStyle?: CSSProperties;
-  /** 气泡内边距类（两入口同款宽松）。 */
-  paddingClass?: string;
   /** React Flow 内使用时阻止事件冒泡（画布传 true，防拖动/连线误触）。 */
   stopPropagation?: boolean;
 }
@@ -96,7 +106,6 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
   content,
   steps,
   isStreaming,
-  streamingPlaceholder,
   attachments,
   onMediaExtract,
   markdownComponents,
@@ -106,9 +115,6 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
   onRollback,
   onBranch,
   onRegenerate,
-  userBubbleClass,
-  assistantBubbleStyle,
-  paddingClass = "px-2.5 py-1.5",
   stopPropagation,
 }: ChatMessageBubbleProps) {
   const isUser = role === "user";
@@ -153,18 +159,13 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
   return (
     <div className={`group relative flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
-        className={`relative max-w-[85%] rounded-lg ${paddingClass} ${isUser ? (userBubbleClass ?? "") : ""}`}
+        className={`relative max-w-[85%] rounded-lg ${BUBBLE_PADDING_CLASS} ${isUser ? USER_BUBBLE_CLASS : ""}`}
         style={{
           cursor: "text",
           userSelect: "text",
           WebkitUserSelect: "text",
-          ...(isUser
-            ? {}
-            : {
-                background: "var(--bg-tertiary)",
-                color: "var(--text-primary)",
-                ...assistantBubbleStyle,
-              }),
+          // assistant 底色/边框来自样式常量（原实现 bg-tertiary 被其覆盖，净效果一致），字色恒 text-primary
+          ...(isUser ? {} : { ...ASSISTANT_BUBBLE_STYLE, color: "var(--text-primary)" }),
         }}
       >
         {atts.length > 0 && (
@@ -245,8 +246,8 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
                 ))}
               </div>
             )}
-            {isStreaming && !content && stepGroups.length === 0 && streamingPlaceholder != null ? (
-              streamingPlaceholder
+            {isStreaming && !content && stepGroups.length === 0 ? (
+              STREAMING_PLACEHOLDER
             ) : (
               <>
                 {/* 步骤流与最终回复的分隔（有工具步骤且已产出回复时才显示，避免悬空分隔线） */}

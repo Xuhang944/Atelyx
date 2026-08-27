@@ -10,6 +10,9 @@
  * - 视图切换：标签激活即切换（视图与布局解耦，见 `types/workspaceLayout.ts`）
  *
  * 面板/标签 id 由调用方生成（crypto.randomUUID），本文件只更新结构。
+ *
+ * 面板与撕裂窗口的标签组操作共用 TabGroup 投影核心（{tabs, activeTabId} 同构），
+ * 12 个导出入口各自一行委托，行为与独立实现逐点一致。
  */
 import type {
   DetachedWindow,
@@ -110,6 +113,83 @@ export function parentSplitOf(
   return null;
 }
 
+/**
+ * 标签组共享核心：PanelNode 与 DetachedWindow 的 {tabs, activeTabId} 同构，
+ * 六组标签操作（增/删/激活/换视图/锁定/排序）只读写该投影，树面板与撕裂窗口入口共用。
+ * 返回 null = 无变化（标签不存在等），入口经 applyTabGroup 原样返回宿主（引用稳定）。
+ */
+interface TabGroup {
+  tabs: TabItem[];
+  activeTabId: string | null;
+}
+
+/** 共享核心产出写回宿主；patch 为 null 时原样返回宿主。 */
+function applyTabGroup(host: PanelNode, patch: TabGroup | null): PanelNode;
+function applyTabGroup(host: DetachedWindow, patch: TabGroup | null): DetachedWindow;
+function applyTabGroup(
+  host: PanelNode | DetachedWindow,
+  patch: TabGroup | null,
+): PanelNode | DetachedWindow {
+  return patch ? { ...host, ...patch } : host;
+}
+
+/** 插入标签（默认尾部）并激活。 */
+function groupAddTab(g: TabGroup, tab: TabItem, index?: number): TabGroup {
+  const i = index ?? g.tabs.length;
+  const tabs = [...g.tabs];
+  tabs.splice(Math.min(i, tabs.length), 0, tab);
+  return { tabs, activeTabId: tab.id };
+}
+
+/**
+ * 移除标签。被移除的是激活标签时激活邻居
+ * （右邻优先，VS Code 语义：Math.min(原下标, 新长度-1)）；移除后空 → activeTabId 置 null。
+ */
+function groupRemoveTab(g: TabGroup, tabId: string): TabGroup | null {
+  const i = g.tabs.findIndex((t) => t.id === tabId);
+  if (i < 0) return null;
+  const tabs = g.tabs.filter((t) => t.id !== tabId);
+  let activeTabId = g.activeTabId;
+  if (activeTabId === tabId) {
+    if (tabs.length === 0) activeTabId = null;
+    else activeTabId = (tabs[Math.min(i, tabs.length - 1)] ?? tabs[0]).id;
+  }
+  return { tabs, activeTabId };
+}
+
+/** 激活标签（不存在返回 null；tabs 原引用透传保持叶子稳定）。 */
+function groupActivateTab(g: TabGroup, tabId: string): TabGroup | null {
+  return g.tabs.some((t) => t.id === tabId) ? { tabs: g.tabs, activeTabId: tabId } : null;
+}
+
+/** 切换某标签的视图（view 恒非 empty；未命中标签时 tabs 数组仍换新——与原入口行为一致）。 */
+function groupSetTabView(g: TabGroup, tabId: string, view: ViewKind): TabGroup {
+  return {
+    tabs: g.tabs.map((t) => (t.id === tabId ? { ...t, view } : t)),
+    activeTabId: g.activeTabId,
+  };
+}
+
+/** 锁定/解锁某标签（未命中标签时 tabs 数组仍换新——与原入口行为一致）。 */
+function groupSetTabLocked(g: TabGroup, tabId: string, locked: boolean): TabGroup {
+  return {
+    tabs: g.tabs.map((t) => (t.id === tabId ? { ...t, locked } : t)),
+    activeTabId: g.activeTabId,
+  };
+}
+
+/** 组内排序（把 tabId 移到 toIndex，前移后移均按移除后下标处理）。 */
+function groupMoveTab(g: TabGroup, tabId: string, toIndex: number): TabGroup | null {
+  const from = g.tabs.findIndex((t) => t.id === tabId);
+  if (from < 0) return null;
+  const tabs = [...g.tabs];
+  const [moved] = tabs.splice(from, 1);
+  if (!moved) return null;
+  const target = from < toIndex ? toIndex - 1 : toIndex;
+  tabs.splice(Math.max(0, Math.min(target, tabs.length)), 0, moved);
+  return { tabs, activeTabId: g.activeTabId };
+}
+
 /** 在面板中插入标签（默认尾部）并激活；面板 id 不存在时原树不变。 */
 export function addTabToPanel(
   tree: LayoutNode,
@@ -117,50 +197,29 @@ export function addTabToPanel(
   tab: TabItem,
   index?: number,
 ): LayoutNode {
-  return mapPanel(tree, panelId, (panel) => {
-    const i = index ?? panel.tabs.length;
-    const tabs = [...panel.tabs];
-    tabs.splice(Math.min(i, tabs.length), 0, tab);
-    return { ...panel, tabs, activeTabId: tab.id };
-  });
+  return mapPanel(tree, panelId, (panel) => applyTabGroup(panel, groupAddTab(panel, tab, index)));
 }
 
-/**
- * 从面板移除标签（面板保留在树中）。被移除的是激活标签时激活邻居
- * （右邻优先，VS Code 语义：Math.min(原下标, 新长度-1)）；移除后空 → 空面板。
- */
+/** 从面板移除标签（面板保留在树中；移除后空 → 空面板）。 */
 export function removeTabFromPanel(tree: LayoutNode, panelId: string, tabId: string): LayoutNode {
-  return mapPanel(tree, panelId, (panel) => {
-    const i = panel.tabs.findIndex((t) => t.id === tabId);
-    if (i < 0) return panel;
-    const tabs = panel.tabs.filter((t) => t.id !== tabId);
-    let activeTabId = panel.activeTabId;
-    if (activeTabId === tabId) {
-      if (tabs.length === 0) activeTabId = null;
-      else activeTabId = (tabs[Math.min(i, tabs.length - 1)] ?? tabs[0]).id;
-    }
-    return { ...panel, tabs, activeTabId };
-  });
+  return mapPanel(tree, panelId, (panel) => applyTabGroup(panel, groupRemoveTab(panel, tabId)));
 }
 
 /** 激活面板中的标签（不存在/面板不存在时原树不变）。 */
 export function setActiveTab(tree: LayoutNode, panelId: string, tabId: string): LayoutNode {
-  return mapPanel(tree, panelId, (panel) =>
-    panel.tabs.some((t) => t.id === tabId) ? { ...panel, activeTabId: tabId } : panel,
-  );
+  return mapPanel(tree, panelId, (panel) => applyTabGroup(panel, groupActivateTab(panel, tabId)));
 }
 
-/** 切换面板中某标签的视图（view 恒非 empty；标签/面板不存在时原树不变）。 */
+/** 切换面板中某标签的视图（view 恒非 empty）。 */
 export function setTabView(
   tree: LayoutNode,
   panelId: string,
   tabId: string,
   view: ViewKind,
 ): LayoutNode {
-  return mapPanel(tree, panelId, (panel) => ({
-    ...panel,
-    tabs: panel.tabs.map((t) => (t.id === tabId ? { ...t, view } : t)),
-  }));
+  return mapPanel(tree, panelId, (panel) =>
+    applyTabGroup(panel, groupSetTabView(panel, tabId, view)),
+  );
 }
 
 /** 锁定/解锁面板中的标签。 */
@@ -170,29 +229,21 @@ export function setTabLocked(
   tabId: string,
   locked: boolean,
 ): LayoutNode {
-  return mapPanel(tree, panelId, (panel) => ({
-    ...panel,
-    tabs: panel.tabs.map((t) => (t.id === tabId ? { ...t, locked } : t)),
-  }));
+  return mapPanel(tree, panelId, (panel) =>
+    applyTabGroup(panel, groupSetTabLocked(panel, tabId, locked)),
+  );
 }
 
-/** 面板标签组内排序（把 tabId 移到 toIndex，前移后移均按移除后下标处理）。 */
+/** 面板标签组内排序。 */
 export function moveTabWithinPanel(
   tree: LayoutNode,
   panelId: string,
   tabId: string,
   toIndex: number,
 ): LayoutNode {
-  return mapPanel(tree, panelId, (panel) => {
-    const from = panel.tabs.findIndex((t) => t.id === tabId);
-    if (from < 0) return panel;
-    const tabs = [...panel.tabs];
-    const [moved] = tabs.splice(from, 1);
-    if (!moved) return panel;
-    const target = from < toIndex ? toIndex - 1 : toIndex;
-    tabs.splice(Math.max(0, Math.min(target, tabs.length)), 0, moved);
-    return { ...panel, tabs };
-  });
+  return mapPanel(tree, panelId, (panel) =>
+    applyTabGroup(panel, groupMoveTab(panel, tabId, toIndex)),
+  );
 }
 
 /**
@@ -342,12 +393,9 @@ export function detachedAddTab(
   tab: TabItem,
   index?: number,
 ): DetachedWindow[] {
-  return mapDetached(detachedWindows, windowId, (win) => {
-    const i = index ?? win.tabs.length;
-    const tabs = [...win.tabs];
-    tabs.splice(Math.min(i, tabs.length), 0, tab);
-    return { ...win, tabs, activeTabId: tab.id };
-  });
+  return mapDetached(detachedWindows, windowId, (win) =>
+    applyTabGroup(win, groupAddTab(win, tab, index)),
+  );
 }
 
 /** 从撕裂窗口移除标签（窗口保留，即使被拖空——由调用方决定是否关闭窗口）。 */
@@ -356,17 +404,9 @@ export function detachedRemoveTab(
   windowId: string,
   tabId: string,
 ): DetachedWindow[] {
-  return mapDetached(detachedWindows, windowId, (win) => {
-    const i = win.tabs.findIndex((t) => t.id === tabId);
-    if (i < 0) return win;
-    const tabs = win.tabs.filter((t) => t.id !== tabId);
-    let activeTabId = win.activeTabId;
-    if (activeTabId === tabId) {
-      if (tabs.length === 0) activeTabId = null;
-      else activeTabId = (tabs[Math.min(i, tabs.length - 1)] ?? tabs[0]).id;
-    }
-    return { ...win, tabs, activeTabId };
-  });
+  return mapDetached(detachedWindows, windowId, (win) =>
+    applyTabGroup(win, groupRemoveTab(win, tabId)),
+  );
 }
 
 /** 激活撕裂窗口中的标签。 */
@@ -376,21 +416,20 @@ export function detachedSetActive(
   tabId: string,
 ): DetachedWindow[] {
   return mapDetached(detachedWindows, windowId, (win) =>
-    win.tabs.some((t) => t.id === tabId) ? { ...win, activeTabId: tabId } : win,
+    applyTabGroup(win, groupActivateTab(win, tabId)),
   );
 }
 
-/** 切换撕裂窗口中某标签的视图（view 恒非 empty；标签/窗口不存在时原数组不变）。 */
+/** 切换撕裂窗口中某标签的视图（view 恒非 empty）。 */
 export function detachedSetTabView(
   detachedWindows: DetachedWindow[],
   windowId: string,
   tabId: string,
   view: ViewKind,
 ): DetachedWindow[] {
-  return mapDetached(detachedWindows, windowId, (win) => ({
-    ...win,
-    tabs: win.tabs.map((t) => (t.id === tabId ? { ...t, view } : t)),
-  }));
+  return mapDetached(detachedWindows, windowId, (win) =>
+    applyTabGroup(win, groupSetTabView(win, tabId, view)),
+  );
 }
 
 /** 锁定/解锁撕裂窗口中的标签。 */
@@ -400,10 +439,9 @@ export function detachedSetLocked(
   tabId: string,
   locked: boolean,
 ): DetachedWindow[] {
-  return mapDetached(detachedWindows, windowId, (win) => ({
-    ...win,
-    tabs: win.tabs.map((t) => (t.id === tabId ? { ...t, locked } : t)),
-  }));
+  return mapDetached(detachedWindows, windowId, (win) =>
+    applyTabGroup(win, groupSetTabLocked(win, tabId, locked)),
+  );
 }
 
 /** 撕裂窗口标签组内排序。 */
@@ -413,16 +451,9 @@ export function detachedMoveTab(
   tabId: string,
   toIndex: number,
 ): DetachedWindow[] {
-  return mapDetached(detachedWindows, windowId, (win) => {
-    const from = win.tabs.findIndex((t) => t.id === tabId);
-    if (from < 0) return win;
-    const tabs = [...win.tabs];
-    const [moved] = tabs.splice(from, 1);
-    if (!moved) return win;
-    const target = from < toIndex ? toIndex - 1 : toIndex;
-    tabs.splice(Math.max(0, Math.min(target, tabs.length)), 0, moved);
-    return { ...win, tabs };
-  });
+  return mapDetached(detachedWindows, windowId, (win) =>
+    applyTabGroup(win, groupMoveTab(win, tabId, toIndex)),
+  );
 }
 
 /** 更新撕裂窗口位置尺寸。 */
@@ -481,43 +512,4 @@ function mapDetached(
     return mapped;
   });
   return changed ? next : detachedWindows;
-}
-
-/**
- * 旧布局树形状（`kind` 兼容旧磁盘值 "area"，schema v1 前的磁盘数据；
- * 面板含 view 字段的 v1 前形状 / 已迁移的新形状（PanelNode，含 tabs/activeTabId）；
- * split 的 children/sizes 已是数组）。
- */
-type LegacyPanelNode = { kind: "area" | "panel"; id: string; view?: ViewKind } | PanelNode;
-type LegacyLayoutNode = LegacyPanelNode | SplitNode;
-
-/**
- * 旧布局迁移：统一归一化 `kind`（旧 "area" → "panel"）；`view` 字段面板 → 标签组
- * （view "empty" → 空面板；面板 id 保留，防聚焦引用失效）；已迁移的新形状原样返回
- * （旧磁盘可能仍带 kind "area"，此时含 tabs/activeTabId，直接透传）；
- * split 的 sizes 长度不符时均分补齐（防御损坏数据）。
- */
-export function migrateLegacyTree(node: LegacyLayoutNode): LayoutNode {
-  if (node.kind === "split") {
-    const children = node.children.map(migrateLegacyTree);
-    const sizes =
-      Array.isArray(node.sizes) && node.sizes.length === children.length
-        ? node.sizes
-        : children.map(() => 100 / children.length);
-    return { ...node, children, sizes };
-  }
-  // 面板（kind 兼容旧 "area"；v1 前形状含 view 字段，已迁移形状含 tabs/activeTabId）
-  const panel = node as LegacyPanelNode;
-  if (!("view" in panel)) {
-    // 已迁移的新形状（含 tabs/activeTabId）：kind 已是 panel 直接透传（引用稳定）；
-    // 旧磁盘仍可能带 kind "area"，此时归一化为 panel
-    const p = panel as PanelNode;
-    return p.kind === "panel" ? p : { ...p, kind: "panel" as const };
-  }
-  const view = panel.view ?? "empty";
-  if (view === "empty") {
-    return { kind: "panel", id: panel.id, tabs: [], activeTabId: null };
-  }
-  const tab: TabItem = { id: crypto.randomUUID(), view, locked: false };
-  return { kind: "panel", id: panel.id, tabs: [tab], activeTabId: tab.id };
 }
