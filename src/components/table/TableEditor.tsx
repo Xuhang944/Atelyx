@@ -235,7 +235,7 @@ export function TableEditor({ panelId }: { panelId: string }) {
   }, [focusedPanelId, panelId]);
 
   // ===== 单元格按下手势：<5px 松手 = 选中（进入隐藏编辑态）；>5px 拖动 = 区域选择/移动手势预留（不进编辑）=====
-  const cellPressRef = useRef<{ rowId: string; fieldId: string; x: number; y: number; active: boolean } | null>(null);
+  const cellPressRef = useRef<{ x: number; y: number; active: boolean } | null>(null);
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
       const p = cellPressRef.current;
@@ -255,9 +255,9 @@ export function TableEditor({ panelId }: { panelId: string }) {
     };
   }, []);
 
-  const startCellPress = useCallback((e: React.PointerEvent, rowId: string, fieldId: string) => {
+  const startCellPress = useCallback((e: React.PointerEvent) => {
     if (e.button !== 0) return;
-    cellPressRef.current = { rowId, fieldId, x: e.clientX, y: e.clientY, active: false };
+    cellPressRef.current = { x: e.clientX, y: e.clientY, active: false };
   }, []);
 
   /** 单元格松手（未拖动）→ 选中 + 标记面板聚焦（点 td 不冒泡到面板层，快捷键门控需显式标记）+
@@ -739,7 +739,7 @@ export function TableEditor({ panelId }: { panelId: string }) {
                         background: highlightBg(colHighlighted(f.id)),
                         boxShadow: cellShadow(row.id, f.id),
                       }}
-                      onPointerDown={(e) => startCellPress(e, row.id, f.id)}
+                      onPointerDown={startCellPress}
                       onPointerUp={() => releaseCellPress(row.id, f.id)}
                       onClick={(e) => e.stopPropagation()}
                     >

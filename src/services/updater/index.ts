@@ -10,7 +10,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
 /** 手动检查结果：null = 已是最新版本。 */
-export interface UpdateCheckResult {
+interface UpdateCheckResult {
   latestVersion: string;
 }
 

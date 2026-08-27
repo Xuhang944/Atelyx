@@ -26,7 +26,7 @@ import { createToolRegistry } from "./registry";
 import { FILE_REFERENCE_PROMPT, READONLY_TOOL_IDS } from "@/constants/tools";
 
 /** Agent 模式全部工具（注册顺序 = 名册/浮层展示顺序）。各工具参数类型各异，注册为通用定义。 */
-export const AGENT_TOOLS = [
+const AGENT_TOOLS = [
   WEB_SEARCH_TOOL,
   WEB_FETCH_TOOL,
   READ_FILE_TOOL,

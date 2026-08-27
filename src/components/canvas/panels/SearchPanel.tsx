@@ -222,7 +222,6 @@ function ModeMenu({
             color: m.supported ? "var(--text-primary)" : "var(--text-muted)",
             opacity: m.supported ? 1 : 0.6,
           }}
-          className={m.supported ? undefined : "disabled:cursor-not-allowed"}
         >
           <span className="flex-1">{m.label}</span>
           {m.supported ? (

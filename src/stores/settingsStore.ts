@@ -23,6 +23,7 @@ import { DEFAULT_AGENT_TOOLS } from "@/constants/tools";
 import { BUILTIN_AGENTS, BUILTIN_AGENT_CHAT_ID } from "@/constants/agents";
 import { PROVIDER_PRESETS } from "@/constants/providers";
 import { remapDirPrefix } from "@/utils/filename";
+import { modelDisplayLabel } from "@/utils/text";
 import { createPersistController } from "@/utils/persist";
 
 /**
@@ -993,3 +994,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     }
   },
 }));
+
+/** 默认生效模型显示名 selector（对话节点与 AI 对话面板共用）：跟随仓库默认时显示真实生效模型名
+ * （resolveDefaultModel 固定供应商解析 + 跨供应商同名前缀消歧）；未配置默认模型 = null。
+ * 返回原始串，Zustand Object.is 比较保证仅在值变时重渲染。 */
+export function selectDefaultModelDisplay(s: SettingsState): string | null {
+  const def = s.resolveDefaultModel();
+  return def ? modelDisplayLabel(s.config.providers, def.provider, def.model) : null;
+}

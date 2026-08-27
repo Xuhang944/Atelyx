@@ -126,19 +126,18 @@ function FileGroup({
           ))}
         </div>
       ) : (
-        latest && (
-          <button
-            onClick={() => onOpenHistory({ kind: group.kind, file: group.file })}
-            className="w-full flex items-center gap-1 text-[10px] pl-7 pr-2 pb-1.5 truncate text-left hover:opacity-80"
-            style={{ color: "var(--text-muted)" }}
-          >
-            <span className="truncate">
-              {relTime(latest.ts)} · {latest.authorName || latest.authorDevice || "用户"} ·{" "}
-              {ACTION_LABEL[latest.action] ?? latest.action}
-              {latest.summary ? ` · ${latest.summary}` : ""}
-            </span>
-          </button>
-        )
+        /* latest = 组内最新版本（entries 建组时恒非空） */
+        <button
+          onClick={() => onOpenHistory({ kind: group.kind, file: group.file })}
+          className="w-full flex items-center gap-1 text-[10px] pl-7 pr-2 pb-1.5 truncate text-left hover:opacity-80"
+          style={{ color: "var(--text-muted)" }}
+        >
+          <span className="truncate">
+            {relTime(latest.ts)} · {latest.authorName || latest.authorDevice || "用户"} ·{" "}
+            {ACTION_LABEL[latest.action] ?? latest.action}
+            {latest.summary ? ` · ${latest.summary}` : ""}
+          </span>
+        </button>
       )}
     </div>
   );

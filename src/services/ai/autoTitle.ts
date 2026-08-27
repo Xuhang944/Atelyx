@@ -50,14 +50,14 @@ function cleanTitle(raw: string): string | null {
   return t.slice(0, TITLE_MAX_LEN);
 }
 
-export interface AutoTitleParams {
+interface AutoTitleParams {
   baseUrl: string;
   apiKey: string;
   model: string;
   signal?: AbortSignal;
 }
 
-export interface AutoTitleResult {
+interface AutoTitleResult {
   /** 生成的标题（失败/空结果 = null，调用方保留占位）。 */
   title: string | null;
   /** 请求是否被主动中止（发送新消息/切仓库/手动接管）——调用方按「取消」处理，不视为失败。 */

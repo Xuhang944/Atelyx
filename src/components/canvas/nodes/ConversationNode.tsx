@@ -5,7 +5,7 @@ import { useShallow } from "zustand/react/shallow";
 import { ResizeHandle } from "./ResizeHandle";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useCollabStore } from "@/stores/collabStore";
-import { useSettingsStore } from "@/stores/settingsStore";
+import { useSettingsStore, selectDefaultModelDisplay } from "@/stores/settingsStore";
 import { useNodeCollab } from "@/hooks/useNodeCollab";
 import { computeLockOwner } from "@/utils/canvasCollab";
 import { useAutoScrollFollow } from "@/hooks/useAutoScrollFollow";
@@ -19,7 +19,6 @@ import { isAssetConsumed } from "@/utils/consumed";
 import { findFreeSpot } from "@/utils/layout";
 import {
   mentionTextOf,
-  modelDisplayLabel,
   prefix,
   splitMentions,
   type MentionSeg,
@@ -127,13 +126,7 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
   const updateNodeData = useCanvasStore((s) => s.updateNodeData);
   const { fitView } = useReactFlow();
   const providers = useSettingsStore((s) => s.config.providers);
-  // 未指定（跟随仓库默认）时下拉显示真实生效模型名（resolveDefaultModel：仓库默认模型按固定供应商解析；
-  // 同名模型跨供应商时带供应商名前缀）；selector 返回原始串（显示名），仅在值变时重渲染——避免每次
-  // 返回新对象让本组件在 settingsStore 任意更新时都重渲染（Zustand Object.is 比较）
-  const defaultModelDisplay = useSettingsStore((s) => {
-    const def = s.resolveDefaultModel();
-    return def ? modelDisplayLabel(s.config.providers, def.provider, def.model) : null;
-  });
+  const defaultModelDisplay = useSettingsStore(selectDefaultModelDisplay);
   const nodeData = useCanvasStore(
     (s) => s.nodes.find((n) => n.id === id)?.data,
   ) as Partial<ConversationData> | undefined;

@@ -147,7 +147,7 @@ interface ReferencedInput {
 }
 
 /** @ 提及映射：输入框内可见的 @显示名 → 源节点 id（发送时就地替换为引用内容）。 */
-export interface Mention {
+interface Mention {
   nodeId: string;
   text: string;
 }

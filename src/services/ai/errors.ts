@@ -11,7 +11,7 @@
 import type { LlmErrorCode } from "@/types";
 
 /** 上下文溢出错误的友好提示（追加到原始错误消息后展示）。 */
-export const OVERFLOW_HINT = "上下文过长：建议精简对话、去掉多余引用，或新建分支继续";
+const OVERFLOW_HINT = "上下文过长：建议精简对话、去掉多余引用，或新建分支继续";
 
 /** 结构化 AI 错误（稳定 code 路由，不再靠字符串正则猜测）。 */
 export class LlmError extends Error {
@@ -76,7 +76,7 @@ function matchStatus(msg: string): number | null {
 }
 
 /** 根据错误文本判定错误码（正文优先，其次 HTTP 状态兜底）。 */
-export function classifyMessage(text: string): LlmErrorCode {
+function classifyMessage(text: string): LlmErrorCode {
   if (CONTEXT_OVERFLOW_PATTERNS.some((re) => re.test(text))) return "CONTEXT_OVERFLOW";
   if (QUOTA_PATTERNS.some((re) => re.test(text))) return "QUOTA";
   if (NON_RETRYABLE_PATTERNS.some((re) => re.test(text))) return "AUTH";
@@ -100,7 +100,7 @@ export function isRetryableError(err: Error): boolean {
 }
 
 /** 该错误是否表示上下文溢出（超长请求不再裸报错，降级为友好提示）。 */
-export function isContextOverflow(err: Error): boolean {
+function isContextOverflow(err: Error): boolean {
   if (err instanceof LlmError) return err.code === "CONTEXT_OVERFLOW";
   return CONTEXT_OVERFLOW_PATTERNS.some((re) => re.test(err.message));
 }

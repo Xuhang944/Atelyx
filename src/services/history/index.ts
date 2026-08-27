@@ -48,7 +48,7 @@ export interface HistoryVersion {
 }
 
 /** 侧文件 schema。 */
-export interface HistoryFile {
+interface HistoryFile {
   versions: HistoryVersion[];
 }
 
@@ -187,7 +187,7 @@ export function versionContentAt(versions: HistoryVersion[], seq: number): strin
 }
 
 /** 按文件扩展名识别历史 kind（.md → note、.atlx → canvas、.atb → table；其余 null）。 */
-export function historyKindOfFile(file: string): HistoryKind | null {
+function historyKindOfFile(file: string): HistoryKind | null {
   if (/\.md$/i.test(file)) return "note";
   if (/\.atlx$/i.test(file)) return "canvas";
   if (/\.atb$/i.test(file)) return "table";

@@ -92,11 +92,6 @@ export function activeTabOf(panel: PanelNode): TabItem | null {
   return panel.tabs.find((t) => t.id === panel.activeTabId) ?? panel.tabs[0] ?? null;
 }
 
-/** 面板的激活视图（空面板返回 null）。 */
-export function activeViewOf(panel: PanelNode): ViewKind | null {
-  return activeTabOf(panel)?.view ?? null;
-}
-
 /** 查找面板节点的父 split 与下标（无父（根面板）返回 null；分割/关闭用）。 */
 export function parentSplitOf(
   tree: LayoutNode,
@@ -338,16 +333,6 @@ export function tearOffFromPanel(
   const hit = findTabInTree(tree, tabId);
   if (!hit || hit.panel.id !== panelId) return null;
   return { tree: removeTabFromPanel(tree, panelId, tabId), tab: hit.tab };
-}
-
-/** 把标签停靠进面板（来自撕裂窗口拖回或窗口内移动；默认尾部并激活）。 */
-export function dockTabIntoPanel(
-  tree: LayoutNode,
-  panelId: string,
-  tab: TabItem,
-  index?: number,
-): LayoutNode {
-  return addTabToPanel(tree, panelId, tab, index);
 }
 
 /** 在撕裂窗口中插入标签（默认尾部）并激活。 */

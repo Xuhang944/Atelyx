@@ -39,7 +39,7 @@ export async function writeVaultFile(file: string, content: string): Promise<voi
   await invoke("write_vault_file", { file, content });
 }
 
-export interface FileEditEntry {
+interface FileEditEntry {
   oldText: string;
   newText: string;
 }

@@ -31,11 +31,10 @@ import {
 import { useEffect, useCallback, useRef, useState } from "react";
 import { useAppStore } from "@/stores/appStore";
 import { useChatPanelStore } from "@/stores/chatPanelStore";
-import { useSettingsStore } from "@/stores/settingsStore";
+import { useSettingsStore, selectDefaultModelDisplay } from "@/stores/settingsStore";
 import { useAutoScrollFollow } from "@/hooks/useAutoScrollFollow";
 import { useMarkdownComponents } from "@/hooks/useMarkdownComponents";
 import {
-  modelDisplayLabel,
   mentionRemoveRange,
   scanMentionHits,
   splitMentions,
@@ -238,13 +237,7 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
   ]);
 
   const providers = useSettingsStore((s) => s.config.providers);
-  // 跟随默认时显示真实生效模型名（resolveDefaultModel：仓库默认模型按固定供应商解析；同名模型跨供应商时
-  // 带供应商名前缀）；selector 返回原始串（显示名），仅在值变时重渲染——避免每次返回新对象让本组件在
-  // settingsStore 任意更新时都重渲染（Zustand Object.is 比较）
-  const defaultModelDisplay = useSettingsStore((s) => {
-    const def = s.resolveDefaultModel();
-    return def ? modelDisplayLabel(s.config.providers, def.provider, def.model) : null;
-  });
+  const defaultModelDisplay = useSettingsStore(selectDefaultModelDisplay);
   // Agent 候选（配置在 设置 → Agent，仓库级 .atelyx/agents.json；发送时实时解析系统提示词/工具）
   const agents = useSettingsStore((s) => s.agents);
 

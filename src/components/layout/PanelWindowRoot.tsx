@@ -81,8 +81,7 @@ export function PanelWindowRoot() {
     return collectAllViews(layoutMirror.activeTree, layoutMirror.detachedWindows);
   }, [layoutMirror]);
 
-  const isDropTarget =
-    dropTarget?.kind === "panel" && dropTarget.window === windowId && dropTarget.zone === "center";
+  const isDropTarget = dropTarget?.window === windowId && dropTarget.zone === "center";
 
   if (!panelReady) {
     return <LoadingScreen />;

@@ -6,9 +6,6 @@ import type { CalcType, FieldType } from "@/types/table";
 /** `.atb` 文件 schema 版本号（Rust 侧 `vault.rs` 有同名常量，两端须保持一致）。 */
 export const TABLE_SCHEMA = "atelyx-table/v1" as const;
 
-/** 表格文件扩展名（Atelyx Table，小写）。 */
-export const TABLE_EXT = "atb";
-
 /** 字段类型显示名（字段管理菜单 / 类型切换用）。 */
 export const FIELD_TYPE_LABELS: Record<FieldType, string> = {
   text: "文本",

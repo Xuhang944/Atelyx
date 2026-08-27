@@ -21,31 +21,23 @@ import type {
   ReasoningEffort,
   Role,
   ToolSchema,
+  ToolExecResult,
   LlmMessage,
   LlmToolCall,
   LlmFinishReason,
   ToolRun,
 } from "@/types";
 
-export interface StreamBatch {
+interface StreamBatch {
   content: string;
   reasoning: string;
-}
-
-/** 单个工具执行的结果（可视化用：与 tool call id 对应）。 */
-export interface ToolExecResult {
-  id: string;
-  ok: boolean;
-  summary: string;
-  /** 完整结果文本（展开详情用；缺省 = summary）。 */
-  detail?: string;
 }
 
 /**
  * 工具调用轮数无预算：只要模型还在调用工具就继续，模型自会在输出不带工具的正文时收束；
  * 失控由 max-tokens（输出上限）+ 用户停止按钮兜底，不设固定轮数上限。
  */
-export interface RunStreamExchangeOptions {
+interface RunStreamExchangeOptions {
   provider: ProviderConfig;
   model: string;
   apiMessages: LlmMessage[];
@@ -321,7 +313,7 @@ export async function runStreamExchange(
   }
 }
 
-export type CleanupDecision =
+type CleanupDecision =
   { kind: "remove" } | { kind: "timeout-error" } | { kind: "keep" };
 
 /** 结束清理决策（画布/面板共用）：空回复移除占位；超时且回答未产出写超时错误（保留思考）；否则保留。
@@ -344,7 +336,7 @@ export function decideCleanup(
  * 话题命名目标（画布对话节点 / AI 对话面板会话的差异由回调注入，命名管线共用一份）。
  * 回调在延迟后与写回前被重取——命名期间的新消息纳入摘要、已命名/已删除则不写。
  */
-export interface AutoNameTarget {
+interface AutoNameTarget {
   /** 重取当前消息列表（延迟后调用；目标已消失返回空数组）。 */
   getMessages: () => Array<{ role: Role; displayContent?: string; content: string }>;
   /** 是否已被命名（画布 = 节点 title 非空；面板 = 已登记成功命名）。 */
@@ -353,7 +345,7 @@ export interface AutoNameTarget {
   applyTitle: (title: string) => void;
 }
 
-export type AutoNamingResult = "ok" | "skipped" | "failed";
+type AutoNamingResult = "ok" | "skipped" | "failed";
 
 /**
  * 公共话题命名管线（画布/面板共用，两 store 的 autoNameConversation/autoNameSession 均收敛于此）：

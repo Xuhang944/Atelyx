@@ -83,42 +83,6 @@ export function tableToSnapshotText(table: Pick<TableFile, "fields" | "rows">): 
   return lines.join("\n");
 }
 
-/**
- * 把「字段名 → 值」对象数组强转为表格行（AI 填行/工具参数共用）。
- * 字段按**名称**匹配（大小写敏感），类型强转兜底（number/duration 转数字、singleSelect 保留原串、
- * image 不产出）；未知字段丢弃；无效项（非对象）跳过。
- */
-export function coerceRowsJson(parsed: unknown, fields: TableField[]): TableRow[] {
-  if (!Array.isArray(parsed)) return [];
-  const rows: TableRow[] = [];
-  for (const item of parsed) {
-    if (typeof item !== "object" || item === null) continue;
-    const obj = item as Record<string, unknown>;
-    const values: Record<string, CellValue | undefined> = {};
-    for (const f of fields) {
-      const v = obj[f.name];
-      if (v === undefined || v === null) continue;
-      switch (f.type) {
-        case "number":
-        case "duration": {
-          const n = Number(v);
-          if (!Number.isNaN(n)) values[f.id] = n;
-          break;
-        }
-        case "text":
-        case "singleSelect":
-          values[f.id] = String(v);
-          break;
-        case "image":
-          // AI 不产出图片，留空由用户补充
-          break;
-      }
-    }
-    rows.push({ id: crypto.randomUUID(), values });
-  }
-  return rows;
-}
-
 /** 单元格是否为「非空值」（count 计算口径；image 按数组非空，text/singleSelect 按非空串）。 */
 function isNonEmptyValue(v: CellValue): boolean {
   if (typeof v === "number") return true;

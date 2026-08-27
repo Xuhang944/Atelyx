@@ -1,13 +1,10 @@
 export type {
-  NodeKind,
   ConversationData,
   TextData,
   MediaData,
   SearchResultItem,
   SearchResultData,
   TableData,
-  CanvasNodeData,
-  CanvasNode,
   CanvasEdge,
   LinkMode,
 } from "./node";
@@ -91,7 +88,6 @@ export {
   createHomeLayout,
   createTab,
   createPanel,
-  createEmptyPanel,
   type ViewKind,
   type SplitDirection,
   type TabItem,
@@ -144,12 +140,10 @@ export {
 } from "./tool";
 
 export type {
-  LlmRole,
   LlmToolCall,
   TokenUsage,
   LlmMessage,
   LlmFinishReason,
   LlmErrorCode,
   LlmStreamEvent,
-  LlmRequest,
 } from "./llm";

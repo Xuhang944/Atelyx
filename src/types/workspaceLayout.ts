@@ -103,11 +103,6 @@ export function createTab(view: ViewKind): TabItem {
   return { id: crypto.randomUUID(), view, locked: false };
 }
 
-/** 新建空面板（tabs 空，activeTabId null）。 */
-export function createEmptyPanel(): PanelNode {
-  return { kind: "panel", id: crypto.randomUUID(), tabs: [], activeTabId: null };
-}
-
 /** 新建单标签面板。 */
 export function createPanel(view: ViewKind): PanelNode {
   const tab = createTab(view);

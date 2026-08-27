@@ -93,7 +93,7 @@ function SplitHandle() {
 /** 跨窗口拖拽 drop 指示器：命中面板中部 = 加标签高亮整块；四边缘 = 分割带。 */
 function DropIndicatorOverlay() {
   const dropTarget = usePanelStore((s) => s.dropTarget);
-  if (!dropTarget || dropTarget.kind !== "panel" || dropTarget.window !== "main" || !dropTarget.panelId) {
+  if (!dropTarget || dropTarget.window !== "main" || !dropTarget.panelId) {
     return null;
   }
   const el = document.querySelector(`[data-drop-panel="${dropTarget.panelId}"]`);

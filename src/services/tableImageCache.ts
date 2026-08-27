@@ -46,12 +46,6 @@ export function resolveTableImageUrl(file: string): Promise<string> {
   return p;
 }
 
-/** 清除指定路径缓存（图片被移除/替换后防旧图残留渲染；其余路径不动）。进行中读取一并丢弃，防其完成后把陈旧条目写回。 */
-export function invalidateTableImageUrl(file: string): void {
-  cache.delete(file);
-  inflight.delete(file);
-}
-
 /** 清空缓存（load/clear 时调用：换表后旧图不入内存，防长会话内存累积）。进行中读取一并清掉，避免未完成读取 `.then` 写回复活陈旧条目。 */
 export function clearTableImageCache(): void {
   cache.clear();

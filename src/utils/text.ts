@@ -5,7 +5,7 @@ import type { Node as FlowNode } from "@xyflow/react";
 import type { ProviderConfig, SearchResultData, TableData, TextData, MediaData } from "@/types";
 
 /** 模型显示名：昵称优先，缺省 = API 模型 ID（长 ID 可用昵称替代，值仍存 ID）。 */
-export function modelDisplayName(provider: ProviderConfig, modelId: string): string {
+function modelDisplayName(provider: ProviderConfig, modelId: string): string {
   return provider.models.find((m) => m.id === modelId)?.nickname ?? modelId;
 }
 

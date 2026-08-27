@@ -35,7 +35,7 @@ import { checkAndAutoUpdate as checkAndAutoUpdateSvc, checkForUpdate as checkFor
 import type { CanvasFileRow, RecentVault } from "@/types";
 
 /** 手动检查更新状态（设置页「关于」tab 用）。 */
-export type UpdateStatus =
+type UpdateStatus =
   | "idle"
   | "checking"
   | "upToDate"

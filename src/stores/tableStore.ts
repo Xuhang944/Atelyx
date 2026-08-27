@@ -35,10 +35,10 @@ import { computeTablePatch, reorderByRank, sameIdSequence, summarizeTableSnapsho
 import type { CalcType, CellValue, FieldType, TableField, TableFile, TablePatch, TableRow } from "@/types";
 
 /** 编辑器视图：表格 / 时间线（内存态不持久化）。 */
-export type TableView = "table" | "timeline";
+type TableView = "table" | "timeline";
 
 /** 表格选中范围（互斥）：单元格 / 整行 / 整列 / 整表；null = 无选中。 */
-export type TableSelection =
+type TableSelection =
   | { kind: "cell"; rowId: string; fieldId: string }
   | { kind: "row"; rowId: string }
   | { kind: "column"; fieldId: string }

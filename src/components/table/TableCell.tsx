@@ -513,7 +513,6 @@ function ImageCell({ field, row }: { field: TableField; row: TableRow }) {
   const currentSrc = useTableImageSrc(images[cur]);
 
   const openLightbox = async () => {
-    if (images.length === 0) return;
     try {
       // 预览需要完整字节（大图）：一次性解析全部条目（data: 透传/路径走缓存），失败则不打开
       setLightboxUrls(await resolveTableImageEntries(images));

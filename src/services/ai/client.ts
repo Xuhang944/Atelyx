@@ -28,7 +28,7 @@ import { computeRetryDelay, GIVE_UP_RETRY_MS, shouldRetry, sleep } from "./retry
 export const STREAM_IDLE_TIMEOUT_MS = 60_000;
 
 /** 连通性测试/模型列表拉取超时：黑盒端点可能只收不答（代理吞包/黑洞 IP），防设置页按钮无限转圈。 */
-export const FETCH_MODELS_TIMEOUT_MS = 15_000;
+const FETCH_MODELS_TIMEOUT_MS = 15_000;
 
 export interface ChatStreamCallbacks {
   onDelta: (text: string) => void;
@@ -91,7 +91,7 @@ function userContentParts(m: Extract<LlmMessage, { role: "user" }>) {
 }
 
 /** 中性 LlmMessage[] → OpenAI 线上 messages（适配器私有，供应商差异隔离于此）。 */
-export function messagesToWire(
+function messagesToWire(
   messages: LlmMessage[],
   system?: string,
 ): Array<Record<string, unknown>> {

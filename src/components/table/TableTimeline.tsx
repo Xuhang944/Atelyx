@@ -189,13 +189,13 @@ const TimelinePreview = memo(function TimelinePreview({
   );
 });
 
-/** 播放头进度线：memo 小件——每帧仅自身重渲染（left 变化），不拖累卡片流/刻度尺/预览区。 */
-const PlayheadLine = memo(function PlayheadLine({ left, visible }: { left: number; visible: boolean }) {
+/** 播放头进度线：left 每帧都变，memo 比较必然失效，直接普通函数组件（免无谓浅比较开销）。 */
+function PlayheadLine({ left, visible }: { left: number; visible: boolean }) {
   if (!visible) return null;
   return (
     <div className="absolute top-0 bottom-0 w-0.5 pointer-events-none z-10" style={{ left: 12 + left, background: "var(--accent)" }} />
   );
-});
+}
 
 /** 单行播放时长：duration 字段值（>0 才有效），缺省 3s。 */
 function rowDuration(row: TableRow, durationFieldId: string | undefined): number {
@@ -379,7 +379,6 @@ export function TableTimeline() {
               setPlaying(true);
             } else {
               setPlaying((v) => !v);
-              if (!playing) playheadRef.current = playhead;
             }
           }}
           className="w-8 h-8 flex items-center justify-center rounded-full transition-colors"

@@ -529,7 +529,6 @@ function buildDecorations(
   return builder.finish();
 }
 
-/** 实时预览装饰插件：文档/选区变化时全量重建（笔记规模下开销可忽略）。 */
 /** 实时预览装饰 StateField：文档/选区变化时全量重建（笔记规模下开销可忽略）。
  * 用 StateField + EditorView.decorations.from 而非 ViewPlugin：block 装饰（横隔条）
  * 只能经 standard decorations 提供，ViewPlugin 提供会抛 RangeError。 */

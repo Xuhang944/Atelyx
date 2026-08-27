@@ -1,4 +1,4 @@
-import type { Edge, Node } from "@xyflow/react";
+import type { Edge } from "@xyflow/react";
 import type { ReasoningEffort } from "./provider";
 
 /** 单条搜索结果（AI 自主搜索产物）。 */
@@ -18,11 +18,6 @@ export interface SearchResultData {
   /** 勾选的条目下标（「仅将勾选条目注入上下文」；缺省 = 全部注入） */
   checked?: number[];
 }
-
-/**
- * 节点类型枚举（运行时；与磁盘格式 CanvasFileNode.type 对应，见 types/canvas.ts）。
- */
-export type NodeKind = "conversation" | "text" | "media" | "search";
 
 /**
  * 各节点类型的专属 data 结构。
@@ -107,20 +102,6 @@ export interface TableData {
   /** 引用文件被外部删除/重命名时降级标记（运行时态不持久化） */
   fileMissing?: boolean;
 }
-
-/**
- * 统一的节点 data 联合类型，配合 React Flow 的 Node<T> 泛型使用。
- * 各子类型与 Record<string, unknown> 交叉满足 React Flow 约束，
- * 类型窄化时仍能获得具体属性。
- */
-export type CanvasNodeData =
-  | (ConversationData & Record<string, unknown>)
-  | (TextData & Record<string, unknown>)
-  | (MediaData & Record<string, unknown>)
-  | (SearchResultData & Record<string, unknown>)
-  | (TableData & Record<string, unknown>);
-
-export type CanvasNode = Node<CanvasNodeData>;
 
 /** 关联边（directed: false）的箭头模式：无向 / 单向 / 双向。缺省 = 无向。 */
 export type LinkMode = "none" | "single" | "double";

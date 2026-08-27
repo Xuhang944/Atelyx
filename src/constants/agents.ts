@@ -13,10 +13,10 @@ import { AGENT_TOOLS_META, DEFAULT_AGENT_TOOLS } from "@/constants/tools";
 /** 预置「对话」Agent 固定 id（不可删除）。 */
 export const BUILTIN_AGENT_CHAT_ID = "builtin-chat";
 /** 预置「Agent」Agent 固定 id（不可删除）。 */
-export const BUILTIN_AGENT_AGENT_ID = "builtin-agent";
+const BUILTIN_AGENT_AGENT_ID = "builtin-agent";
 
 /** 预置「对话」Agent 工具集：只读基础工具恒可用，此处仅登记可勾选的「联网搜索 + 抓取网页」（缺省自带）。 */
-export const BUILTIN_CHAT_TOOLS: string[] = AGENT_TOOLS_META.filter(
+const BUILTIN_CHAT_TOOLS: string[] = AGENT_TOOLS_META.filter(
   (t) => !t.readOnly && t.id !== "write_file" && t.id !== "edit_file",
 ).map((t) => t.id);
 

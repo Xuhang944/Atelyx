@@ -7,7 +7,7 @@
 import type { ToolDefinition, ToolSchema } from "@/types";
 
 /** 构建期缺字段等错误的固定抛错（区别于 ToolArgsError 的参数错误）。 */
-export class defineToolError extends Error {}
+class defineToolError extends Error {}
 
 /** 校验工具定义必填字段，返回带缺省 renderResult 的完整定义。 */
 export function defineTool<A = Record<string, unknown>>(

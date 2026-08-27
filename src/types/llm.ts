@@ -6,9 +6,6 @@
  * 实现同一接缝的适配器。类型刻意收敛到我们 UI 所需（文本 + 思考），不引入完整
  * content-block 数组，避免过度抽象。
  */
-import type { ToolSchema } from "./tool";
-
-export type LlmRole = "system" | "user" | "assistant" | "tool";
 
 /** 一次工具调用（中性的 function-call 描述）。 */
 export interface LlmToolCall {
@@ -83,19 +80,4 @@ export type LlmStreamEvent =
   | { type: "tool-call"; call: LlmToolCall }
   | { type: "usage"; usage: TokenUsage }
   | { type: "finish"; reason: LlmFinishReason };
-
-/** 单次模型请求（去掉 provider 路由——当前直连单适配器）。 */
-export interface LlmRequest {
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-  messages: LlmMessage[];
-  /** 系统提示词（适配器映射到供应商 system 槽）。 */
-  system?: string;
-  /** 工具名册（适配器映射到供应商 tools 字段）。 */
-  tools?: ToolSchema[];
-  temperature?: number;
-  maxTokens?: number;
-  signal?: AbortSignal;
-}
 

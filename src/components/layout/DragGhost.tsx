@@ -17,7 +17,7 @@ export function DragGhost() {
   const y = ghost.y - windowPos.y;
   // 超出本窗口视口（光标在别处）→ 本窗口不显示
   if (x < -50 || y < -50 || x > window.innerWidth + 50 || y > window.innerHeight + 50) return null;
-  const meta = VIEW_META[ghost.view] ?? VIEW_META.empty;
+  const meta = VIEW_META[ghost.view];
   return (
     <div
       style={{
@@ -39,7 +39,7 @@ export function DragGhost() {
         }}
       >
         {meta.icon}
-        <span className="whitespace-nowrap">{VIEW_LABELS[ghost.view] ?? meta.label}</span>
+        <span className="whitespace-nowrap">{VIEW_LABELS[ghost.view]}</span>
       </div>
     </div>
   );
