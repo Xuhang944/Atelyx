@@ -79,7 +79,6 @@ pub fn run() {
             commands::vault::copy_vault_folder,
             commands::vault::rename_attachment,
             commands::vault::read_attachment_data_url,
-            commands::vault::import_attachment_vault,
             // 多维表格（.atb）文件 CRUD
             commands::table::create_table_vault,
             commands::table::read_table_vault,

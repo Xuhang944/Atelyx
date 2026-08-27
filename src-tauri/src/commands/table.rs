@@ -12,7 +12,7 @@ use nanoid::nanoid;
 use serde::Serialize;
 use tauri::{Manager, State};
 
-use crate::commands::vault::{collect_table_ref_updates, flush_canvas_updates, mime_from_ext};
+use crate::commands::vault::{collect_ref_updates, flush_canvas_updates, mime_from_ext};
 use crate::vault::{
     cache_evict_table, cache_put_table, delete_vault_file, read_table_file, read_table_file_cached,
     reorder_by, rename_note_file, rel_with_new_title, safe_join, same_physical_file,
@@ -122,7 +122,7 @@ pub fn write_table_vault(
     // title 变更导致路径漂移：table 节点按 file 路径引用，须同步全部 .atlx（防断链）
     if old_path != new_path {
         let same_file = same_physical_file(&old_path, &new_path);
-        let pending = collect_table_ref_updates(&root, &file, &new_rel)?;
+        let pending = collect_ref_updates(&root, &file, &new_rel)?;
         if let Err(e) = flush_canvas_updates(&pending) {
             // 回滚：删新文件（旧文件未动、引用未刷，保持原名），防改名后引用断裂
             let _ = std::fs::remove_file(&new_path);
@@ -218,7 +218,7 @@ pub fn patch_table_vault(
     // title 变更导致路径漂移：table 节点按 file 路径引用，须同步全部 .atlx（防断链）
     if old_path != new_path {
         let same_file = same_physical_file(&old_path, &new_path);
-        let pending = collect_table_ref_updates(&root, &file, &new_rel)?;
+        let pending = collect_ref_updates(&root, &file, &new_rel)?;
         if let Err(e) = flush_canvas_updates(&pending) {
             // 回滚：删新文件（旧文件未动、引用未刷，保持原名），防改名后引用断裂
             let _ = std::fs::remove_file(&new_path);
@@ -259,7 +259,7 @@ pub fn rename_table_vault(
             }
         }
     }
-    let pending = collect_table_ref_updates(&root, &file, &new_rel)?;
+    let pending = collect_ref_updates(&root, &file, &new_rel)?;
     let mut table = old_table.clone();
     table.title = new_title;
     table.updated_at = Utc::now().timestamp();
@@ -289,7 +289,7 @@ pub fn move_table_vault(
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
     let root = state.root()?;
-    let pending = collect_table_ref_updates(&root, &old_file, &new_file)?;
+    let pending = collect_ref_updates(&root, &old_file, &new_file)?;
     rename_note_file(&root, &old_file, &new_file)?;
     if let Err(e) = flush_canvas_updates(&pending) {
         let _ = rename_note_file(&root, &new_file, &old_file);

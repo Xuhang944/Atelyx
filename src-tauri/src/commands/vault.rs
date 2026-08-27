@@ -23,7 +23,7 @@ use crate::vault::{
     append_chat_messages_file, cache_put_canvas, collect_md_link_updates,
     copy_folder as copy_folder_impl, create_folder as create_folder_impl,
     delete_folder as delete_folder_impl, delete_vault_file, flush_md_updates,
-    import_attachment as import_attachment_vault_impl, init_vault_dirs, list_canvas_files,
+    init_vault_dirs, list_canvas_files,
     list_vault_tree as list_vault_tree_impl, markdown_link_path, read_canvas_file,
     read_canvas_file_cached, read_file_bytes, read_note as read_note_file,
     read_vault_config as read_vault_config_file, refresh_wiki_index,
@@ -82,11 +82,10 @@ pub fn open_vault(
         return Err(format!("仓库路径不是文件夹：{}", path));
     }
     let root = dunce::canonicalize(&raw).map_err(|e| format!("仓库路径不可达：{} ({e})", path))?;
-    // 读仓库级配置拿生效的文件面板配置（排除文件夹 / 附件导入文件夹）+ 仓库稳定 ID，缺省 = 空
+    // 读仓库级配置拿生效的文件面板配置（排除文件夹）+ 仓库稳定 ID，缺省 = 空
     let mut config = read_vault_config_file(&root)?;
     let (vault_id, vault_id_new) = ensure_vault_id(&mut config);
     let exclude_folders = config.exclude_folders.clone().unwrap_or_default();
-    let attachment_folder = config.attachment_folder.clone();
     init_vault_dirs(&root)?;
     // 仅首次生成 vault_id 时落盘（失败不阻塞打开——下次打开会补写，内存值本轮回调已生效）
     if vault_id_new {
@@ -100,7 +99,7 @@ pub fn open_vault(
     if let Err(e) = watcher::start(app, root.clone(), exclude_folders.clone()) {
         eprintln!("文件监听启动失败（仓库仍可打开，实时同步降级）：{e}");
     }
-    state.set(root.clone(), exclude_folders, attachment_folder)?;
+    state.set(root.clone(), exclude_folders)?;
     // 反链索引后台预热：把唯一一次全量扫描（读全部 .md 提取引用）塞进「进入仓库」阶段，不阻塞打开；
     // 失败静默——首次反链查询会懒构建兜底（预热与查询竞争时以先建为准，索引幂等可重建）。
     // 锁 poison 在此同样容忍：后台预热非关键路径，查询侧会重建。
@@ -576,7 +575,7 @@ pub fn rename_note(
 ) -> Result<(), String> {
     let root = state.root()?;
     let exclude = state.exclude_folders()?;
-    let pending = collect_note_ref_updates(&root, &old_file, &new_file)?;
+    let pending = collect_ref_updates(&root, &old_file, &new_file)?;
     let pending_md = collect_md_link_updates(&root, &exclude, &mut |span: &str| {
         let Some(path) = markdown_link_path(span) else {
             return span.to_string();
@@ -749,7 +748,7 @@ pub fn rename_attachment(
     state: State<'_, VaultState>,
 ) -> Result<(), String> {
     let root = state.root()?;
-    let pending = collect_attachment_ref_updates(&root, &old_file, &new_file)?;
+    let pending = collect_ref_updates(&root, &old_file, &new_file)?;
     rename_note_file(&root, &old_file, &new_file)?;
     if let Err(e) = flush_canvas_updates(&pending) {
         let _ = rename_note_file(&root, &new_file, &old_file);
@@ -771,18 +770,6 @@ pub fn read_attachment_data_url(
     let mime = mime_from_ext(&file).ok_or_else(|| format!("非图片附件，不支持 dataURL：{}", file))?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     Ok(format!("data:{};base64,{}", mime, b64))
-}
-
-/// 把系统文件（对话框选择）导入仓库（默认根目录，设置可配附件文件夹），返回相对路径（导入后建媒体节点用）。
-#[tauri::command]
-pub fn import_attachment_vault(
-    src: String,
-    name: String,
-    state: State<'_, VaultState>,
-) -> Result<String, String> {
-    let root = state.root()?;
-    let folder = state.attachment_folder()?.unwrap_or_default();
-    import_attachment_vault_impl(&root, &folder, Path::new(&src), &name)
 }
 
 /// 按扩展名推图片 mime（仅图片，其他返回 None）。
@@ -999,11 +986,10 @@ pub fn ensure_default_vault(
     if !default_root.exists() {
         std::fs::create_dir_all(&default_root).map_err(|e| e.to_string())?;
     }
-    // 读配置拿生效的文件面板配置（排除文件夹/附件导入文件夹）+ 仓库稳定 ID，与 open_vault 同流程
+    // 读配置拿生效的文件面板配置（排除文件夹）+ 仓库稳定 ID，与 open_vault 同流程
     let mut config = read_vault_config_file(&default_root)?;
     let (vault_id, vault_id_new) = ensure_vault_id(&mut config);
     let exclude_folders = config.exclude_folders.clone().unwrap_or_default();
-    let attachment_folder = config.attachment_folder.clone();
     init_vault_dirs(&default_root)?;
     if vault_id_new {
         let _ = write_vault_config_file(&default_root, &config);
@@ -1015,7 +1001,7 @@ pub fn ensure_default_vault(
     if let Err(e) = watcher::start(app_handle, default_root.clone(), exclude_folders.clone()) {
         eprintln!("文件监听启动失败（仓库仍可打开，实时同步降级）：{e}");
     }
-    state.set(default_root.clone(), exclude_folders, attachment_folder)?;
+    state.set(default_root.clone(), exclude_folders)?;
     Ok(vault_info_from(default_root, vault_id))
 }
 
@@ -1132,30 +1118,9 @@ fn scan_atlx_in(
     Ok(())
 }
 
-/// 收集需更新 text `file` / conversation `systemPromptFile` 引用的画布（不写盘）。
-fn collect_note_ref_updates(
-    root: &Path,
-    old_file: &str,
-    new_file: &str,
-) -> Result<Vec<(PathBuf, CanvasFile)>, String> {
-    collect_canvas_updates(root, &mut |canvas| {
-        update_refs_in_canvas(canvas, old_file, new_file)
-    })
-}
-
-/// 收集需更新 media 节点 file 引用的画布（不写盘）。与 collect_note_ref_updates 对称。
-fn collect_attachment_ref_updates(
-    root: &Path,
-    old_file: &str,
-    new_file: &str,
-) -> Result<Vec<(PathBuf, CanvasFile)>, String> {
-    collect_canvas_updates(root, &mut |canvas| {
-        update_refs_in_canvas(canvas, old_file, new_file)
-    })
-}
-
-/// 收集需更新 table 节点 file 引用的画布（不写盘，rename/move_table_vault 用）。
-pub(crate) fn collect_table_ref_updates(
+/// 收集需更新节点 file / systemPromptFile 引用的画布（不写盘，rename/move 后引用同步用）。
+/// 三类引用（笔记 .md / 附件 / 表格 .atb）共用：`update_refs_in_canvas` 按扩展名天然互斥。
+pub(crate) fn collect_ref_updates(
     root: &Path,
     old_file: &str,
     new_file: &str,
@@ -1213,29 +1178,19 @@ fn remap_dir_refs_in_canvas(canvas: &mut CanvasFile, old_dir: &str, new_dir: &st
         let Some(obj) = node.data.as_object_mut() else {
             continue;
         };
-        let ref_field = match node.node_type.as_str() {
-            // text 节点正文引用（笔记/*.md）
-            "text" => Some("file"),
-            // conversation 节点系统提示词引用（笔记/*.md，与 text 对称）
-            "conversation" => Some("systemPromptFile"),
-            // media 节点附件引用（任意文件）
-            "media" => Some("file"),
-            // table 节点表格引用（.atb）
-            "table" => Some("file"),
-            _ => None,
+        let Some(field) = ref_field_of(&node.node_type) else {
+            continue;
         };
-        if let Some(field) = ref_field {
-            if let Some(path) = obj.get(field).and_then(|v| v.as_str()) {
-                if path.starts_with(&old_prefix) {
-                    obj.insert(
-                        field.to_string(),
-                        serde_json::Value::String(format!(
-                            "{new_dir}/{}",
-                            &path[old_prefix.len()..]
-                        )),
-                    );
-                    changed = true;
-                }
+        if let Some(path) = obj.get(field).and_then(|v| v.as_str()) {
+            if path.starts_with(&old_prefix) {
+                obj.insert(
+                    field.to_string(),
+                    serde_json::Value::String(format!(
+                        "{new_dir}/{}",
+                        &path[old_prefix.len()..]
+                    )),
+                );
+                changed = true;
             }
         }
     }

@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use tauri::State;
 
-use crate::vault::{walk_md_in, VaultState};
+use crate::vault::{percent_decode, walk_md_in, VaultState};
 
 /// 带日期笔记（frontmatter `date`/`due`，自动进日历）。
 #[derive(Serialize, Deserialize, Clone)]
@@ -193,33 +193,6 @@ struct HistoryAuthor {
     device: String,
 }
 
-/// 百分号解码（encodeURIComponent 编码的历史文件名；非法序列返回 None）。
-fn percent_decode(s: &str) -> Option<String> {
-    fn hex(b: u8) -> Option<u8> {
-        match b {
-            b'0'..=b'9' => Some(b - b'0'),
-            b'a'..=b'f' => Some(b - b'a' + 10),
-            b'A'..=b'F' => Some(b - b'A' + 10),
-            _ => None,
-        }
-    }
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = hex(bytes[i + 1])?;
-            let lo = hex(bytes[i + 2])?;
-            out.push(hi * 16 + lo);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(out).ok()
-}
-
 /// 递归收集 `.atelyx/history/` 下全部版本（kind 由子目录名判定；根目录 = 旧 note 路径）。
 /// 注意：子目录白名单须与前端 `services/history/index.ts` 的 `historyPathFor` 保持一致
 /// （新增 kind 目录需两端同步，否则静默漏扫）。
@@ -237,9 +210,7 @@ fn collect_history_dir(dir: &Path, kind: &str, out: &mut Vec<RepoHistoryEntry>) 
         if !name.ends_with(".json") {
             continue;
         }
-        let Some(file) = percent_decode(&name[..name.len() - 5]) else {
-            continue;
-        };
+        let file = percent_decode(&name[..name.len() - 5]);
         let Ok(raw) = std::fs::read_to_string(&path) else {
             continue;
         };

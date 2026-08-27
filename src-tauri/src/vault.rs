@@ -46,8 +46,6 @@ pub struct VaultSession {
     pub root: PathBuf,
     /// 排除文件夹名列表（任何层级的同名文件夹不显示/不监听，`excludeFolders` 配置）。
     pub exclude_folders: Vec<String>,
-    /// 附件导入默认文件夹（相对仓库根，可含子路径；None/空 = 仓库根目录）。
-    pub attachment_folder: Option<String>,
 }
 
 impl Default for VaultState {
@@ -82,32 +80,16 @@ impl VaultState {
             .ok_or_else(|| "未打开仓库".to_string())
     }
 
-    /// 取当前仓库生效的附件导入文件夹（None = 仓库根目录），未打开仓库时返回错误。
-    pub fn attachment_folder(&self) -> Result<Option<String>, String> {
-        self.session
-            .lock()
-            .map_err(|e| e.to_string())?
-            .as_ref()
-            .map(|s| s.attachment_folder.clone())
-            .ok_or_else(|| "未打开仓库".to_string())
-    }
-
     /// 设置当前仓库会话（canonicalize 消除 `..`/符号链接，保证 safe_join 校验与 watcher 语义一致；
     /// 用 dunce 去除 Windows `\\?\` 长路径前缀，保证存/回传给前端的路径格式统一）。
     /// 同时清空反链索引缓存：不同仓库的索引不混用（查询时懒重建）。
     /// 返回 Result：Mutex poisoned 时向上传播而非静默丢弃（与 root() 策略一致）。
-    pub fn set(
-        &self,
-        root: PathBuf,
-        exclude_folders: Vec<String>,
-        attachment_folder: Option<String>,
-    ) -> Result<(), String> {
+    pub fn set(&self, root: PathBuf, exclude_folders: Vec<String>) -> Result<(), String> {
         let canonical = dunce::canonicalize(&root).unwrap_or_else(|_| root.clone());
         let mut guard = self.session.lock().map_err(|e| e.to_string())?;
         *guard = Some(VaultSession {
             root: canonical,
             exclude_folders,
-            attachment_folder,
         });
         // 以下三个辅助锁（wiki/canvas_cache/table_cache）poison 时清空动作无副作用，吞掉即可；
         // 读路径（query/read_cached）对 poison 走 map_err 传播（见 416/433 行），与本处策略一致。
@@ -701,10 +683,7 @@ pub fn rename_note_file(root: &Path, old_file: &str, new_file: &str) -> Result<(
     // 前端 dedupe 已防重名，此处兜底并发/外部创建。
     // 豁免 case-only 重命名（`note.md`→`Note.md`）：大小写不敏感文件系统上 exists() 解析到同一文件，
     // 两个 canonicalize 都成功且相等才豁免；任一失败（身份不明）不豁免，宁可拒绝不可覆盖
-    let same_file = match (dunce::canonicalize(&old_path), dunce::canonicalize(&new_path)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    };
+    let same_file = same_physical_file(&old_path, &new_path);
     if new_path.exists() && !same_file {
         return Err(format!("目标文件已存在：{}", new_file));
     }
@@ -724,44 +703,6 @@ pub fn delete_vault_file(root: &Path, file: &str) -> Result<(), String> {
 pub fn read_file_bytes(root: &Path, file: &str) -> Result<Vec<u8>, String> {
     let path = safe_join(root, file, false)?;
     std::fs::read(&path).map_err(|e| e.to_string())
-}
-
-/// 把系统文件导入仓库 `folder/`（folder 为空 = 仓库根目录），文件名净化 + 防重名递增后缀。
-/// 返回相对路径 `<folder>/<name>`（folder 为空时返回 `<name>`）。
-/// folder 经 safe_join 校验（防配置手改含 `..` 越界）并自动建目录。
-pub fn import_attachment(
-    root: &Path,
-    folder: &str,
-    src: &Path,
-    name: &str,
-) -> Result<String, String> {
-    let dir = if folder.is_empty() {
-        root.to_path_buf()
-    } else {
-        safe_join(root, folder, true)?
-    };
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let base = sanitize_filename(name);
-    let base = if base.is_empty() { "未命名".to_string() } else { base };
-    let (stem, ext) = match base.rfind('.') {
-        Some(i) if i > 0 => (base[..i].to_string(), base[i..].to_string()),
-        _ => (base.clone(), String::new()),
-    };
-    let mut dest_name = format!("{}{}", stem, ext);
-    let mut n = 1;
-    while dir.join(&dest_name).exists() {
-        n += 1;
-        dest_name = format!("{}-{}{}", stem, n, ext);
-    }
-    let dest = dir.join(&dest_name);
-    if src != dest {
-        std::fs::copy(src, &dest).map_err(|e| format!("复制文件失败：{e}"))?;
-    }
-    if folder.is_empty() {
-        Ok(dest_name)
-    } else {
-        Ok(format!("{folder}/{dest_name}"))
-    }
 }
 
 // ===== 仓库级配置（.atelyx/config.json）=====
@@ -1744,7 +1685,8 @@ fn normalize_link_path(raw: &str) -> Option<String> {
 }
 
 /// 简易 percent 解码（%XX）；非法序列原样保留（匹配不上自然不命中，不报错）。
-fn percent_decode(s: &str) -> String {
+/// pub(crate)：仓库历史聚合（commands/home.rs）解码历史文件名共用。
+pub(crate) fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
