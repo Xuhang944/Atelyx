@@ -403,9 +403,6 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
             <div className="h-full flex flex-col items-center justify-center gap-2 text-xs select-none" style={{ color: "var(--text-muted)" }}>
               <MessageSquare size={24} strokeWidth={1.5} className="opacity-60" />
               开始新的 AI 对话
-              {noteFile && (
-                <span className="text-[11px]">已自动引用当前笔记（退格可删除）</span>
-              )}
             </div>
           ) : (
             messages.map((m, i) => {
@@ -516,7 +513,7 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
               }
             }}
             spellCheck={false}
-            placeholder="输入消息，Enter 发送，Shift+Enter 换行（新会话自动 @ 当前笔记，拖入笔记 = @引用）"
+            placeholder="输入消息，Enter 发送，Shift+Enter 换行"
             rows={5}
             overlayClassName="z-0 px-2 pt-3 pb-12 text-sm leading-relaxed"
             textareaClassName="w-full px-2 pt-3 pb-12 text-sm leading-relaxed"
