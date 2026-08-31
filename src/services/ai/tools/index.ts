@@ -23,7 +23,7 @@ import { GREP_TOOL } from "./grep";
 import { EDIT_FILE_TOOL } from "./editFile";
 import { WRITE_FILE_TOOL } from "./writeFile";
 import { createToolRegistry } from "./registry";
-import { FILE_REFERENCE_PROMPT, READONLY_TOOL_IDS } from "@/constants/tools";
+import { FILE_REFERENCE_PROMPT, READONLY_TOOL_IDS, AGENT_TOOLS_META } from "@/constants/tools";
 
 /** Agent 模式全部工具（注册顺序 = 名册/浮层展示顺序）。各工具参数类型各异，注册为通用定义。 */
 const AGENT_TOOLS = [
@@ -41,6 +41,23 @@ const registry = createToolRegistry(AGENT_TOOLS);
 /** 运行前摘要（消息气泡工具块展示，容忍残缺参数）。 */
 export function summarizeAgentTool(name: string, argsJson: string): string {
   return registry.summarize(name, argsJson);
+}
+
+/** 参数生成中宽松提取的字符串字段（JSON 仍残缺时取首个命中的值拼摘要；字段名与注册工具参数对齐）。 */
+const PARTIAL_ARG_FIELD_RE = /"(?:path|query|pattern|url)"\s*:\s*"((?:[^"\\]|\\.)*)/;
+
+/**
+ * 参数生成中的工具摘要（参数分片边到边刷新，供「生成中」工具行展示进度）：
+ * 参数 JSON 尚不完整、正式摘要不可用——用工具显示名 + 宽松提取的首个关键字段值拼摘要，
+ * 末尾附已生成长度（≥10000 显示为 x.xk），让长参数（如 write_file 正文）的生成过程可见。
+ */
+export function summarizePartialAgentTool(name: string, partialJson: string): string {
+  const label = AGENT_TOOLS_META.find((t) => t.id === name)?.label ?? name;
+  const hit = PARTIAL_ARG_FIELD_RE.exec(partialJson);
+  const len = partialJson.length;
+  const size = len >= 10000 ? `${(len / 1000).toFixed(1)}k` : `${len}`;
+  const progress = len > 0 ? `（生成中 ${size} 字符）` : "";
+  return hit ? `${label} ${hit[1]}${progress}` : `${label}${progress}`;
 }
 
 /** 组装结果：发给模型的工具名册 + 本次剔除提示。 */

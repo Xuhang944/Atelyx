@@ -10,3 +10,10 @@ export const TIMEOUT_ERROR_TEXT = "响应超时（长时间无输出，已自动
 
 /** 回复被截断（达到输出上限）的友好降级文案（有正文则拼在其后，正文为空则拼在 ERROR_PREFIX 后作占位）。 */
 export const TRUNCATED_TEXT = "回复被截断（达到输出上限，已保留已生成内容）";
+
+/**
+ * 工具参数生成中的合成工具行 id 前缀：参数分片缺 id 时由流式引擎以此造临时 id，
+ * 完整调用到达后同 id 被真实工具行原位替换；running 态残留由 mergeToolRuns 剪除，
+ * 已结算的终态合成行（如「已中断」）作为历史记录保留。
+ */
+export const PENDING_RUN_ID_PREFIX = "pending:";

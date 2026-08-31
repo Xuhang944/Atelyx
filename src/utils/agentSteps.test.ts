@@ -15,9 +15,10 @@ import {
   fillAssistantReplyText,
   finalizeReplyText,
   groupAgentSteps,
+  mergeToolRuns,
   promoteTrailingNarration,
 } from "./agentSteps";
-import { ERROR_PREFIX, TRUNCATED_TEXT } from "@/constants/chat";
+import { ERROR_PREFIX, PENDING_RUN_ID_PREFIX, TRUNCATED_TEXT } from "@/constants/chat";
 import type { AgentStep, ToolRun } from "@/types";
 
 const R = (text: string): AgentStep => ({ kind: "reasoning", text });
@@ -135,6 +136,31 @@ describe("coalesceAgentSteps", () => {
     const merged = coalesceAgentSteps([R("我"), T("叙述"), R("资料")]);
     expect(coalesceAgentSteps(merged)).toEqual(merged);
   });
+
+  it("参数生成中的合成行归一为已中断（流式中途落盘的瞬时残留）", () => {
+    const run: ToolRun = {
+      id: `${PENDING_RUN_ID_PREFIX}1:0`,
+      name: "write_file",
+      argsSummary: "写入文件（生成中 88 字符）",
+      status: "running",
+    };
+    const [step] = coalesceAgentSteps([{ kind: "tool", run }]);
+    expect(step).toMatchObject({
+      kind: "tool",
+      run: { status: "error", resultSummary: "（已中断）" },
+    });
+  });
+
+  it("终态合成行原样保留（不丢「已中断/参数未生成完整」历史文案）", () => {
+    const run: ToolRun = {
+      id: `${PENDING_RUN_ID_PREFIX}1:0`,
+      name: "write_file",
+      argsSummary: "写入文件（生成中 88 字符）",
+      status: "error",
+      resultSummary: "（参数未生成完整）",
+    };
+    expect(coalesceAgentSteps([{ kind: "tool", run }])).toEqual([{ kind: "tool", run }]);
+  });
 });
 
 describe("流式同帧交错（回归：思考被拆成两行）", () => {
@@ -173,6 +199,63 @@ describe("groupAgentSteps", () => {
     expect(groups[0].tools.map((r) => r.id)).toEqual(["t1"]);
     expect(groups[1].thinkings).toEqual([{ kind: "reasoning", text: "二" }]);
     expect(groups[1].tools).toEqual([]);
+  });
+});
+
+describe("mergeToolRuns（参数生成中的合成行生命周期）", () => {
+  const pendingId = `${PENDING_RUN_ID_PREFIX}1:0`;
+  const pendingRun = (): ToolRun => ({
+    id: pendingId,
+    name: "write_file",
+    argsSummary: "写入文件（生成中 120 字符）",
+    status: "running",
+    args: '{"path":"产物/总结.md", "content": "今天',
+  });
+  const pendingStep = (): AgentStep => ({ kind: "tool", run: pendingRun() });
+
+  it("前缀合成行在全量列表在场时保留（参数流式帧）", () => {
+    const steps = mergeToolRuns([T("叙述"), pendingStep()], [pendingRun()]);
+    expect(steps).toHaveLength(2);
+    expect(steps[1]).toMatchObject({ kind: "tool", run: { id: pendingId, status: "running" } });
+  });
+
+  it("同 id 真实工具行原位替换（参数分片首帧带 id 的常态）", () => {
+    const partial: ToolRun = { ...pendingRun(), id: "call-1", argsSummary: "写入文件（生成中 12 字符）" };
+    const real: ToolRun = {
+      id: "call-1",
+      name: "write_file",
+      argsSummary: "写入 产物/总结.md",
+      status: "running",
+    };
+    expect(mergeToolRuns([{ kind: "tool", run: partial }], [real])).toEqual([
+      { kind: "tool", run: real },
+    ]);
+  });
+
+  it("前缀合成行不在全量列表时剪除（收尾纯 allRuns，中止/出错不残留转圈行）", () => {
+    expect(mergeToolRuns([T("叙述"), pendingStep()], [])).toEqual([T("叙述")]);
+  });
+
+  it("终态合成行不在全量列表时保留（已结算是历史记录，不随后续轮次丢失）", () => {
+    const settled: ToolRun = { ...pendingRun(), status: "error", resultSummary: "（已中断）" };
+    const steps = mergeToolRuns([T("叙述"), { kind: "tool", run: settled }], []);
+    expect(steps).toHaveLength(2);
+    expect(steps[1]).toMatchObject({
+      kind: "tool",
+      run: { status: "error", resultSummary: "（已中断）" },
+    });
+  });
+
+  it("无前缀的普通工具行不受剪除影响", () => {
+    const merged = mergeToolRuns([tool("t1"), pendingStep()], [run("t1")]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ kind: "tool", run: { id: "t1" } });
+  });
+
+  it("无合成行且 run 同引用时原样返回（不触发无谓重渲染）", () => {
+    const r = run("t1");
+    const steps: AgentStep[] = [T("叙述"), { kind: "tool", run: r }];
+    expect(mergeToolRuns(steps, [r])).toBe(steps);
   });
 });
 

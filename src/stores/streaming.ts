@@ -14,7 +14,8 @@
  */
 import { streamChat, STREAM_IDLE_TIMEOUT_MS } from "@/services/ai/client";
 import { autoTitle, AUTO_NAMING_DELAY_MS } from "@/services/ai/autoTitle";
-import { summarizeAgentTool } from "@/services/ai/tools";
+import { summarizeAgentTool, summarizePartialAgentTool } from "@/services/ai/tools";
+import { PENDING_RUN_ID_PREFIX } from "@/constants/chat";
 import { useSettingsStore } from "./settingsStore";
 import type {
   ProviderConfig,
@@ -102,6 +103,30 @@ export async function runStreamExchange(
   // 否则多轮工具循环只显示最后一轮（调用方整体替换）。
   // **随结算重写为 `let`**：done/中止时回写 allRuns，finally 兜底只能命中「真未回填」的工具，不误标已完成
   let allRuns: ToolRun[] = [];
+  // 工具参数流式槽位（当轮，完整调用到达即清）：参数分片边到边累积，随 rAF 帧把
+  // 「生成中」工具行叠加在 allRuns 后发出（调用方 mergeToolRuns 按 id 原位刷新）——
+  // 长参数（如 write_file 正文）生成阶段不再无任何可见过程
+  const pendingArgs = new Map<number, { id: string; name: string; args: string }>();
+  let pendingArgsDirty = false;
+  // 任一帧发过「生成中」overlay：收尾兜底据此补发一次纯 allRuns，让调用方剪除残留合成行
+  let pendingRunsEmitted = false;
+
+  // 收尾兜底：把残留的「生成中」槽位固化为 error 行并入 allRuns（中止路径未经执行轮固化、
+  // 无真实行替换；截断路径槽位已由 onToolCalls 清空，此处幂等 no-op）——防 UI 残留转圈行
+  const settlePendingArgs = () => {
+    if (pendingArgs.size === 0) return;
+    const runs: ToolRun[] = [...pendingArgs.values()].map((p) => ({
+      id: p.id,
+      name: p.name,
+      argsSummary: summarizePartialAgentTool(p.name, p.args),
+      args: p.args,
+      status: "error" as const,
+      resultSummary: signal.aborted ? "（已中断）" : "（参数未生成完整）",
+    }));
+    allRuns.push(...runs);
+    pendingArgs.clear();
+    pendingArgsDirty = false;
+  };
 
   const applyBatch = (content: string, reasoning: string) => {
     totalContent += content;
@@ -117,6 +142,22 @@ export async function runStreamExchange(
     pendingNarration = "";
     if (n) options.onNarration?.(n);
     if (d || r) applyBatch(d, r);
+    // 「生成中」工具行随帧发出：叠加在跨轮已完成列表之后（同 id 行由真实工具行原位替换，
+    // 合成 id 行由调用方 mergeToolRuns 的剪除规则随全量列表收敛）
+    if (pendingArgsDirty) {
+      pendingArgsDirty = false;
+      pendingRunsEmitted = true;
+      const pendingRuns: ToolRun[] = [...pendingArgs.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([, p]) => ({
+          id: p.id,
+          name: p.name,
+          argsSummary: summarizePartialAgentTool(p.name, p.args),
+          args: p.args,
+          status: "running" as const,
+        }));
+      options.onToolRuns?.([...allRuns, ...pendingRuns]);
+    }
   };
   const scheduleApply = () => {
     if (rafId === null)
@@ -154,8 +195,11 @@ export async function runStreamExchange(
   const hasTools = !!options.tools?.length;
   let truncated = false;
   let promoteNarration = false;
+  // 轮序号：参数分片缺 id 时合成 id 的唯一性来源（跨轮不撞）
+  let roundIndex = 0;
   try {
     for (;;) {
+      roundIndex++;
       let toolCalls: LlmToolCall[] = [];
       let stopReason: LlmFinishReason | undefined;
       let roundError: Error | null = null;
@@ -189,6 +233,50 @@ export async function runStreamExchange(
           },
           onToolCalls: (tc) => {
             toolCalls = tc;
+            // 完整调用已到达：把「生成中」行固化为正式 running 行进 allRuns（去重）——
+            // 进入执行轮时 runningRuns 同 id 原位替换；截断（max-tokens）路径无执行轮，
+            // 由 finally 的 running 归一兜底收口。清槽防轮末 flushPending 再发过期 overlay。
+            // 槽位按 wire index 序与完整调用一一对应（两侧同源于 toolCallAcc 的同一批 index）：
+            // 分片缺 id 的网关在此回填真实 call id；回填后仍无 id 的槽位不固化，交由执行轮
+            // runningRuns 建行（与无 id 网关的既有行为一致，防同一次调用出现重复行/假错误行）
+            const keys = [...pendingArgs.keys()].sort((a, b) => a - b);
+            for (let i = 0; i < keys.length && i < tc.length; i++) {
+              const slot = pendingArgs.get(keys[i]);
+              if (slot && tc[i].id) slot.id = tc[i].id;
+            }
+            for (const p of pendingArgs.values()) {
+              if (p.id.startsWith(PENDING_RUN_ID_PREFIX)) continue;
+              if (!allRuns.some((r) => r.id === p.id)) {
+                allRuns.push({
+                  id: p.id,
+                  name: p.name,
+                  argsSummary: summarizeAgentTool(p.name, p.args),
+                  args: p.args,
+                  status: "running",
+                });
+              }
+            }
+            pendingArgs.clear();
+            pendingArgsDirty = false;
+          },
+          // 参数增量：喂空闲超时看门狗（长参数生成不误判挂起）+ 累积进当轮槽位（随帧刷「生成中」行）
+          onToolCallDelta: (delta) => {
+            resetIdle();
+            if (!hasTools) return;
+            const slot = pendingArgs.get(delta.index);
+            if (slot) {
+              if (delta.id) slot.id = delta.id;
+              if (delta.name) slot.name = delta.name;
+              slot.args += delta.argumentsDelta;
+            } else {
+              pendingArgs.set(delta.index, {
+                id: delta.id ?? `${PENDING_RUN_ID_PREFIX}${roundIndex}:${delta.index}`,
+                name: delta.name ?? "",
+                args: delta.argumentsDelta,
+              });
+            }
+            pendingArgsDirty = true;
+            scheduleApply();
           },
           onDone: (sr) => {
             // 清理在循环外统一做（工具轮的占位不能提前移除）
@@ -245,8 +333,11 @@ export async function runStreamExchange(
       // 工具步会先于其思考/叙述进入 steps（整条消息「工具一串、思考堆在后」分不清对应哪步）
       cancelRaf();
       flushPending();
-      // 跨轮累积后发全量：调用方合并进 steps（多轮思考→工具交错展示）
-      allRuns.push(...runningRuns);
+      // 跨轮累积后发全量：调用方合并进 steps（多轮思考→工具交错展示）。
+      // onToolCalls 已把「生成中」行固化为同 id running 行——此处去重并入防重复
+      for (const run of runningRuns) {
+        if (!allRuns.some((r) => r.id === run.id)) allRuns.push(run);
+      }
       options.onToolRuns?.([...allRuns]);
       const { messages: toolMessages, results } = await options.executeTools(toolCalls);
       // 执行完成：running → done/error + 结果摘要（可视化块实时更新）。
@@ -284,6 +375,8 @@ export async function runStreamExchange(
       ];
     }
 
+    // 收尾：固化残留「生成中」槽位（中止/截断路径未经过执行轮），终帧 flush 不再发过期 overlay
+    settlePendingArgs();
     cancelRaf();
     clearIdle();
     flushPending();
@@ -299,6 +392,12 @@ export async function runStreamExchange(
     clearIdle();
     options.onError(e as Error);
   } finally {
+    settlePendingArgs();
+    // 「生成中」overlay 兜底：发过就补一次纯 allRuns——调用方 mergeToolRuns 剪除不在列表中的
+    // 合成行（中止/出错/参数残缺路径统一收敛，不残留永久转圈行）
+    if (pendingRunsEmitted) {
+      options.onToolRuns?.([...allRuns]);
+    }
     // 收尾兜底：任何原因（异常/结果缺失）下仍在 running 的工具行归一到终态，保证 UI 不会永久转圈。
     // 仅在确有 running 残留时才发（正常路径已全部 done，不 re-emit，避免误标已完成工具）
     if (allRuns.some((r) => r.status === "running")) {

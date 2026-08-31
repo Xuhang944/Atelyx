@@ -132,6 +132,7 @@ export {
 
 export type {
   LlmToolCall,
+  LlmToolCallDelta,
   LlmMessage,
   LlmFinishReason,
   LlmStreamEvent,

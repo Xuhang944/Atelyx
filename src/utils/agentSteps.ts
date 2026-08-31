@@ -11,7 +11,7 @@
  * 工具轮之间的思考仍自然分隔（第二轮思考不会并进第一轮）。
  */
 import type { AgentStep, Role, ToolRun } from "@/types";
-import { ERROR_PREFIX, TRUNCATED_TEXT } from "@/constants/chat";
+import { ERROR_PREFIX, TRUNCATED_TEXT, PENDING_RUN_ID_PREFIX } from "@/constants/chat";
 
 /**
  * 思考增量写入 steps：并入当前轮最后一个思考步（尾部向前找第一个 reasoning，遇工具步即停）。
@@ -124,13 +124,33 @@ export function fillAssistantReplyText<
     : m;
 }
 
+/** 参数生成中的合成工具步（id 带 `PENDING_RUN_ID_PREFIX` 前缀，由流式引擎在参数分片缺 id 时合成）。 */
+function isPendingSyntheticStep(s: AgentStep): s is Extract<AgentStep, { kind: "tool" }> {
+  return s.kind === "tool" && s.run.id.startsWith(PENDING_RUN_ID_PREFIX);
+}
+
 /**
  * 工具调用合并进 steps：按 `run.id` 更新已有工具步 / 追加新工具步。
  * 跨工具轮累积全量传入（引擎发全量列表），所以多轮工具全保留、状态实时刷新。
+ * 参数生成中的合成行（id 带 `PENDING_RUN_ID_PREFIX` 前缀）只随全量列表在场保留：
+ * 轮完成被同 id 真实行原位替换，收尾纯全量发出时不在场即剪除（中止/出错/参数残缺都不残留转圈行）；
+ * 仅剪 running 态——已结算的终态合成行（如「已中断」）是历史记录，与真实工具中断行同语义，永久保留。
  */
 export function mergeToolRuns(steps: AgentStep[], runs: ToolRun[]): AgentStep[] {
   let changed = false;
-  const next = steps.map((s) => {
+  const runIds = new Set(runs.map((r) => r.id));
+  const hasPending = steps.some(
+    (s) => isPendingSyntheticStep(s) && s.run.status === "running",
+  );
+  const base = hasPending
+    ? steps.filter((s) => {
+        if (!isPendingSyntheticStep(s) || s.run.status !== "running") return true;
+        const keep = runIds.has(s.run.id);
+        if (!keep) changed = true;
+        return keep;
+      })
+    : steps;
+  const next = base.map((s) => {
     if (s.kind !== "tool") return s;
     const run = runs.find((r) => r.id === s.run.id);
     if (!run || run === s.run) return s;
@@ -163,11 +183,24 @@ export function normalizeAgentSteps(msg: {
  * 归并旧数据里被拆开的同轮思考/叙述步（幂等）：按 `appendReasoning`/`appendNarration` 的
  * 同轮合并语义重放一遍，把「思考/叙述交错到达」时期落盘的 `[reasoning, text, reasoning]`
  * 这类分裂 steps 愈合为单思考块 + 单叙述行。加载旧消息时调用，新流式不会产生分裂。
+ * 参数生成中的合成行仅在 running 态归一为已中断（流式中途落盘的瞬时残留）；
+ * 终态合成行是历史记录，原样保留状态与文案，防重开后丢失或被改写。
  */
 export function coalesceAgentSteps(steps: AgentStep[]): AgentStep[] {
   return steps.reduce<AgentStep[]>((acc, s) => {
     if (s.kind === "reasoning") return appendReasoning(acc, s.text);
     if (s.kind === "text") return appendNarration(acc, s.text);
+    if (isPendingSyntheticStep(s)) {
+      return s.run.status === "running"
+        ? [
+            ...acc,
+            {
+              kind: "tool" as const,
+              run: { ...s.run, status: "error" as const, resultSummary: "（已中断）" },
+            },
+          ]
+        : [...acc, s];
+    }
     return [...acc, s];
   }, []);
 }

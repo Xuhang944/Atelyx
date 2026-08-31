@@ -19,6 +19,7 @@ import type {
   LlmMessage,
   LlmStreamEvent,
   LlmToolCall,
+  LlmToolCallDelta,
 } from "@/types";
 import { withOverflowHint, toLlmError, isRetryableError, LlmError } from "./errors";
 import { computeRetryDelay, GIVE_UP_RETRY_MS, shouldRetry, sleep } from "./retry";
@@ -36,6 +37,8 @@ export interface ChatStreamCallbacks {
   onError: (err: Error) => void;
   /** 模型思考过程增量（`delta.reasoning_content`，思考型模型的推理阶段内容）。 */
   onReasoningDelta?: (text: string) => void;
+  /** 工具调用参数增量（边生成边发）：供调用方喂空闲超时看门狗并实时展示「生成参数中」的工具行。 */
+  onToolCallDelta?: (delta: LlmToolCallDelta) => void;
   /** 响应含工具调用时触发（在 onDone 之前）。calls 已按 index 累积完整。 */
   onToolCalls?: (calls: LlmToolCall[]) => void;
 }
@@ -271,7 +274,8 @@ export async function* streamRequest(
           if (typeof reasoning === "string" && reasoning.length > 0) {
             yield { type: "reasoning-delta", text: reasoning };
           }
-          // 工具调用：{ index, id?, function: { name?, arguments? } }，按 index 累积
+          // 工具调用：{ index, id?, function: { name?, arguments? } }，按 index 累积；
+          // 分片同时以 tool-call-delta 边生成边发（参数进度实时可见），完整调用在流末 emitToolCalls 一次性发出
           const tc = delta.tool_calls as ToolCallDelta[] | undefined;
           if (tc) {
             for (const t of tc) {
@@ -289,6 +293,13 @@ export async function* streamRequest(
                   function: t.function ? { name: t.function.name, arguments: t.function.arguments ?? "" } : undefined,
                 };
               }
+              yield {
+                type: "tool-call-delta",
+                index: t.index,
+                ...(t.id ? { id: t.id } : {}),
+                ...(t.function?.name ? { name: t.function.name } : {}),
+                argumentsDelta: t.function?.arguments ?? "",
+              };
             }
           }
         } catch (err) {
@@ -363,6 +374,9 @@ export async function streamChat(
             break;
           case "reasoning-delta":
             callbacks.onReasoningDelta?.(event.text);
+            break;
+          case "tool-call-delta":
+            callbacks.onToolCallDelta?.(event);
             break;
           case "tool-call":
             toolCalls.push(event.call);
