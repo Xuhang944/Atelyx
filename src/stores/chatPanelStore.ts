@@ -824,6 +824,12 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     messageBaseline.clear();
     autoNamedSessions.clear();
     overridesDirty = false;
+    // 真实重载（换仓库/强制）时中止进行中的流式回复：会话即将清空重建，孤儿流只会把增量
+    // 写进已消失的会话（静默丢内容），与画布「切仓库中止流」同语义
+    if (abortController) {
+      abortController.abort();
+      abortController = null;
+    }
     // 切仓库让路：中止旧仓库进行中的命名请求，防其后台空转/误写
     abortAutoTitle();
     // 真实换仓库：立即清空旧仓库会话（历史列表/当前会话回到新仓库空上下文），
@@ -831,6 +837,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
     set({
       pendingMentions: [],
       pendingRewrites: [],
+      streaming: false,
       ...(force || prevVault !== vaultId ? { sessions: [], activeSessionId: null } : {}),
     });
     try {
