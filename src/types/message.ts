@@ -19,10 +19,12 @@ export interface Attachment {
  * 与 attachments 的固化语义对称：注入随该 user 消息进历史，未来消息不重复注入。
  */
 export interface MessageRef {
-  /** 源文本/搜索节点 id（消息气泡 @chip 点击定位目标） */
+  /** 源文本/搜索节点 id（消息气泡 @chip 点击定位目标）；纯路径引用（仓库文件/文件夹，画布无对应节点）= `file:<path>` */
   nodeId: string;
   /** @chip 显示名（内容前缀约 12 字） */
   label: string;
+  /** 纯路径引用的仓库路径（有此字段 = 无画布节点，chip 点击按类型打开文件而非定位节点） */
+  file?: string;
 }
 
 /**

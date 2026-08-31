@@ -62,7 +62,7 @@ export function useVaultDrag(onNotice: (message: string) => void) {
         // 悬停可交互目标的提示文本（幽灵下方显示；变化才 setState）：分支顺序与 onUp 落点判定严格一致
         let hint: string | null = null;
         if (hit?.closest<HTMLElement>("[data-chat-input]")) {
-          if (d.kind === "note") hint = "作为引用";
+          hint = "作为引用";
         } else if (dir !== null) {
           hint = dir === "" ? "移到根目录" : `移动到「${baseName(dir)}」`;
         } else if (hit?.closest(".react-flow")) {
@@ -89,13 +89,12 @@ export function useVaultDrag(onNotice: (message: string) => void) {
       document.body.style.cursor = "";
       if (!d?.active) return;
       const target = document.elementFromPoint(e.clientX, e.clientY);
-      // 拖入右侧 AI 对话面板输入框（data-chat-input）：笔记 → @引用 入队（AiChatPanel 消费后显示 @标签）
+      // 拖入右侧 AI 对话面板输入框（data-chat-input）：任意文件/文件夹 → @引用 入队（AiChatPanel 消费后显示 @标签；
+      // 发送只并路径进「引用文件」块，模型 read_file/glob 按需读取）
       if (target?.closest<HTMLElement>("[data-chat-input]")) {
-        if (d.kind === "note") {
-          useChatPanelStore
-            .getState()
-            .queueMention({ file: d.file, label: d.title ?? d.name.replace(/\.md$/i, "") });
-        }
+        useChatPanelStore
+          .getState()
+          .queueMention({ file: d.file, label: d.title ?? d.name });
         return;
       }
       // 优先：落到文件夹行/树空白（data-dir，含根目录 data-dir=""）→ 移动文件；文件行内部不是目标

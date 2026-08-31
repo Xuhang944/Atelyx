@@ -46,6 +46,9 @@ import { ModelSelect } from "@/components/common/ModelSelect";
 import { PopupLayer } from "@/components/common/PopupLayer";
 import { ERROR_PREFIX } from "@/constants/chat";
 import { usePopupAnchor } from "@/hooks/usePopupAnchor";
+import { VaultAtPicker, type VaultPickTarget } from "@/components/common/VaultAtPicker";
+import { openVaultPath } from "@/components/common/FileKindIcon";
+import { noteTitleFromFile } from "@/utils/filename";
 import { assistantReplyText } from "@/utils/agentSteps";
 import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
 import type { EditorChatMessage, EditorChatMessageRef } from "@/types";
@@ -83,7 +86,7 @@ function buildRewritePrompt(r: {
   return lines.join("\n");
 }
 
-export function AiChatPanel({ onOpenNote }: { onOpenNote?: (file: string, title: string) => void }) {
+export function AiChatPanel() {
   const sessions = useChatPanelStore((s) => s.sessions);
   const activeSessionId = useChatPanelStore((s) => s.activeSessionId);
   const streaming = useChatPanelStore((s) => s.streaming);
@@ -142,14 +145,24 @@ export function AiChatPanel({ onOpenNote }: { onOpenNote?: (file: string, title:
   });
   // 气泡操作回调稳定化（memo 生效前提）；rollbackTo 为 store action 引用恒稳定，onRollback 直传
   const handleRegenerate = useCallback(() => void regenerate(), [regenerate]);
-  // @chip 点击打开笔记（稳定引用，气泡 memo 生效前提）；onOpenNote 由 AiChatView 传 store action（稳定）
-  const handleRefChipClick = useCallback(
-    (file: string, label: string) => onOpenNote?.(file, label),
-    [onOpenNote]
-  );
-  // 输入框内的 @引用（拖入的笔记）：@标签 随 input 文本渲染，发送时按命中实例注入笔记全文
+  // @chip 点击按类型打开引用目标（画布/笔记/表格应用内打开，其他文件/文件夹在文件管理器中打开；
+  // 稳定引用，气泡 memo 生效前提）
+  const handleRefChipClick = useCallback((file: string) => {
+    openVaultPath(file);
+  }, []);
+  // 输入框内的 @引用（拖入/键入 @ 选择）：@标签 随 input 文本渲染，发送时按命中实例注入路径
   const [mentions, setMentions] = useState<EditorChatMessageRef[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // 键入 @ 唤起仓库选择器：atIdx = @ 位置（query = @ 之后的内容），坐标相对输入容器
+  const [picker, setPicker] = useState<{
+    x: number;
+    y: number;
+    openUp: boolean;
+    yBottom: number;
+    query: string;
+  } | null>(null);
+  const [atIdx, setAtIdx] = useState(-1);
+  const inputWrapRef = useRef<HTMLDivElement>(null);
 
   // 拖入的笔记引用队列（FileExplorerPanel 拖拽笔记到本输入框）→ 输入框追加 @标签（去重）
   const pendingMentions = useChatPanelStore((s) => s.pendingMentions);
@@ -204,13 +217,43 @@ export function AiChatPanel({ onOpenNote }: { onOpenNote?: (file: string, title:
     if (!text || streaming) return;
     setInput("");
     setMentions([]);
+    setPicker(null);
+    setAtIdx(-1);
     void send(text, mentions);
   };
 
-  // 胶囊被移除（MentionTextarea 已删文本 + 复位光标）→ 引用层清理：移出 mentions
+  // 仓库选择器选中 → @标签 插入（@ 到光标间过滤词替换、分隔空格、尾随空格、光标复位，与画布同语义）
+  const handleVaultPick = (t: VaultPickTarget) => {
+    const caret = textareaRef.current?.selectionStart ?? input.length;
+    const insertAt = Math.min(Math.max(atIdx, 0), input.length);
+    const end = Math.max(caret, insertAt);
+    const before = input.slice(0, insertAt);
+    const sep = before && !/\s$/.test(before) ? " " : "";
+    const label = t.name.toLowerCase().endsWith(".md") ? noteTitleFromFile(t.path) : t.name;
+    const mentionText = `@${label}`;
+    setInput((prev) => prev.slice(0, insertAt) + sep + mentionText + " " + prev.slice(end));
+    setMentions((prev) => [...prev, { file: t.path, label }]);
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (ta) {
+        ta.focus();
+        const pos = insertAt + sep.length + mentionText.length + 1;
+        ta.setSelectionRange(pos, pos);
+      }
+    });
+    setPicker(null);
+    setAtIdx(-1);
+  };
+
+  // 胶囊被移除（MentionTextarea 已删文本 + 复位光标）→ 引用层清理：按实例移出 mentions（同路径多枚胶囊只删一处）
   const removeMention = (seg: MentionSeg) => {
     if (seg.mention) {
-      setMentions((prev) => prev.filter((m) => m.file !== seg.mention?.nodeId));
+      const file = seg.mention.nodeId;
+      setMentions((prev) => {
+        const idx = prev.findIndex((m) => m.file === file);
+        if (idx < 0) return prev;
+        return prev.filter((_, i) => i !== idx);
+      });
     }
   };
 
@@ -451,16 +494,50 @@ export function AiChatPanel({ onOpenNote }: { onOpenNote?: (file: string, title:
           </button>
         </div>
 
-        {/* 输入框（data-chat-input = 文件面板拖拽笔记的落点：拖入即 @引用）：
-        overlay 渲染 @标签（透明 textarea 承载输入，滚动同步 transform） */}
-        <div className="relative" data-chat-input>
+        {/* 输入框（data-chat-input = 文件面板拖拽文件/文件夹的落点：拖入即 @引用）：
+        overlay 渲染 @标签（透明 textarea 承载输入，滚动同步 transform）；键入 @ 唤起仓库选择器 */}
+        <div className="relative" data-chat-input ref={inputWrapRef}>
+          {picker && (
+            <VaultAtPicker
+              x={picker.x}
+              y={picker.y}
+              openUp={picker.openUp}
+              yBottom={picker.yBottom}
+              query={picker.query}
+              onPick={handleVaultPick}
+              onClose={() => setPicker(null)}
+            />
+          )}
           <MentionTextarea
             textareaRef={textareaRef}
             value={input}
-            onChange={(v) => setInput(v)}
+            onChange={(v) => {
+              setInput(v);
+              // @ 后继续输入 → 实时过滤候选（query = @ 位置之后的内容）；
+              // @ 锚字符已被删（退格/整体替换）→ 关闭选择器，防陈旧 atIdx 错位插入
+              if (picker && atIdx >= 0) {
+                if (v[atIdx] !== "@") {
+                  setPicker(null);
+                  setAtIdx(-1);
+                } else {
+                  setPicker((p) => (p ? { ...p, query: v.slice(atIdx + 1) } : p));
+                }
+              }
+            }}
             segments={segments}
             onRemoveMention={removeMention}
             onKeyDown={(e) => {
+              // 键入 @ 唤起仓库文件/文件夹选择器（坐标相对输入容器；下方视口不足 → 向上弹出）
+              if (e.key === "@") {
+                setAtIdx(textareaRef.current?.selectionStart ?? 0);
+                const taRect = textareaRef.current?.getBoundingClientRect();
+                const wrapRect = inputWrapRef.current?.getBoundingClientRect();
+                const x = (taRect?.left ?? 0) - (wrapRect?.left ?? 0);
+                const y = (taRect?.bottom ?? 0) - (wrapRect?.top ?? 0);
+                const yBottom = (wrapRect?.bottom ?? 0) - (taRect?.bottom ?? 0);
+                const openUp = window.innerHeight - (taRect?.bottom ?? 0) < 264;
+                setPicker({ x, y, openUp, yBottom, query: "" });
+              }
               // Enter 发送 / Shift+Enter 换行；IME 组合期间 Enter 是「上屏候选词」而非发送
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
@@ -468,7 +545,7 @@ export function AiChatPanel({ onOpenNote }: { onOpenNote?: (file: string, title:
               }
             }}
             spellCheck={false}
-            placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+            placeholder="输入消息，@ 引用文件，Enter 发送，Shift+Enter 换行"
             rows={5}
             overlayClassName="z-0 px-2 pt-3 pb-12 text-sm leading-relaxed"
             textareaClassName="w-full px-2 pt-3 pb-12 text-sm leading-relaxed"

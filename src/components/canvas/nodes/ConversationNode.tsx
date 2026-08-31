@@ -1,9 +1,9 @@
 import { Loader2, Lock, Plus, RefreshCw, Scissors, X } from "lucide-react";
-import { useEffect, useCallback, useRef, useState } from "react";
+import { useEffect, useCallback, useMemo, useRef, useState } from "react";
 import { useReactFlow, type NodeProps } from "@xyflow/react";
 import { useShallow } from "zustand/react/shallow";
 import { ResizeHandle } from "./ResizeHandle";
-import { useCanvasStore } from "@/stores/canvasStore";
+import { useCanvasStore, nodeFileOf } from "@/stores/canvasStore";
 import { useCollabStore } from "@/stores/collabStore";
 import { useSettingsStore, selectDefaultModelDisplay } from "@/stores/settingsStore";
 import { useNodeCollab } from "@/hooks/useNodeCollab";
@@ -32,7 +32,9 @@ import type {
   Attachment,
 } from "@/types";
 import type { Node as FlowNode } from "@xyflow/react";
-import { ConversationAtPicker } from "./ConversationAtPicker";
+import { VaultAtPicker, type VaultPickTarget } from "@/components/common/VaultAtPicker";
+import { openVaultPath } from "@/components/common/FileKindIcon";
+import { noteTitleFromFile } from "@/utils/filename";
 import { ConversationAttachmentTray } from "./ConversationAttachmentTray";
 import { ConnectionFrame } from "./ConnectionFrame";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
@@ -165,6 +167,8 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
   const [mentions, setMentions] = useState<{ nodeId: string; text: string }[]>(
     [],
   );
+  // 纯路径引用：@ 选择的仓库文件/文件夹（画布无对应节点），发送时只并路径进「引用文件」块（nodeId = file:<path>）
+  const [fileMentions, setFileMentions] = useState<{ file: string; label: string }[]>([]);
   // 仅订阅「本节点入边的 media 源节点」派生数据（useShallow 保证引用稳定）：
   // 拖拽其他节点（nodes 数组变化但未变节点对象引用保留）时不触发本组件重渲染/重跑 effect
   const mediaSources = useCanvasStore(
@@ -175,6 +179,20 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
         .filter((n): n is FlowNode => !!n && n.type === "media"),
     ),
   );
+
+  // 当前画布上有节点引用的文件路径（@ 选择器排序：画布内文件排最前，选中走节点引用流）；
+  // useShallow 数组逐项比较，路径集合不变不重渲染
+  const canvasFilePaths = useCanvasStore(
+    useShallow((s) => {
+      const paths: string[] = [];
+      for (const n of s.nodes) {
+        const f = nodeFileOf(n);
+        if (f) paths.push(f);
+      }
+      return paths;
+    }),
+  );
+  const canvasFiles = useMemo(() => new Set(canvasFilePaths), [canvasFilePaths]);
 
   // ===== Agent 选择：配置在 设置 → Agent（settingsStore.agents，仓库级 .atelyx/agents.json）；
   // 发送时实时解析系统提示词与工具（canvasStore.runStream 按 agentId 解析）=====
@@ -301,9 +319,11 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
     setInput("");
     const atts = attachments;
     const mts = mentions;
+    const fms = fileMentions;
     clearAttachments();
     setMentions([]);
-    void send(id, text, atts, mts);
+    setFileMentions([]);
+    void send(id, text, atts, mts, fms);
   };
 
   // ===== 附件输入：粘贴 / 拖拽 / 选择文件（临时附件通道） =====
@@ -415,32 +435,18 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
 
   // ===== @ 提及（反向：手动 @ → 自动建边） =====
 
-  const handlePickerPick = (node: FlowNode) => {
-    if (node.type === "media") {
-      // 同源节点已在托盘则不重复进（picker 选中后 useEffect 按边再进会重复）
-      setAttachments((prev) => appendMediaAttachment(prev, node));
-    }
-    addEdge({
-      id: crypto.randomUUID(),
-      source: node.id,
-      target: id,
-      sourceHandle: null,
-      targetHandle: null,
-    });
-    // 输入框插入可见 @显示名（替换 @ 到当前光标之间的过滤词），并记录提及映射供发送时就地替换
+  /** @标签 原位插入（各插入路径共用同一语义：@ 到光标间过滤词替换、分隔空格、尾随空格、
+   *  光标复位到尾随空格后、关闭选择器）；record 回调登记引用映射（节点 mentions / 纯路径 fileMentions）。 */
+  const insertMentionLabel = (mentionText: string, record: () => void) => {
     const caret = textareaRef.current?.selectionStart ?? input.length;
     const insertAt = Math.min(Math.max(atIdx, 0), input.length);
     const end = Math.max(caret, insertAt);
-    // 与其他插入路径（拖线引用/面板）一致：前文非空且不以空白结尾时补分隔空格，标签后恒带一个尾随空格——
+    // 前文非空且不以空白结尾时补分隔空格，标签后恒带一个尾随空格——
     // 保证胶囊前后为空白区，胶囊背景外扩（.mention-capsule）不遮相邻字符
     const before = input.slice(0, insertAt);
     const sep = before && !/\s$/.test(before) ? " " : "";
-    const mentionText = `@${mentionTextOf(node)}`;
-    setInput(
-      (prev) =>
-        prev.slice(0, insertAt) + sep + mentionText + " " + prev.slice(end),
-    );
-    setMentions((prev) => [...prev, { nodeId: node.id, text: mentionText }]);
+    setInput((prev) => prev.slice(0, insertAt) + sep + mentionText + " " + prev.slice(end));
+    record();
     // 光标移到尾随空格之后（继续输入不紧贴胶囊），方便继续输入
     requestAnimationFrame(() => {
       const ta = textareaRef.current;
@@ -454,11 +460,64 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
     setAtIdx(-1);
   };
 
+  const handlePickerPick = (node: FlowNode) => {
+    if (node.type === "media") {
+      // 同源节点已在托盘则不重复进（picker 选中后 useEffect 按边再进会重复）
+      setAttachments((prev) => appendMediaAttachment(prev, node));
+    }
+    // 仓库选择器全量列出候选，已连边（同源同向）不重复建边；@标签 仍插入 = 再次引用语义
+    const connected = useCanvasStore
+      .getState()
+      .edges.some((e) => e.source === node.id && e.target === id);
+    if (!connected) {
+      addEdge({
+        id: crypto.randomUUID(),
+        source: node.id,
+        target: id,
+        sourceHandle: null,
+        targetHandle: null,
+      });
+    }
+    // 输入框插入可见 @显示名，并记录提及映射供发送时就地替换
+    const mentionText = `@${mentionTextOf(node)}`;
+    insertMentionLabel(mentionText, () =>
+      setMentions((prev) => [...prev, { nodeId: node.id, text: mentionText }]),
+    );
+  };
+
+  /** 仓库选择器选中：画布上已有节点的文件路由到既有节点引用流（建边/托盘/快照，引用即边）；
+   * 无节点的文件与文件夹 → 纯路径引用（@标签 原位插入 + fileMentions，发送只并路径块）。 */
+  const handleVaultPick = (t: VaultPickTarget) => {
+    if (!t.isDir) {
+      const node = useCanvasStore
+        .getState()
+        .nodes.find((n) => nodeFileOf(n) === t.path);
+      if (node) {
+        handlePickerPick(node);
+        return;
+      }
+    }
+    const label = t.name.toLowerCase().endsWith(".md") ? noteTitleFromFile(t.path) : t.name;
+    insertMentionLabel(`@${label}`, () =>
+      setFileMentions((prev) => [...prev, { file: t.path, label }]),
+    );
+  };
+
   // 胶囊被移除（MentionTextarea 已删文本 + 复位光标）→ 引用层清理：
   // 仅未消费（虚线待发送）的引用边自动断开；已消费（历史实线边，如「再次注入」）
   // 不断边（连接后不可手动断开）；media 附件同步从托盘移除
   const removeMention = (seg: MentionSeg) => {
     const nodeId = seg.mention?.nodeId;
+    // 纯路径引用：只清 fileMentions（无节点边/托盘语义）；同路径多枚胶囊按实例删第一处
+    if (nodeId?.startsWith("file:")) {
+      const path = nodeId.slice(5);
+      setFileMentions((prev) => {
+        const idx = prev.findIndex((x) => x.file === path);
+        if (idx < 0) return prev;
+        return prev.filter((_, i) => i !== idx);
+      });
+      return;
+    }
     setMentions((prev) => prev.filter((x) => x !== seg.mention));
     if (!nodeId) return;
     const store = useCanvasStore.getState();
@@ -578,9 +637,13 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
     [id, branchFrom, fitView],
   );
 
-  // 点击 user 消息气泡里的 @chip → 定位视图到引用的源节点（气泡 onRefChipClick 直传此回调，多出的 label 实参被忽略）
+  // 点击 user 消息气泡里的 @chip → 定位视图到引用的源节点；纯路径引用（file:<path>）画布无节点，按类型打开文件
   const handleLocateRef = useCallback(
     (nodeId: string) => {
+      if (nodeId.startsWith("file:")) {
+        openVaultPath(nodeId.slice(5));
+        return;
+      }
       fitView({ nodes: [{ id: nodeId }], duration: 200, padding: 0.2 });
     },
     [fitView],
@@ -616,8 +679,11 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
     last.role === "assistant" &&
     !streaming &&
     !last.content.startsWith(ERROR_PREFIX);
-  // 输入框 overlay 分段：@提及 → 圆角标签段（可删除），其余普通文本段
-  const segments = splitMentions(input, mentions);
+  // 输入框 overlay 分段：@提及 → 圆角标签段（可删除），其余普通文本段（含纯路径引用 file:<path>）
+  const segments = splitMentions(input, [
+    ...mentions,
+    ...fileMentions.map((fm) => ({ nodeId: `file:${fm.file}`, text: `@${fm.label}` })),
+  ]);
 
   return (
     <div
@@ -836,16 +902,16 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
         </Menu>
       )}
 
-      {/* @ 提及选择器 */}
+      {/* @ 提及选择器（全仓库文件/文件夹，画布内文件排最前） */}
       {picker && (
-        <ConversationAtPicker
-          conversationId={id}
+        <VaultAtPicker
           x={picker.x}
           y={picker.y}
           openUp={picker.openUp}
           yBottom={picker.yBottom}
           query={picker.query}
-          onPick={handlePickerPick}
+          canvasFiles={canvasFiles}
+          onPick={handleVaultPick}
           onClose={() => setPicker(null)}
         />
       )}
@@ -913,9 +979,15 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
               // 首次真实输入占锁（协作独占锁：草稿空 → 非空）
               if (input === "" && v !== "") acquireLock();
               setInput(v);
-              // @ 后继续输入 → 实时过滤候选（query = @ 位置之后的内容）
+              // @ 后继续输入 → 实时过滤候选（query = @ 位置之后的内容）；
+              // @ 锚字符已被删（退格/整体替换）→ 关闭选择器，防陈旧 atIdx 错位插入
               if (picker && atIdx >= 0) {
-                setPicker((p) => (p ? { ...p, query: v.slice(atIdx + 1) } : p));
+                if (v[atIdx] !== "@") {
+                  setPicker(null);
+                  setAtIdx(-1);
+                } else {
+                  setPicker((p) => (p ? { ...p, query: v.slice(atIdx + 1) } : p));
+                }
               }
             }}
             segments={segments}
@@ -944,7 +1016,7 @@ export function ConversationNode({ id, width, height, selected }: NodeProps) {
               }
             }}
             onPaste={handlePaste}
-            placeholder="输入消息…（@ 引用画布资产，Shift+Enter 换行）"
+            placeholder="输入消息…（@ 引用仓库文件/文件夹，Shift+Enter 换行）"
             rows={2}
             backgroundLayer={
               <div

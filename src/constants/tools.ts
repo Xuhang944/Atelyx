@@ -50,7 +50,8 @@ export const DEFAULT_AGENT_TOOLS = AGENT_TOOLS_META.filter((t) => !t.readOnly).m
 
 /**
  * 系统提示词引导（工具含 read_file 时追加，随每条请求进 system 消息）：
- * @引用 的笔记只带文件路径，模型需用 read_file 按路径读取正文，而不是猜测内容。
+ * @引用 的笔记只带文件路径，模型需用 read_file 按路径读取正文，而不是猜测内容；
+ * 目录引用（/ 结尾）先 glob 列内容再按需读取。
  */
 export const FILE_REFERENCE_PROMPT =
-  "以 @ 前缀引用的文件是用户明确指定的笔记，其相对仓库根路径列在消息开头「引用文件」列表中。需要其内容时用 read_file 工具读取；在读取之前不要声称已查看过该文件。";
+  "以 @ 前缀引用的文件是用户明确指定的笔记，其相对仓库根路径列在消息开头「引用文件」列表中。需要其内容时用 read_file 工具读取；在读取之前不要声称已查看过该文件。以 / 结尾的引用是目录：先用 glob 工具（path 参数指向该目录）列出其中的文件，再按需 read_file。";

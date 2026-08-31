@@ -78,10 +78,11 @@ import {
 import { isAssetConsumed } from "@/utils/consumed";
 import { appendNarration, appendReasoning, assistantReplyText, fillAssistantReplyText, finalizeReplyText, mergeToolRuns } from "@/utils/agentSteps";
 import { prefix, scanMentionHits } from "@/utils/text";
-import { sanitizeFilename, siblingPath } from "@/utils/filename";
+import { noteTitleFromFile, sanitizeFilename, siblingPath, tableTitleFromFile } from "@/utils/filename";
 import { useSettingsStore } from "./settingsStore";
 import { useAppStore } from "./appStore";
 import { useCollabStore } from "./collabStore";
+import { useVaultStore } from "./vaultStore";
 import type {
   Attachment,
   CanvasEdge,
@@ -261,12 +262,13 @@ interface CanvasState {
   applyRemoteCanvasPatch: (file: string, patch: CanvasPatch) => void;
   /** Rust 侧改过当前画布磁盘 .atlx 后同步乐观锁基准（重命名笔记/附件/画布），防下次保存被误判「已被外部修改」。 */
   syncBaseUpdatedAt: () => Promise<void>;
-  /** 发送消息到指定对话节点，可携带待发送附件。 */
+  /** 发送消息到指定对话节点，可携带待发送附件与 @提及；fileMentions = 纯路径引用（仓库文件/文件夹，画布无对应节点）。 */
   send: (
     conversationId: string,
     content: string,
     attachments?: PendingAttachment[],
     mentions?: Mention[],
+    fileMentions?: { file: string; label: string }[],
   ) => Promise<void>;
   /** 重新生成该对话的最后一条 AI 回复（重发最后一条 user 消息，不追加新消息）。 */
   regenerate: (conversationId: string) => Promise<void>;
@@ -843,6 +845,207 @@ function createWriteNoteNode(
     );
 }
 
+/** 节点引用的仓库路径（text/media/table 三类有 file 字段；物质化查重与 ConversationNode 的
+ *  画布文件集/选择器路由共用，导出防三处各写一份类型分叉）。 */
+export function nodeFileOf(n: Node): string | undefined {
+  return n.type === "text"
+    ? (n.data as unknown as TextData).file
+    : n.type === "media"
+      ? (n.data as unknown as MediaData).file
+      : n.type === "table"
+        ? (n.data as unknown as TableData).file
+        : undefined;
+}
+
+/** 引用节点 data 构建（add*FromVault 与纯路径引用消费物质化共用）：磁盘读取失败统一降级标记，不抛错。 */
+async function buildTextNoteData(file: string, title: string) {
+  let bodyMd = "";
+  let fileMissing = false;
+  try {
+    bodyMd = await readNote(file);
+  } catch {
+    fileMissing = true;
+  }
+  return { title, file, bodyMd, fileMissing };
+}
+
+async function buildMediaData(file: string, name: string): Promise<MediaData | null> {
+  const isImage = /\.(png|jpe?g|webp|gif)$/i.test(name);
+  if (isImage) {
+    try {
+      const thumb = await readAttachmentDataUrl(file);
+      return { file, kind: "image", mime: inferImageMime(name), thumb, name };
+    } catch (e) {
+      console.error("读图片附件失败", e);
+      return null;
+    }
+  }
+  // 文本类附件：尝试读内容；二进制读失败标 parseFailed
+  let body: string | undefined;
+  let parseFailed = false;
+  try {
+    body = await readNote(file);
+  } catch {
+    parseFailed = true;
+  }
+  return { file, kind: "file", mime: "text/plain", name, body, parseFailed };
+}
+
+async function buildTableData(file: string, title: string) {
+  let snapshot = "";
+  let fileMissing = false;
+  try {
+    snapshot = tableToSnapshotText(await readTableVault(file));
+  } catch {
+    // 文件缺失/读取失败：标 fileMissing，TableNode 显示「文件缺失」降级
+    fileMissing = true;
+  }
+  return { title, file, snapshot, fileMissing };
+}
+
+/** path 是否被本对话的纯路径引用覆盖（精确命中，或位于引用的目录内）。 */
+function isRefCoveredPath(messages: Message[], path: string): boolean {
+  return messages.some((m) =>
+    (m.refs ?? []).some(
+      (r) => r.file && (path === r.file || path.startsWith(`${r.file}/`)),
+    ),
+  );
+}
+
+/** 物质化在飞去重：同路径并发 read_file 只建一次节点（await 读盘窗口内二次触发直接跳过）。 */
+const materializingPaths = new Set<string>();
+
+/**
+ * 纯路径引用的消费物质化：Agent 工具实际读取 @引用 的文件后，画布尚无对应节点 →
+ * 按类型在对话左侧落引用节点（产出方位置，findFreeSpot 避让）并连 节点→对话 数据流边；
+ * 同时把该对话历史中 `file:<path>` 引用改写为真实节点 id——引用即边：气泡 @chip 变为定位节点、
+ * 数据流边随 isAssetConsumed 转实线。已有同文件节点只补边不重复建。
+ * Agent 行为不入 Undo 栈（与工具产物节点同语义），仅作废 redo。
+ */
+async function materializeReferencedFile(conversationId: string, path: string): Promise<void> {
+  if (materializingPaths.has(path)) return;
+  materializingPaths.add(path);
+  try {
+    const convNode = useCanvasStore
+      .getState()
+      .nodes.find((n) => n.id === conversationId);
+    if (!convNode) return;
+    // await 读盘窗口内可能已切画布/删除对话节点：每次落节点/补边/改写前复查，防写脏新画布
+    const stillOnCanvas = () =>
+      useCanvasStore.getState().nodes.some((n) => n.id === conversationId);
+    let nodeId = useCanvasStore.getState().nodes.find((n) => nodeFileOf(n) === path)?.id;
+    if (!nodeId) {
+      const lower = path.toLowerCase();
+      const name = path.split("/").pop() ?? path;
+      // 产出方位置：对话左侧（数据流 文件→对话），findFreeSpot 避让既有节点
+      const spot = findFreeSpot(
+        useCanvasStore.getState().nodes,
+        { x: convNode.position.x - 310, y: convNode.position.y },
+        { w: DEFAULT_TEXT_NODE_WIDTH, h: DEFAULT_TEXT_NODE_HEIGHT },
+      );
+      const id = crypto.randomUUID();
+      if (lower.endsWith(".md")) {
+        const data = await buildTextNoteData(path, noteTitleFromFile(path));
+        if (!stillOnCanvas()) return;
+        touchRedo();
+        useCanvasStore.setState((s) => ({
+          nodes: [
+            ...s.nodes,
+            {
+              id,
+              type: "text",
+              position: spot,
+              width: DEFAULT_TEXT_NODE_WIDTH,
+              height: DEFAULT_TEXT_NODE_HEIGHT,
+              data: data as unknown as Node["data"],
+            },
+          ],
+        }));
+        nodeId = id;
+      } else if (lower.endsWith(".atb")) {
+        const data = await buildTableData(path, tableTitleFromFile(path));
+        if (!stillOnCanvas()) return;
+        touchRedo();
+        useCanvasStore.setState((s) => ({
+          nodes: [
+            ...s.nodes,
+            {
+              id,
+              type: "table",
+              position: spot,
+              width: DEFAULT_TABLE_NODE_WIDTH,
+              height: DEFAULT_TABLE_NODE_HEIGHT,
+              data: data as unknown as Node["data"],
+            },
+          ],
+        }));
+        nodeId = id;
+      } else {
+        const data = await buildMediaData(path, name);
+        if (!data || !stillOnCanvas()) return;
+        touchRedo();
+        useCanvasStore.setState((s) => ({
+          nodes: [
+            ...s.nodes,
+            { id, type: "media", position: spot, data: data as unknown as Node["data"] },
+          ],
+        }));
+        nodeId = id;
+      }
+    }
+    if (!nodeId) return;
+    if (!stillOnCanvas()) return;
+    // 补边（引用即边；已连则跳过）+ 历史 `file:<path>` 引用改写为真实节点 id
+    // （chip 定位节点 + isAssetConsumed 命中 → 边实线）。均为非入栈数据变更 → 作废 redo。
+    const st = useCanvasStore.getState();
+    const needEdge = !st.edges.some(
+      (e) => e.source === nodeId && e.target === conversationId,
+    );
+    const needRewrite = (st.messagesByConv[conversationId] ?? []).some(
+      (m) => m.refs?.some((r) => r.file === path && r.nodeId === `file:${path}`),
+    );
+    if (!needEdge && !needRewrite) return;
+    touchRedo();
+    if (needEdge) {
+      useCanvasStore.setState((s) => ({
+        edges: [
+          ...s.edges,
+          withHandles(
+            {
+              id: crypto.randomUUID(),
+              source: nodeId,
+              target: conversationId,
+              sourceHandle: null,
+              targetHandle: null,
+            },
+            s.nodes,
+          ),
+        ],
+      }));
+    }
+    if (needRewrite) {
+      useCanvasStore.setState((s) => ({
+        messagesByConv: {
+          ...s.messagesByConv,
+          [conversationId]: (s.messagesByConv[conversationId] ?? []).map((m) =>
+            m.refs?.some((r) => r.file === path && r.nodeId === `file:${path}`)
+              ? {
+                  ...m,
+                  refs: m.refs.map((r) =>
+                    r.file === path && r.nodeId === `file:${path}` ? { ...r, nodeId } : r,
+                  ),
+                }
+              : m,
+          ),
+        },
+      }));
+    }
+    schedulePersist();
+  } finally {
+    materializingPaths.delete(path);
+  }
+}
+
 /** 画布对话节点实时查找（命名管线回调共用：延迟后/写回前重取，已删除/切画布返回 undefined）。 */
 function findConversationNode(conversationId: string): Node | undefined {
   const node = useCanvasStore
@@ -1127,7 +1330,19 @@ async function runStream(conversationId: string): Promise<void> {
             signal: controller.signal,
             capabilities: {
               search: (query) => runSearch(useSettingsStore.getState().searchConfig, query),
-              readFile: (path, opts) => readVaultFileWindow(path, opts),
+              readFile: (path, opts) =>
+                readVaultFileWindow(path, opts).then((res) => {
+                  // @引用 的文件被 Agent 实际读取 → 消费物质化：画布落引用节点 + 连已消费边（幂等）
+                  if (
+                    isRefCoveredPath(
+                      useCanvasStore.getState().messagesByConv[conversationId] ?? [],
+                      path,
+                    )
+                  ) {
+                    void materializeReferencedFile(conversationId, path);
+                  }
+                  return res;
+                }),
               glob: (pattern, opts) => globVault(pattern, opts),
               grep: (pattern, opts) => grepVault(pattern, opts),
               writeFile: (path, content) => writeVaultFile(path, content).then(() => {
@@ -1226,8 +1441,10 @@ function assembleContentWithRefs(
   fileRefs: string[],
   prefixParts: string[],
 ): string {
+  // 目录引用加 / 后缀标注（引导见 FILE_REFERENCE_PROMPT 的目录 glob 句）；树中不存在按文件原样
+  const pathKind = useVaultStore.getState().pathKind;
   const fileBlock = fileRefs.length
-    ? `[引用文件：\n${fileRefs.map((f) => `- ${f}`).join("\n")}]\n\n`
+    ? `[引用文件：\n${fileRefs.map((f) => `- ${pathKind(f) === "dir" ? `${f}/` : f}`).join("\n")}]\n\n`
     : "";
   if (prefixParts.length)
     return `${fileBlock}[引用：${prefixParts.join("\n\n")}]\n\n${content}`;
@@ -1253,6 +1470,11 @@ function rebuildUserContent(
   const attachByNode = new Map<string, Attachment>();
   const fileRefs: string[] = [];
   for (const ref of userMsg.refs ?? []) {
+    // 纯路径引用（仓库文件/文件夹，画布无对应节点）：直接并入「引用文件」块（目录标注在拼装处统一做）
+    if (ref.file) {
+      if (!fileRefs.includes(ref.file)) fileRefs.push(ref.file);
+      continue;
+    }
     const node = nodes.find((n) => n.id === ref.nodeId);
     if (!node) continue;
     const tag = `@${ref.label}`;
@@ -1655,14 +1877,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     schedulePersist();
   },
   addTextNoteFromVault: async (file, title, position, exact = false) => {
-    let bodyMd = "";
-    let fileMissing = false;
-    try {
-      bodyMd = await readNote(file);
-    } catch {
-      // 文件缺失/读取失败：标 fileMissing，TextNode 显示「文件缺失」降级
-      fileMissing = true;
-    }
+    const data = await buildTextNoteData(file, title);
     // 拖拽落点精确（exact=true 跳过避让，保证节点落在鼠标位置）；其他入口走 findFreeSpot 避让
     const spot = exact
       ? position
@@ -1674,39 +1889,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       // 显式写入默认尺寸：React Flow 优先用节点存储的 width/height（TextNode 的 ?? 回退受测量机制干扰）
       width: DEFAULT_TEXT_NODE_WIDTH,
       height: DEFAULT_TEXT_NODE_HEIGHT,
-      data: { title, file, bodyMd, fileMissing } as unknown as Node["data"],
+      data: data as unknown as Node["data"],
     });
   },
   addMediaFromVault: async (file, name, position, exact = false) => {
-    const isImage = /\.(png|jpe?g|webp|gif)$/i.test(name);
-    let data: MediaData;
-    if (isImage) {
-      try {
-        const thumb = await readAttachmentDataUrl(file);
-        const mime = inferImageMime(name);
-        data = { file, kind: "image", mime, thumb, name };
-      } catch (e) {
-        console.error("读图片附件失败", e);
-        return;
-      }
-    } else {
-      // 文本类附件：尝试读内容；二进制读失败标 parseFailed
-      let body: string | undefined;
-      let parseFailed = false;
-      try {
-        body = await readNote(file);
-      } catch {
-        parseFailed = true;
-      }
-      data = {
-        file,
-        kind: "file",
-        mime: "text/plain",
-        name,
-        body,
-        parseFailed,
-      };
-    }
+    const data = await buildMediaData(file, name);
+    if (!data) return;
     // 拖拽落点精确（exact=true 跳过避让）；其他入口走 findFreeSpot 避让
     const spot = exact
       ? position
@@ -1732,14 +1920,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     return node?.id ?? null;
   },
   addTableFromVault: async (file, title, position, exact = false) => {
-    let snapshot = "";
-    let fileMissing = false;
-    try {
-      snapshot = tableToSnapshotText(await readTableVault(file));
-    } catch {
-      // 文件缺失/读取失败：标 fileMissing，TableNode 显示「文件缺失」降级
-      fileMissing = true;
-    }
+    const data = await buildTableData(file, title);
     // 拖拽落点精确（exact=true 跳过避让）；其他入口走 findFreeSpot 避让
     const spot = exact
       ? position
@@ -1750,7 +1931,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       position: spot,
       width: DEFAULT_TABLE_NODE_WIDTH,
       height: DEFAULT_TABLE_NODE_HEIGHT,
-      data: { title, file, snapshot, fileMissing } as unknown as Node["data"],
+      data: data as unknown as Node["data"],
     });
   },
   refreshTableContent: (file, opts) =>
@@ -1949,7 +2130,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     undoMgr.push();
   },
 
-  send: async (conversationId, content, attachments = [], mentions = []) => {
+  send: async (conversationId, content, attachments = [], mentions = [], fileMentions = []) => {
     const { canvasId, messagesByConv, nodes } = get();
     if (!canvasId) return;
     // 协作独占锁守卫：对话节点被其他对端独占编辑（确定性锁主非本端）时拒绝发送（竞态兜底）
@@ -2061,19 +2242,23 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       .filter(Boolean)
       .join("\n\n");
 
-    // 「引用文件」路径块：@提及 .md（已恢复 @出现顺序）+ 连边 .md 合并，同 nodeId 去重——
-    // 与 FILE_REFERENCE_PROMPT 引导对应，模型据此用 read_file 读取正文
+    // 「引用文件」路径块：@提及 .md（已恢复 @出现顺序）+ 连边 .md + 纯路径引用合并，同路径去重——
+    // 与 FILE_REFERENCE_PROMPT 引导对应，模型据此用 read_file 读取正文（目录标注由拼装处统一加）
     const seenNodeIds = new Set<string>();
     const uniqueFileRefs = [...fileRefs.reverse(), ...edgeFileRefs].filter((r) => {
       if (seenNodeIds.has(r.nodeId)) return false;
       seenNodeIds.add(r.nodeId);
       return true;
     });
-    finalContent = assembleContentWithRefs(
-      finalContent,
-      uniqueFileRefs.map((r) => r.file),
-      refText ? [refText] : [],
+    const seenPaths = new Set<string>();
+    const refPaths = [...uniqueFileRefs.map((r) => r.file), ...fileMentions.map((fm) => fm.file)].filter(
+      (p) => {
+        if (seenPaths.has(p)) return false;
+        seenPaths.add(p);
+        return true;
+      },
     );
+    finalContent = assembleContentWithRefs(finalContent, refPaths, refText ? [refText] : []);
     const refs = [...extraRefs, ...mentionRefs];
     const allAttachments = [...attachments, ...mentionAtts];
 
@@ -2106,8 +2291,19 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
             };
           })
         : undefined,
-      refs: refs.length
-        ? refs.map((r) => ({ nodeId: r.nodeId, label: r.label }))
+      refs: refs.length || fileMentions.length
+        ? [
+            ...refs.map((r) => ({ nodeId: r.nodeId, label: r.label })),
+            // 纯路径引用：nodeId 用 file: 前缀合成（气泡 chip 去重键），file 供点击按类型打开；
+            // 路径已被节点引用覆盖的跳过（同一引用不出双 chip，物质化改写后两键相同）
+            ...fileMentions
+              .filter((fm) => !uniqueFileRefs.some((r) => r.file === fm.file))
+              .map((fm) => ({
+                nodeId: `file:${fm.file}`,
+                label: fm.label,
+                file: fm.file,
+              })),
+          ]
         : undefined,
     };
     set({

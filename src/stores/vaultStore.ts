@@ -369,6 +369,8 @@ interface VaultFileState {
   noteList: { name: string; file: string }[];
   /** 全部 `.atb` 表格（递归提取，file = 相对仓库根路径；表格窗口联动/AI 填行目标选择用）。 */
   tableList: { name: string; file: string }[];
+  /** 按相对路径查树节点类型（dir/file；不存在 = null）。@引用 路径块的目录 `/` 后缀标注用。 */
+  pathKind: (path: string) => "dir" | "file" | null;
   /** 笔记内容缓存（file → 正文；仅本会话内读过的笔记，FIFO 上限）。布局切换/重开笔记直接命中，
    *  避免每次 NoteEditor 挂载都读盘（与 tableStore 的「已加载不重读」同语义）；切仓库清空。 */
   noteContents: Record<string, string>;
@@ -553,6 +555,11 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
   noteList: [],
   tableList: [],
   noteContents: {},
+
+  pathKind: (path) => {
+    const node = findNode(get().tree, path);
+    return node ? (node.isDir ? "dir" : "file") : null;
+  },
 
   loadFiles: async () => {
     const seq = ++loadFilesSeq;

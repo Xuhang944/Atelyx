@@ -30,6 +30,7 @@ import { appendNarration, appendReasoning, coalesceAgentSteps, fillAssistantRepl
 import { createPersistController } from "@/utils/persist";
 import { useSettingsStore } from "./settingsStore";
 import { useAppStore } from "./appStore";
+import { useVaultStore } from "./vaultStore";
 import {
   EDITOR_CHATS_META_SCHEMA,
   CHAT_HISTORY_DIR,
@@ -245,7 +246,11 @@ async function injectNoteRefs(
     }
   }
   if (!active.length) return { text, injectedFiles };
-  const fileBlock = `[引用文件：\n${active.map((r) => `- ${r.file}`).join("\n")}]\n\n`;
+  // 目录引用加 / 后缀标注（引导见 FILE_REFERENCE_PROMPT 的目录 glob 句）；树中不存在按文件原样
+  const pathKind = useVaultStore.getState().pathKind;
+  const fileBlock = `[引用文件：\n${active
+    .map((r) => (pathKind(r.file) === "dir" ? `${r.file}/` : r.file))
+    .join("\n")}]\n\n`;
   injectedFiles.push(...active.map((r) => r.file));
   return { text: `${fileBlock}${text}`, injectedFiles };
 }

@@ -27,6 +27,7 @@ import { useChatPanelStore } from "@/stores/chatPanelStore";
 import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useCollabStore } from "@/stores/collabStore";
+import { useVaultStore } from "@/stores/vaultStore";
 import { VIEW_LABELS } from "@/constants/views";
 import { collectPanels, collectTabs, findViewHost } from "@/utils/workspaceLayout";
 import * as bus from "@/services/windowBus";
@@ -752,6 +753,8 @@ export const usePanelStore = create<PanelStore>((set, get) => {
       void useUiStateStore.getState().load();
       // AI 对话会话读盘（aichat 视图渲染依赖）
       void useChatPanelStore.getState().load(payload.vaultId);
+      // 仓库文件树初载（撕裂窗口 watcher 只订阅不初载）：@ 选择器候选与 pathKind 目录标注依赖
+      void useVaultStore.getState().loadFiles();
       // 窗口标题 = 激活标签
       void setWindowTitle(titleOfTabs(payload.tabs, payload.activeTabId));
       get().syncCollabHost();
