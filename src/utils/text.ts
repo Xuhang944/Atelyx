@@ -125,15 +125,3 @@ export function splitMentions(
   if (cursor < input.length) segs.push({ text: input.slice(cursor), start: cursor, mention: null });
   return segs;
 }
-
-/** @引用 胶囊的删除范围：胶囊文本 + 两侧紧邻的装饰空格（插入路径恒补空格，删除时应一并移除）。 */
-export function mentionRemoveRange(
-  input: string,
-  seg: Pick<MentionSeg, "start" | "text">
-): { start: number; end: number } {
-  let start = seg.start;
-  let end = seg.start + seg.text.length;
-  if (start > 0 && input[start - 1] === " ") start -= 1;
-  if (end < input.length && input[end] === " ") end += 1;
-  return { start, end };
-}

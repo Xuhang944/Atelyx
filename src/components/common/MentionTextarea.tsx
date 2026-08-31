@@ -7,7 +7,7 @@
  * - 选中态 Backspace/Delete、光标紧贴胶囊末尾 Backspace/开头 Delete → 整删胶囊（含两侧空格）
  * - 选中态输入字符 → 胶囊被替换，引用层同步清理（onChange 检测文本消失补调 onRemoveMention）
  * - ←/→ 光标在胶囊内/边界 → 整体跳到对侧边界（不逐字经过）
- * 文本删除统一由本组件负责（mentionRemoveRange），onRemoveMention 只做引用层清理（断边/清映射）。
+ * 文本删除统一由本组件负责，onRemoveMention 只做引用层清理（断边/清映射）。
  * 差异由 props 表达：背景层/class/占位/其他键处理（@picker 打开、Enter 发送）。
  *
  * 注意（标签对齐前提）：overlay 与 textarea 共用 INPUT_FONT——CSS 未给 textarea
@@ -160,8 +160,7 @@ export function MentionTextarea({
   }, [value, textareaRef]);
 
   /** 整删胶囊 + 引用层清理；光标复位到删除点。
-   * seg 来自 splitMentions（已吞两侧装饰空格），直接按段范围删除——不二次扩展
-   * （mentionRemoveRange 仅给按原始命中删除的路径用，防双空格场景多删）。
+   * seg 来自 splitMentions（已吞两侧装饰空格），直接按段范围删除。
    * 引用清理在此显式按段身份调用（精确，不依赖 onChange 文本检测——同名相邻段会误判）。 */
   const removeMentionAt = (seg: MentionSeg) => {
     onChange(value.slice(0, seg.start) + value.slice(seg.start + seg.text.length));

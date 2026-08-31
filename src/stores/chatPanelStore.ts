@@ -54,7 +54,7 @@ import type {
  * 单一全局历史：以 `.atelyx/对话历史/` 文件夹为真相——每会话一个消息 `.jsonl`
  * （JSON Lines：一行一条消息记录，追加式写）+ 可选 `.meta.json` 元数据侧车（title/agentId）；
  * 会话清单 = 扫目录（无整文件索引），切换笔记不切换会话；面板级覆盖存 `.atelyx/editor-chats-meta.json`。
- * 笔记上下文统一走 @引用（新会话自动 @ 当前打开笔记 / 手动拖入，发送时就地替换注入）。
+ * 笔记上下文两条路径：@引用（手动拖入，发送时就地替换注入）+ 当前打开笔记尾部上下文块（runExchange 注入，ephemeral 不落盘）。
  * 多设备共享同一仓库文件夹时，新建/删除/改名/消息经 watcher 内容比对合并实时互见（见 applyExternalChatChange）。
  *
  * 与画布对话（canvasStore.runStream）的差异：
@@ -539,6 +539,19 @@ function resolveProviderModel(): {
 }
 
 /**
+ * 当前打开笔记的尾部上下文块：随请求折叠进末条 user 消息线文（ephemeral，不入会话存储）。
+ * 引导模型视相关性用 read_file 读取（只读基础工具恒在名册，引导无条件安全）。
+ */
+function currentNoteContextBlock(file: string, title: string): string {
+  const label = title ? `（${title}）` : "";
+  return [
+    "<context>",
+    `用户当前打开的笔记：\`${file}\`${label}。若与本次对话相关，用 read_file 工具按此路径读取正文；读取之前不要声称已查看过该文件。`,
+    "</context>",
+  ].join("\n");
+}
+
+/**
  * 执行一轮流式对话（send 与 regenerate 共用）：
  * 追加 user 消息 + 空占位 assistant → SSE 流式写入（content/思考双通道 rAF 合并）→ 清理。
  * 空闲超时/错误占位/空回复移除与画布 runStream 语义一致。
@@ -605,14 +618,24 @@ async function runExchange(
   // 系统提示词：Agent 提示词 + 引用文件读取引导（工具含 read_file 时追加「@引用 文件用 read_file 读取」）
   const systemText = assembleAgentSystemPrompt(systemPrompt, tools);
 
+  const apiMessages = [
+    ...(systemText ? [{ role: "system" as const, text: systemText }] : []),
+    ...toLlmMessages(apiHistory),
+  ];
+  // 当前打开笔记以尾部上下文块折叠进末条 user 消息线文：模型始终知情、按相关性自主 read_file；
+  // 块不落历史（ephemeral），历史逐字节稳定复现 → 前缀缓存命中至该消息原文，仅块本身 token 不命中；
+  // regenerate 同经此处 → 每次请求按当下打开的笔记注入（无笔记则不注入）。
+  const { currentNoteFile, currentNoteTitle } = useAppStore.getState();
+  if (currentNoteFile) {
+    const last = apiMessages[apiMessages.length - 1];
+    last.text += `\n\n${currentNoteContextBlock(currentNoteFile, currentNoteTitle)}`;
+  }
+
   await runStreamExchange({
     provider,
     model,
     ...(reasoningEffort ? { reasoningEffort } : {}),
-    apiMessages: [
-      ...(systemText ? [{ role: "system" as const, text: systemText }] : []),
-      ...toLlmMessages(apiHistory),
-    ],
+    apiMessages,
     ...(tools.length ? { tools } : {}),
     signal: controller.signal,
     applyBatch: ({ content, reasoning }) => {
@@ -944,7 +967,7 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
       markMetaDirty(active.id);
     }
 
-    // @引用（自动 @ 当前笔记 / 手动拖入）：只发文件路径——@标签 保留原位，消息开头拼「引用文件」路径块
+    // @引用（手动拖入）：只发文件路径——@标签 保留原位，消息开头拼「引用文件」路径块
     // （模型用 read_file 读取正文，不整文打进消息）。标签被用户手动删掉/文件缺失时跳过（扫描不到标签 = 该引用下沉丢弃，不记 refs）。
     const { text: finalContent, injectedFiles } = await injectNoteRefs(trimmed, refs);
     const injectedRefs: EditorChatMessageRef[] = injectedFiles

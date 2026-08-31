@@ -12,7 +12,7 @@ const refKeyOfPanelRef = (r: { label: string }) =>
  *   + Agent 选择（图标 + Agent 名）+ 模型选择（图标 + 模型名）+ 发送/停止按钮
  *
  * 分层：组件只走 chatPanelStore / settingsStore / vaultStore，不直调 service。
- * 当前打开笔记经 props（noteFile）传入：新对话态自动 @ 当前笔记（可退格删除）。
+ * 当前打开笔记不经本组件传递：发送时由 chatPanelStore 以尾部上下文块随请求注入（见 runExchange）。
  */
 import {
   AlertCircle,
@@ -35,8 +35,6 @@ import { useSettingsStore, selectDefaultModelDisplay } from "@/stores/settingsSt
 import { useAutoScrollFollow } from "@/hooks/useAutoScrollFollow";
 import { useMarkdownComponents } from "@/hooks/useMarkdownComponents";
 import {
-  mentionRemoveRange,
-  scanMentionHits,
   splitMentions,
   type MentionSeg,
 } from "@/utils/text";
@@ -48,7 +46,6 @@ import { ModelSelect } from "@/components/common/ModelSelect";
 import { PopupLayer } from "@/components/common/PopupLayer";
 import { ERROR_PREFIX } from "@/constants/chat";
 import { usePopupAnchor } from "@/hooks/usePopupAnchor";
-import { noteTitleFromFile } from "@/utils/filename";
 import { assistantReplyText } from "@/utils/agentSteps";
 import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
 import type { EditorChatMessage, EditorChatMessageRef } from "@/types";
@@ -58,7 +55,6 @@ const EMPTY_MESSAGES: EditorChatMessage[] = [];
 
 /**
  * 输入框追加 @标签：前文非空且不以空格结尾时才补一个分隔空格，标签后恒带一个尾随空格。
- * 移除侧（removeAutoMention）删除标签时连尾随空格一起删——移除/追加对称，反复切换笔记不累加空格。
  */
 function appendMentionTags(prev: string, tags: string[]): string {
   const sep = prev && !prev.endsWith(" ") ? " " : "";
@@ -87,7 +83,7 @@ function buildRewritePrompt(r: {
   return lines.join("\n");
 }
 
-export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null; onOpenNote?: (file: string, title: string) => void }) {
+export function AiChatPanel({ onOpenNote }: { onOpenNote?: (file: string, title: string) => void }) {
   const sessions = useChatPanelStore((s) => s.sessions);
   const activeSessionId = useChatPanelStore((s) => s.activeSessionId);
   const streaming = useChatPanelStore((s) => s.streaming);
@@ -167,44 +163,6 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
     useChatPanelStore.getState().clearPendingMentions();
   }, [pendingMentions, mentions]);
 
-  /** 从输入框移除指定笔记的 @引用（自动 @ 跟随替换用）：按精确位置删 @标签（含两侧空格）+ 移出 mentions。 */
-  const removeAutoMention = (ref: EditorChatMessageRef) => {
-    setMentions((prev) => prev.filter((m) => m.file !== ref.file));
-    setInput((prev) => {
-      const hits = scanMentionHits(prev, [{ nodeId: ref.file, text: `@${ref.label}` }]);
-      if (hits.length === 0) return prev;
-      const { start, end } = mentionRemoveRange(prev, { start: hits[0].start, text: hits[0].mention.text });
-      return prev.slice(0, start) + prev.slice(end);
-    });
-  };
-
-  // 新对话态自动 @ 当前打开的笔记：输入框自动出现 @标签（可退格删除 = 该条不注入）；
-  // 切笔记跟随替换（只替换自动添加的那个，手动拖入的不受影响）；
-  // 发送首条消息建立会话后不再自动，「新建会话」回到新对话态重新自动；无笔记窗口激活则不自动
-  const autoMentionRef = useRef<EditorChatMessageRef | null>(null);
-  useEffect(() => {
-    if (activeSessionId !== null) {
-      autoMentionRef.current = null;
-      return;
-    }
-    if (!noteFile) {
-      if (autoMentionRef.current) {
-        removeAutoMention(autoMentionRef.current);
-        autoMentionRef.current = null;
-      }
-      return;
-    }
-    if (autoMentionRef.current?.file === noteFile) return;
-    if (autoMentionRef.current) removeAutoMention(autoMentionRef.current);
-    const ref: EditorChatMessageRef = {
-      file: noteFile,
-      label: noteTitleFromFile(noteFile),
-    };
-    autoMentionRef.current = ref;
-    setMentions((prev) => [...prev, ref]);
-    setInput((prev) => appendMentionTags(prev, [`@${ref.label}`]));
-  }, [noteFile, activeSessionId]);
-
   // 笔记划词改写请求队列（NoteEditor 划词右键确认）→ 输入框追加改写指令文本块
   const pendingRewrites = useChatPanelStore((s) => s.pendingRewrites);
   useEffect(() => {
@@ -246,9 +204,6 @@ export function AiChatPanel({ noteFile, onOpenNote }: { noteFile: string | null;
     if (!text || streaming) return;
     setInput("");
     setMentions([]);
-    // 立即终止自动 @ 标记：若先清 input 再等 send 设置 activeSessionId，中间一帧
-    // effect 会因「笔记已切换」把新笔记的 @标签 重新塞回已清空的输入框（发送后残留）
-    autoMentionRef.current = null;
     void send(text, mentions);
   };
 
