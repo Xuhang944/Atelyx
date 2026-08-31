@@ -335,12 +335,9 @@ pub fn cleanup_table_attachments_vault(
         }
         for row in &table.rows {
             let Some(value) = row.values.get(&field.id) else { continue };
-            let Some(arr) = value.as_array() else { continue };
-            for item in arr {
-                if let Some(s) = item.as_str() {
-                    if !s.starts_with("data:") {
-                        referenced.insert(s.to_string());
-                    }
+            for item in image_cell_entries(value) {
+                if !item.starts_with("data:") {
+                    referenced.insert(item.to_string());
                 }
             }
         }
@@ -368,6 +365,16 @@ pub fn cleanup_table_attachments_vault(
         }
     }
     Ok(removed)
+}
+
+/// 图片单元格条目（双形态兼容）：新形态 `{ images: [...] }` / 旧形态 `string[]` → 字符串列表
+/// （路径引用或遗留内嵌 dataURL）。其他形态（空/缺省）→ 空列表。
+fn image_cell_entries(value: &serde_json::Value) -> Vec<&str> {
+    value
+        .as_array()
+        .or_else(|| value.get("images").and_then(|v| v.as_array()))
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default()
 }
 
 /// 表格附件目录（相对仓库根）：`.atelyx/attachments/<tableId>/`。隐藏目录（`.` 开头）——
@@ -455,9 +462,9 @@ pub fn export_table_xlsx(
             let col = c as u16;
             let Some(value) = row.values.get(&field.id) else { continue };
             match field.field_type.as_str() {
-                // 多图单元格 v1 只导首图；dataURL/附件路径 → 字节 → 等比缩至 140x90 嵌入（行高撑开）
+                // 多图单元格只导首图；dataURL/附件路径 → 字节 → 等比缩至 140x90 嵌入（行高撑开）
                 "image" => {
-                    if let Some(url) = value.as_array().and_then(|a| a.first()).and_then(|v| v.as_str()) {
+                    if let Some(url) = image_cell_entries(value).first().copied() {
                         if let Ok(bytes) = resolve_table_image_bytes(&root, url) {
                             if let Ok(mut img) = Image::new_from_buffer(&bytes) {
                                 img = img.set_scale_to_size(140, 90, true);

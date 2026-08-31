@@ -576,7 +576,7 @@ fn scan_canvases_in(
 }
 
 // ===== .atb 表格文件结构（对应前端 types/table.ts）=====
-// values 用 serde_json::Map（值类型随字段类型：string/number/string[]），不耦合单元格业务。
+// values 用 serde_json::Map（值类型随字段类型：string/number/image = {images, display?} 对象），不耦合单元格业务。
 
 /// `.atb` 表格文件（schema `atelyx-table/v1`）。
 #[derive(Serialize, Deserialize, Clone)]

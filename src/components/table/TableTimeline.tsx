@@ -70,8 +70,7 @@ const TimelineCards = memo(function TimelineCards({
       {rows.map((row, i) => {
         const isSelected = row.id === selectedRowId;
         const isCurrent = i === shotIndex;
-        const images =
-          imageField && Array.isArray(row.values[imageField.id]) ? (row.values[imageField.id] as string[]) : [];
+        const images = imagesOf(row, imageField);
         const summary =
           textField && typeof row.values[textField.id] === "string" ? (row.values[textField.id] as string) : "";
         return (
@@ -112,6 +111,12 @@ const TimelineCards = memo(function TimelineCards({
   );
 });
 
+/** 行图片值（ImageCellValue.images；非图片值/缺省 → 空数组）。 */
+function imagesOf(row: TableRow, field?: TableField): string[] {
+  const v = field ? row.values[field.id] : undefined;
+  return v !== undefined && typeof v === "object" && v !== null ? v.images : [];
+}
+
 /** 刻度尺：memo 隔离——播放中 totalDuration 不变则跳过每帧重建。 */
 const TimelineRuler = memo(function TimelineRuler({ totalDuration }: { totalDuration: number }) {
   return (
@@ -150,7 +155,7 @@ const TimelinePreview = memo(function TimelinePreview({
   return (
     <div className="flex-1 min-h-0 flex items-center justify-center p-4 relative">
       <div className="flex flex-col items-center gap-2 max-w-full">
-        {imageField && Array.isArray(currentRow.values[imageField.id]) && (currentRow.values[imageField.id] as string[]).length > 0 ? (
+        {imagesOf(currentRow, imageField).length > 0 ? (
           coverSrc ? (
             <img
               src={coverSrc}
@@ -336,9 +341,7 @@ export function TableTimeline() {
 
   // 预览区大图条目（当前播放行首个 image）→ 显示 dataURL（路径经缓存解析；换行/换卡片自动重取）
   const coverEntry =
-    shotIndex >= 0 && imageField
-      ? (rows[shotIndex]?.values[imageField.id] as string[] | undefined)?.[0]
-      : undefined;
+    shotIndex >= 0 && imageField && rows[shotIndex] ? imagesOf(rows[shotIndex], imageField)[0] : undefined;
   const coverSrc = useTableImageSrc(coverEntry ?? "");
 
   if (rows.length === 0) {

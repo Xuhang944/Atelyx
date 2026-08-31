@@ -13,11 +13,20 @@ export type FieldType = "text" | "number" | "duration" | "singleSelect" | "image
 export type CalcType = "sum" | "avg" | "max" | "min" | "count";
 
 /**
- * 单元格值：text/singleSelect = string；number/duration = number（秒）；image = 字符串数组（多图），
- * 条目 = 表格附件相对仓库根路径（`.atelyx/attachments/<tableId>/…`，图片外置）；
+ * 图片单元格值：`images` = 图片条目数组（表格附件相对仓库根路径 `.atelyx/attachments/<tableId>/…`，
+ * 图片外置）；`display` = 展示模式（缺省 = 单图轮播，"grid" = 九宫格同显，按单元格记忆）。
+ * 旧文件兼容：磁盘上的 `string[]` 形态在进入内存时经 `normalizeImageValue` 归一化为本结构。
+ */
+export interface ImageCellValue {
+  images: string[];
+  display?: "grid";
+}
+
+/**
+ * 单元格值：text/singleSelect = string；number/duration = number（秒）；image = ImageCellValue；
  * 旧文件兼容读取 `data:` 内嵌 dataURL（显示层透传；新写入一律为附件路径）。
  */
-export type CellValue = string | number | string[];
+export type CellValue = string | number | ImageCellValue;
 
 export interface TableField {
   id: string;

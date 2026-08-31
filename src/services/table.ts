@@ -5,7 +5,7 @@
  * 重命名/移动由 Rust 扫描所有 .atlx 同步 table 节点 file 引用（链接维护）。
  */
 import { invoke } from "@tauri-apps/api/core";
-import { computeTablePatch } from "@/utils/table";
+import { computeTablePatch, normalizeTableRow } from "@/utils/table";
 import type { TableCreateResult, TableField, TableFile, TableRow } from "@/types";
 
 /** 新建空表格（自带一个「名称」文本字段），返回 { id, file }（dir 空 = 根目录）。 */
@@ -13,9 +13,11 @@ export async function createTableVault(title: string, dir: string): Promise<Tabl
   return invoke<TableCreateResult>("create_table_vault", { title, dir });
 }
 
-/** 读 .atb 文件（按相对仓库根路径）。 */
+/** 读 .atb 文件（按相对仓库根路径）。磁盘→前端的唯一咽喉：图片单元格旧形态 string[]
+ * 在此归一化为 ImageCellValue（内存/历史比对恒为新形态；旧文件未编辑行磁盘保持旧形态）。 */
 export async function readTableVault(file: string): Promise<TableFile> {
-  return invoke<TableFile>("read_table_vault", { file });
+  const t = await invoke<TableFile>("read_table_vault", { file });
+  return { ...t, rows: t.rows.map(normalizeTableRow) };
 }
 
 /** 写 .atb 文件（原子写；title 变更自动改文件名并同步画布引用）。

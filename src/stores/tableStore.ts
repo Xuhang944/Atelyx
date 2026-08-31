@@ -30,7 +30,7 @@ import { clearTableImageCache } from "@/services/tableImageCache";
 import { useCollabStore } from "@/stores/collabStore";
 import { createPersistController } from "@/utils/persist";
 import { createUndoManager } from "@/utils/undoStack";
-import { computeTablePatch, reorderByRank, sameIdSequence, summarizeTableSnapshot } from "@/utils/table";
+import { computeTablePatch, normalizeTableRow, reorderByRank, sameIdSequence, summarizeTableSnapshot } from "@/utils/table";
 import type { CalcType, CellValue, FieldType, TableField, TableFile, TablePatch, TableRow } from "@/types";
 
 /** 编辑器视图：表格 / 时间线（内存态不持久化）。 */
@@ -80,10 +80,14 @@ interface TableStoreState {
   flush: (force?: boolean) => Promise<boolean>;
 
   updateCell: (rowId: string, fieldId: string, value: CellValue | undefined) => void;
-  /** 图片单元格追加图片（系统文件选择器 → 读 dataURL 内嵌）。 */
+  /** 图片单元格追加图片（系统文件选择器 → 附件路径引用）。 */
   addImageToCell: (rowId: string, fieldId: string) => Promise<void>;
   /** 图片单元格移除指定下标图片。 */
   removeImageAt: (rowId: string, fieldId: string, index: number) => void;
+  /** 图片单元格切换展示模式（单图轮播 ⇄ 九宫格，按单元格记忆；一次切换 = 一步撤销）。 */
+  toggleImageDisplay: (rowId: string, fieldId: string) => void;
+  /** 图片单元格重排（order[新位置] = 原下标；队列长按拖动/九宫格长按拖拽共用；一次重排 = 一步撤销）。 */
+  reorderImages: (rowId: string, fieldId: string, order: number[]) => void;
   /** 放大预览右键「复制图片」：dataURL → 系统剪贴板（GIF 取首帧）。失败 error 提示，返回是否成功。 */
   copyImageToClipboard: (dataUrl: string) => Promise<boolean>;
   /** 放大预览右键「下载图片」：保存到系统 Downloads 文件夹（重名自动加序号）。失败 error 提示，返回是否成功。 */
@@ -673,9 +677,11 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
       // 图片增删 = 独立操作，一次一个撤销单元（读盘成功、变更前入栈）
       undoMgr.push();
       const current = get().rows.find((r) => r.id === rowId)?.values[fieldId];
-      const list = Array.isArray(current) ? [...current] : [];
-      list.push(rel);
-      get().updateCell(rowId, fieldId, list);
+      const prev = typeof current === "object" && current !== null ? current : undefined;
+      const images = prev ? [...prev.images] : [];
+      images.push(rel);
+      // display 是按单元格记忆的展示偏好，增删图片不得重置
+      get().updateCell(rowId, fieldId, { ...prev, images });
     } catch (e) {
       console.error("添加图片失败", e);
       set({ error: "添加图片失败，请重试" });
@@ -684,11 +690,29 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
 
   removeImageAt: (rowId, fieldId, index) => {
     const current = get().rows.find((r) => r.id === rowId)?.values[fieldId];
-    if (!Array.isArray(current)) return;
+    if (typeof current !== "object" || current === null) return;
     undoMgr.push();
-    const list = [...current];
-    list.splice(index, 1);
-    get().updateCell(rowId, fieldId, list);
+    const images = [...current.images];
+    images.splice(index, 1);
+    get().updateCell(rowId, fieldId, { ...current, images }); // 保留 display（同 addImageToCell）
+  },
+
+  toggleImageDisplay: (rowId, fieldId) => {
+    const current = get().rows.find((r) => r.id === rowId)?.values[fieldId];
+    if (typeof current !== "object" || current === null) return;
+    undoMgr.push();
+    const display = current.display === "grid" ? undefined : "grid";
+    get().updateCell(rowId, fieldId, { images: [...current.images], display });
+  },
+
+  reorderImages: (rowId, fieldId, order) => {
+    const current = get().rows.find((r) => r.id === rowId)?.values[fieldId];
+    if (typeof current !== "object" || current === null) return;
+    // 写入边界校验：order 必须是 0..n-1 的排列（拖拽状态错乱时放弃，不写脏数据）
+    const n = current.images.length;
+    if (order.length !== n || new Set(order).size !== n || order.some((i) => i < 0 || i >= n)) return;
+    undoMgr.push();
+    get().updateCell(rowId, fieldId, { ...current, images: order.map((i) => current.images[i]) });
   },
 
   copyImageToClipboard: async (dataUrl) => {
@@ -965,7 +989,8 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
       if (patch.fieldOrder) fields = reorderByIds(fields, patch.fieldOrder);
       const removedRowIds = new Set(patch.removedRowIds);
       let rows = st.rows.filter((r) => !removedRowIds.has(r.id));
-      for (const r of patch.upsertRows) {
+      // 远端行归一化（旧版本对端可能仍广播 string[] 旧形态图片值，进内存前统一）
+      for (const r of patch.upsertRows.map(normalizeTableRow)) {
         const i = rows.findIndex((x) => x.id === r.id);
         if (i >= 0) rows[i] = r;
         else rows.push(r);

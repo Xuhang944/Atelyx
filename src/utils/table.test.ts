@@ -5,8 +5,14 @@
  * 与 `summarizeTableSnapshot`（人话摘要，列表展示）。
  */
 import { describe, it, expect } from "vitest";
-import { diffTableVersions, summarizeTableSnapshot, tablesEqual } from "./table";
-import type { TableField, TableRow } from "@/types";
+import {
+  cellValueEqual,
+  diffTableVersions,
+  normalizeTableRow,
+  summarizeTableSnapshot,
+  tablesEqual,
+} from "./table";
+import type { CellValue, TableField, TableRow } from "@/types";
 
 const field = (id: string, name: string): TableField => ({ id, name, type: "text" });
 const row = (id: string, values: Record<string, string>): TableRow => ({ id, values });
@@ -92,6 +98,23 @@ describe("summarizeTableSnapshot", () => {
   });
 });
 
+describe("cellValueEqual 图片值口径", () => {
+  it("空图无模式 ≈ undefined（双向；序列化丢空/缺省键不误判为外部修改）", () => {
+    expect(cellValueEqual(undefined, { images: [] })).toBe(true);
+    expect(cellValueEqual({ images: [] }, undefined)).toBe(true);
+  });
+
+  it("空图 + display 差异 → 不等（九宫格偏好属值的一部分）", () => {
+    expect(cellValueEqual({ images: [], display: "grid" }, { images: [] })).toBe(false);
+    expect(cellValueEqual({ images: [], display: "grid" }, undefined)).toBe(false);
+  });
+
+  it("旧形态数组与新形态对象同内容 → 相等", () => {
+    const legacy = ["img-1.png"] as unknown as CellValue; // 磁盘旧形态在运行时被标注为 CellValue
+    expect(cellValueEqual(legacy, { images: ["img-1.png"] })).toBe(true);
+  });
+});
+
 describe("tablesEqual（watcher 回放判别：磁盘 vs 内存）", () => {
   const fields = [field("f1", "镜号"), field("f2", "状态")];
   const rows = [row("r1", { f1: "01", f2: "待拍" })];
@@ -132,5 +155,55 @@ describe("tablesEqual（watcher 回放判别：磁盘 vs 内存）", () => {
     const disk2 = { fields: [field("f1", "镜号")], rows: [] };
     const memory2 = { fields: [{ ...field("f1", "镜号"), width: undefined }], rows: [] };
     expect(tablesEqual(disk2, memory2)).toBe(true);
+  });
+});
+
+describe("图片值归一化与双形态比对", () => {
+  const imgField: TableField = { id: "f1", name: "分镜图", type: "image" };
+
+  it("normalizeTableRow：旧形态 string[] → { images }；新形态/无图片值行原引用保留（零拷贝）", () => {
+    const oldRow = { id: "r1", values: { f1: ["img-1.png", "img-2.png"] } } as unknown as TableRow;
+    expect(normalizeTableRow(oldRow).values.f1).toEqual({ images: ["img-1.png", "img-2.png"] });
+    const newRow: TableRow = { id: "r2", values: { f1: { images: ["img-1.png"] } } };
+    expect(normalizeTableRow(newRow)).toBe(newRow);
+    const plain: TableRow = { id: "r3", values: { f2: "文本" } };
+    expect(normalizeTableRow(plain)).toBe(plain);
+  });
+
+  it("tablesEqual：磁盘旧形态 string[] vs 内存新形态 → true（自写回波不得误判为外部修改触发重载）", () => {
+    // 磁盘原始 JSON（旧形态）在运行时被标注为 TableRow，此处断言表达同一事实
+    const disk = {
+      fields: [imgField],
+      rows: [{ id: "r1", values: { f1: ["img-1.png"] } }],
+    } as unknown as { fields: TableField[]; rows: TableRow[] };
+    const memory = {
+      fields: [imgField],
+      rows: [{ id: "r1", values: { f1: { images: ["img-1.png"] } } }],
+    };
+    expect(tablesEqual(disk, memory)).toBe(true);
+  });
+
+  it("tablesEqual：九宫格标记差异 → false（display 变化须落盘/同步）", () => {
+    const disk = { fields: [imgField], rows: [{ id: "r1", values: { f1: { images: ["img-1.png"] } } }] };
+    const memory = {
+      fields: [imgField],
+      rows: [{ id: "r1", values: { f1: { images: ["img-1.png"], display: "grid" as const } } }],
+    };
+    expect(tablesEqual(disk, memory)).toBe(false);
+  });
+
+  it("tablesEqual：空图（磁盘旧形态 [] vs 内存空图对象）→ true；图片列表不同 → false", () => {
+    const disk = {
+      fields: [imgField],
+      rows: [{ id: "r1", values: { f1: [] } }],
+    } as unknown as { fields: TableField[]; rows: TableRow[] };
+    const memory = { fields: [imgField], rows: [{ id: "r1", values: { f1: { images: [] } } }] };
+    expect(tablesEqual(disk, memory)).toBe(true);
+    const disk2 = {
+      fields: [imgField],
+      rows: [{ id: "r1", values: { f1: ["img-1.png"] } }],
+    } as unknown as { fields: TableField[]; rows: TableRow[] };
+    const memory2 = { fields: [imgField], rows: [{ id: "r1", values: { f1: { images: ["img-2.png"] } } }] };
+    expect(tablesEqual(disk2, memory2)).toBe(false);
   });
 });

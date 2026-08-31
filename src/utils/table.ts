@@ -1,16 +1,50 @@
 /**
- * 表格工具纯函数：列宽自适应、内容快照注入、AI 填行解析、状态栏列自动计算、增量补丁计算、
- * 磁盘/内存内容比对。
+ * 表格工具纯函数：列宽自适应、内容快照注入、状态栏列自动计算、增量补丁计算、磁盘/内存内容比对、
+ * 图片值归一化（磁盘/远端旧形态 → ImageCellValue，内存恒新形态）。
  *
  * - `fieldDefaultWidth`：列宽按字段名自适应（CJK 双宽，钳制 [MIN_COL_WIDTH, MAX_COL_WIDTH]）。
  * - `tableToSnapshotText`：表格 → 注入文本快照（行限 `MAX_TABLE_INJECT_ROWS`；image → `[图 N 张]`；
- *   多行文本压单行空格；超行数截断标注）。
+ *   多行文本压单行空格；超行数截断标注）。入参须为归一化内存态，勿直接喂磁盘原始 JSON。
  * - `computeColumnCalc`：按字段 calcType 统计全列，返回显示文本（数字统计 / 非空计数）。
  * - `computeTablePatch`：增量补丁计算（保存写盘与协作实时广播共用）。
  * - `tablesEqual`：磁盘表格与内存内容比对（watcher 回放判别）。
  */
 import { MAX_TABLE_INJECT_ROWS, MAX_COL_WIDTH, MIN_COL_WIDTH } from "@/constants/table";
-import type { CellValue, TableField, TableFile, TablePatch, TableRow } from "@/types";
+import type { CellValue, ImageCellValue, TableField, TableFile, TablePatch, TableRow } from "@/types";
+
+// ===== 图片单元格值归一化（磁盘/远端旧形态 string[] → ImageCellValue；内存恒为新形态）=====
+
+/** 图片值归一化：旧形态字符串数组 → `{ images }`；对象形态缺 images 补空；其余 → 空图片值。
+ * 两种形态同口径剔除非字符串条目（磁盘/远端脏数据不得进内存）。 */
+export function normalizeImageValue(v: unknown): ImageCellValue {
+  if (Array.isArray(v)) return { images: v.filter((x): x is string => typeof x === "string") };
+  if (typeof v === "object" && v !== null) {
+    const o = v as Partial<ImageCellValue>;
+    if (!Array.isArray(o.images)) return { images: [] };
+    // 正常新形态原引用返回（零拷贝）；含脏条目才重建
+    if (o.images.every((x) => typeof x === "string")) return o as ImageCellValue;
+    return { images: o.images.filter((x): x is string => typeof x === "string") };
+  }
+  return { images: [] };
+}
+
+/**
+ * 行值归一化：值映射里的旧形态图片值（string[]，仅 image 字段会出现）归一化为 ImageCellValue，
+ * 其余原样。已归一化的行返回原引用（零拷贝，load 大表免全量重建）。
+ */
+export function normalizeTableRow(row: TableRow): TableRow {
+  let changed = false;
+  const values: Record<string, CellValue | undefined> = {};
+  for (const [k, v] of Object.entries(row.values)) {
+    if (Array.isArray(v)) {
+      values[k] = normalizeImageValue(v);
+      changed = true;
+    } else {
+      values[k] = v;
+    }
+  }
+  return changed ? { ...row, values } : row;
+}
 
 /** CJK 全角字符（列宽/单元格宽度估算共用口径，双宽判定）。 */
 const CJK_WIDTH_RE = /[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]/;
@@ -34,7 +68,7 @@ export function fieldDefaultWidth(name: string): number {
 
 /** 单个单元格内容的估算宽度（与 fieldDefaultWidth 同口径：CJK 双宽 × 7px + 边距 24px）。 */
 function cellContentWidth(v: CellValue | undefined): number {
-  if (Array.isArray(v)) return 72; // image 缩略图 64px + 边距
+  if (typeof v === "object" && v !== null) return 72; // image 缩略图 64px + 边距
   const text = v === undefined || v === null ? "" : String(v);
   let maxUnits = 0;
   for (const line of text.split("\n")) {
@@ -69,7 +103,9 @@ export function tableToSnapshotText(table: Pick<TableFile, "fields" | "rows">): 
     const row = shown[i];
     const cells = table.fields.map((f) => {
       const v = row.values[f.id];
-      if (Array.isArray(v)) return v.length > 0 ? `[图 ${v.length} 张]` : "";
+      if (typeof v === "object" && v !== null) {
+        return v.images.length > 0 ? `[图 ${v.images.length} 张]` : "";
+      }
       if (typeof v === "number") return String(v);
       return (v ?? "").toString().replace(/\s+/g, " ").trim();
     });
@@ -81,11 +117,11 @@ export function tableToSnapshotText(table: Pick<TableFile, "fields" | "rows">): 
   return lines.join("\n");
 }
 
-/** 单元格是否为「非空值」（count 计算口径；image 按数组非空，text/singleSelect 按非空串）。 */
+/** 单元格是否为「非空值」（count 计算口径；image 按图片数非空，text/singleSelect 按非空串）。 */
 function isNonEmptyValue(v: CellValue): boolean {
   if (typeof v === "number") return true;
-  if (Array.isArray(v)) return v.length > 0;
-  return v.trim() !== "";
+  if (typeof v === "string") return v.trim() !== "";
+  return v.images.length > 0;
 }
 
 /** 数值显示：整数原样，小数保留两位去尾 0。 */
@@ -213,11 +249,31 @@ function stringArrayEqual(a: string[] | undefined, b: string[] | undefined): boo
   return true;
 }
 
-/** 单元格值相等（数组按项比较；空数组 ≈ undefined，同 stringArrayEqual 口径）。 */
+/** 图片值视图：任意形态（旧 string[] / ImageCellValue）→ 归一化对象；非图片值 → null。 */
+function imageViewOf(v: CellValue): ImageCellValue | null {
+  if (Array.isArray(v)) return { images: v };
+  if (typeof v === "object" && v !== null && Array.isArray((v as Partial<ImageCellValue>).images)) {
+    return v as ImageCellValue;
+  }
+  return null;
+}
+
+/**
+ * 单元格值相等（数组按项比较；空值 ≈ undefined，同 stringArrayEqual 口径）。
+ * 图片值两侧各自归一化后比较——磁盘旧行（string[]）与内存新行（{images}）判定相等，
+ * 防 watcher 自写回波被误判为外部修改触发重载。
+ */
 export function cellValueEqual(a: CellValue | undefined, b: CellValue | undefined): boolean {
-  if (a === undefined || b === undefined) return a === b;
-  if (Array.isArray(a) || Array.isArray(b)) {
-    return Array.isArray(a) && Array.isArray(b) && stringArrayEqual(a, b);
+  const ia = a === undefined ? null : imageViewOf(a);
+  const ib = b === undefined ? null : imageViewOf(b);
+  if (ia || ib) {
+    // 空图无模式 ≈ undefined（延续「空 ≈ 缺省键」口径，序列化丢空不误判）
+    const emptyA = ia === null || (ia.images.length === 0 && ia.display === undefined);
+    const emptyB = ib === null || (ib.images.length === 0 && ib.display === undefined);
+    if (emptyA || emptyB) return emptyA && emptyB;
+    if (ia === null || ib === null) return false;
+    if ((ia.display ?? undefined) !== (ib.display ?? undefined)) return false;
+    return stringArrayEqual(ia.images, ib.images);
   }
   return a === b;
 }
@@ -273,12 +329,13 @@ export function tablesEqual(
 
 // ===== 历史版本摘要 / diff（表格历史面板可读化）=====
 
-/** 单元格值展示文本（数组 = 图片数；空 → 空；超长截断）。 */
+/** 单元格值展示文本（图片值 = 图片数，历史旧快照 string[] 形态同样识别；空 → 空；超长截断）。 */
 function formatCellValue(v: CellValue | undefined): string {
   if (v === undefined) return "空";
-  if (Array.isArray(v)) return v.length ? `图片 ×${v.length}` : "空";
-  const s = String(v);
-  return s.length > 24 ? `${s.slice(0, 24)}…` : s;
+  if (typeof v === "string") return v.length > 24 ? `${v.slice(0, 24)}…` : v;
+  if (typeof v === "number") return String(v);
+  const n = normalizeImageValue(v).images.length;
+  return n > 0 ? `图片 ×${n}` : "空";
 }
 
 /** 行展示名：首个非空文本字段值；无 → 空串（调用方兜底「第 N 行」）。 */

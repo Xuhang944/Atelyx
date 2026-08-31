@@ -1,9 +1,9 @@
 /**
  * 表格图片条目 → 显示 dataURL：路径经 `tableImageCache` 解析（缓存命中立即渲染，
  * 未命中异步读取完成后回填；遗留内嵌 dataURL 条目原样透传）。失败/空条目返回 null（调用方占位）。
- * TableCell 多图单元格与 TableTimeline 缩略图/大图共用。
+ * ImageCell 当前图与 TableTimeline 缩略图/大图共用。
  *
- * 组件不直接调 service：预览批量解析也经本文件导出（`resolveTableImageEntries`）。
+ * 组件不直接调 service：预览批量解析与多图预载也经本文件导出（`resolveTableImageEntries`/`resolveTableImageEntry`）。
  */
 import { useEffect, useState } from "react";
 import { resolveTableImageUrl } from "@/services/tableImageCache";
@@ -12,6 +12,9 @@ import { resolveTableImageUrl } from "@/services/tableImageCache";
 export function resolveTableImageEntries(entries: string[]): Promise<string[]> {
   return Promise.all(entries.map((e) => resolveTableImageUrl(e)));
 }
+
+/** 单条解析（多图单元格预载逐条容错用：单条失败不拖累其余条目）。 */
+export { resolveTableImageUrl as resolveTableImageEntry };
 
 export function useTableImageSrc(entry: string): string | null {
   const [src, setSrc] = useState<string | null>(null);

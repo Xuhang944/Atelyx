@@ -60,3 +60,28 @@ export const ADD_FIELD_COL_WIDTH = 48;
 /** 表格视图缩放下限 / 上限（Ctrl+滚轮缩放，纯视图状态不持久化）。 */
 export const MIN_TABLE_ZOOM = 0.5;
 export const MAX_TABLE_ZOOM = 2;
+
+// ===== 图片单元格展示 =====
+
+/** 轮播模式图片区默认高度（自适应行；固定行高时填满行高剩余空间）。 */
+export const IMAGE_CAROUSEL_AREA_HEIGHT = 96;
+/** 底部图片队列的缩略图边长（px）。 */
+export const IMAGE_QUEUE_THUMB_SIZE = 28;
+/** 队列相邻缩略图间距（px）。 */
+export const IMAGE_QUEUE_GAP = 4;
+/** 九宫格方块间距（px）。 */
+export const IMAGE_GRID_GAP = 4;
+/** 底部图片队列条高度（缩略图 28 + 描边 4 + 上下内衬 4）。 */
+export const IMAGE_QUEUE_STRIP_HEIGHT = 36;
+/** 长按进入拖动排序的等待时长（ms；先于长按移动 = 滑动切换/取消按压）。 */
+export const IMAGE_LONG_PRESS_MS = 400;
+/** 长按激活前允许的位移（视口 px；超过 = 取消按压：轮播转滑动、拖拽放弃）。 */
+export const IMAGE_PRESS_CANCEL_PX = 6;
+/** 滑动翻页阈值（视口 px；松手时绝对位移超过即翻页，否则回弹）。 */
+export const IMAGE_SWIPE_THRESHOLD = 48;
+/** 两端阻尼回弹系数（第一张左拖 / 最后一张右拖的位移衰减）。 */
+export const IMAGE_SWIPE_EDGE_DAMPING = 0.35;
+/** 九宫格宽列阈值（px；≥3 张图时列宽 ≥ 此值 3 列，否则 2 列）。 */
+export const IMAGE_GRID_WIDE_MIN = 200;
+/** 九宫格单图方块最大宽度（px）。 */
+export const IMAGE_GRID_SINGLE_MAX = 160;
