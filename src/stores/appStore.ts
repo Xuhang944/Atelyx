@@ -29,6 +29,7 @@ import { useCanvasStore } from "@/stores/canvasStore";
 import { baseName, dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename, siblingPath, stripExt } from "@/utils/filename";
 import { getAppVersion as getVersionSvc } from "@/services/app";
 import { openInExplorer as openInExplorerSvc, openUrl as openUrlSvc } from "@/services/shell";
+import { readClipboardText as readClipboardTextSvc, writeClipboardText as writeClipboardTextSvc } from "@/services/clipboard";
 import { pickDirectory as pickDirectorySvc } from "@/services/dialog";
 import { applyStartupWindow as applyStartupWindowSvc, applyWorkspaceWindow as applyWorkspaceWindowSvc, closeWindow as closeWindowSvc, minimizeWindow as minimizeWindowSvc, onCloseRequested as onCloseRequestedSvc, toggleFullscreen as toggleFullscreenSvc, toggleMaximizeWindow as toggleMaximizeWindowSvc } from "@/services/window";
 import { checkAndAutoUpdate as checkAndAutoUpdateSvc, checkForUpdate as checkForUpdateSvc, installUpdate as installUpdateSvc } from "@/services/updater";
@@ -124,6 +125,10 @@ interface AppState {
   openInExplorer: (path: string) => Promise<void>;
   /** 用系统默认程序打开外部 URL（webview 不导航）。 */
   openUrl: (url: string) => Promise<void>;
+  /** 读系统剪贴板纯文本（无文本返回空串）。 */
+  readClipboardText: () => Promise<string>;
+  /** 写纯文本到系统剪贴板。 */
+  writeClipboardText: (text: string) => Promise<void>;
   /** 应用版本号（启动页展示用）。 */
   getAppVersion: () => Promise<string>;
   /** 窗口控制（自定义标题栏按钮/全屏）：全部经 services 层转发。 */
@@ -445,6 +450,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   pickVaultDirectory: () => pickDirectorySvc(),
   openInExplorer: (path) => openInExplorerSvc(path),
   openUrl: (url) => openUrlSvc(url),
+  readClipboardText: () => readClipboardTextSvc(),
+  writeClipboardText: (text) => writeClipboardTextSvc(text),
   getAppVersion: () => getVersionSvc(),
   minimizeWindow: () => minimizeWindowSvc(),
   toggleMaximizeWindow: () => toggleMaximizeWindowSvc(),

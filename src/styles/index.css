@@ -373,6 +373,12 @@ body {
   background: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
+/* 笔记编辑器内容区（预览/源码/实时预览编辑）选区：与 CodeMirror 编辑态选区色对齐（accent 25% 半透明） */
+[data-note-content]::selection,
+[data-note-content] ::selection {
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
 /* 实时预览 widget：链接 / wiki 链接 / 图片 / 任务复选框 */
 .md-editor-link {
   color: var(--accent);

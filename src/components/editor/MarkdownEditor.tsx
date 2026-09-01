@@ -117,6 +117,8 @@ class LinkWidget extends WidgetType {
     span.textContent = this.text;
     span.title = this.url;
     span.addEventListener("mousedown", (e) => {
+      // 仅左键打开：右键由正文右键菜单接管，不能同时拉起系统浏览器
+      if (e.button !== 0) return;
       e.preventDefault();
       e.stopPropagation();
       this.openUrl(this.url);
@@ -174,6 +176,8 @@ class ImageWidget extends WidgetType {
     if (this.vaultRoot && isSafeVaultRelPath(this.src)) {
       const absolute = this.vaultRoot.replace(/[\\/]+$/, "") + "/" + this.src;
       box.addEventListener("mousedown", (e) => {
+        // 仅左键打开：右键由正文右键菜单接管，不能同时拉起系统文件管理器
+        if (e.button !== 0) return;
         e.preventDefault();
         e.stopPropagation();
         this.openPath(absolute);
@@ -563,9 +567,11 @@ interface Props {
   /** 协作绑定：提供时进入 Yjs 协同编辑（y-codemirror 绑 Y.Text + y-undo 替 CM history + 远端光标）；
    *  缺省 = 现有本地单写者纯文本编辑。 */
   collab?: { ytext: YText; awareness: Awareness };
+  /** 编辑器实例外抛（NoteEditor 划词右键剪切/粘贴按选区 dispatch 用）；创建后赋值、卸载置 null。 */
+  editorViewRef?: { current: EditorView | null };
 }
 
-export function MarkdownEditor({ body, syncSeq, onBodyChange, collab }: Props) {
+export function MarkdownEditor({ body, syncSeq, onBodyChange, collab, editorViewRef }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   /** 装饰 widget 的 dispatch 转发：StateField 闭包捕获 ref 而非函数，view 创建后赋值才有效。 */
@@ -648,6 +654,7 @@ export function MarkdownEditor({ body, syncSeq, onBodyChange, collab }: Props) {
     });
     viewRef.current = view;
     dispatchRef.current = (spec) => view.dispatch(spec);
+    if (editorViewRef) editorViewRef.current = view;
     if (collab) {
       // 协作：ytext 已作编辑模型源，不再用 body 覆盖。若 ytext 与 body 相悖
       // （预览期远端已改写本端未感知）→ 回传一次同步 NoteEditor.content（预览/保存反映收敛态）
@@ -671,10 +678,12 @@ export function MarkdownEditor({ body, syncSeq, onBodyChange, collab }: Props) {
       }
       viewRef.current = null;
       dispatchRef.current = () => {};
+      if (editorViewRef) editorViewRef.current = null;
       view.destroy();
     };
-    // collab 切换（重建视图）依赖其引用；applyBody 为稳定回调
-  }, [applyBody, collab]);
+    // collab 切换（重建视图）依赖其引用；applyBody 为稳定回调；editorViewRef 为父组件 useRef（引用稳定，
+    // 仅为 exhaustive-deps 合规列入，不会触发重建）
+  }, [applyBody, collab, editorViewRef]);
 
   // 外部同步：非用户编辑的 content 更新（watcher 外部修改 / 冲突重载 / 加载完成）。
   // 协作模式下不禁用：远端合入经 ytext 进视图（updateListener 上报），此处仅处理非协作场景。

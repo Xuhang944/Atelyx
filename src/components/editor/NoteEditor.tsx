@@ -7,16 +7,17 @@
  *   写入完成时若已有更新输入则保持「保存中…」，避免误报「已自动保存」；状态写 vaultStore 由面板 header 展示。
  * - 分层：走 vaultStore（readNoteContent / saveNoteContent），不直调 service。
  */
-import { Check, MoreHorizontal, Pencil, Wand2 } from "lucide-react";
+import { Check, ClipboardPaste, Copy, MoreHorizontal, Pencil, Scissors, Wand2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import type { EditorView } from "@codemirror/view";
 import { useVaultStore, lastFolderRenameTarget, lastNoteRenameTarget, isKnownNoteDiskContent, type NoteSaveStatus } from "@/stores/vaultStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
 import { useChatPanelStore } from "@/stores/chatPanelStore";
 import { useCollabStore } from "@/stores/collabStore";
 import { useNoteCollabStore } from "@/stores/noteCollabStore";
-import { Menu, MenuItem } from "@/components/common/Menu";
+import { Menu, MenuDivider, MenuItem } from "@/components/common/Menu";
 import type { BacklinkRow, CollabPeer } from "@/types";
 import {
   MARKDOWN_PLUGINS,
@@ -37,6 +38,31 @@ type SaveState = NoteSaveStatus["state"];
 
 /** 模块级空数组：notePeers 缺省引用（避免每次渲染新数组导致无限重渲染）。 */
 const EMPTY_PEERS: CollabPeer[] = [];
+
+/** 预览右键进编辑后，等待光标/选区落位稳定（挂载、StrictMode 重挂载、selectionchange 收敛）再弹菜单的时延。 */
+const PENDING_MENU_DELAY_MS = 60;
+
+/** 在源码中定位预览选区原文（预览渲染文本与源码可能带标记差异，找不到返回 null）；
+ *  多处出现取离参照位置最近的一处——预览选区就在右键点附近。 */
+function locateSelectionInDoc(
+  doc: string,
+  text: string,
+  refPos: number,
+): { from: number; to: number } | null {
+  if (!text) return null;
+  let from = doc.indexOf(text);
+  if (from === -1) return null;
+  let best = { from, to: from + text.length };
+  let bestDist = Math.abs(from - refPos);
+  for (from = doc.indexOf(text, from + 1); from !== -1; from = doc.indexOf(text, from + 1)) {
+    const dist = Math.abs(from - refPos);
+    if (dist < bestDist) {
+      best = { from, to: from + text.length };
+      bestDist = dist;
+    }
+  }
+  return best;
+}
 
 export function NoteEditor({ file }: { file: string }) {
   const readNoteContent = useVaultStore((s) => s.readNoteContent);
@@ -63,36 +89,76 @@ export function NoteEditor({ file }: { file: string }) {
   /** 右上角「···」更多选项弹层（统一 usePopupAnchor + PopupLayer）。 */
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const menu = usePopupAnchor(menuTriggerRef);
-  /** 划词 AI 改写菜单（右键时的视口坐标 + 选中文本）；null = 关闭。 */
-  const [rewriteMenu, setRewriteMenu] = useState<{
+  /** 正文右键菜单（右键时的视口坐标 + 选区原文，可为空 = 空白处右键）；
+   *  selectionLive = 选区在编辑面是否仍可操作（预览切编辑重建编辑器会丢选区，源码模式同元素保留）；null = 关闭。 */
+  const [contentMenu, setContentMenu] = useState<{
     x: number;
     y: number;
     text: string;
+    selectionLive: boolean;
   } | null>(null);
   /** 划词改写菜单第二阶段：评论输入框（repositionDeps 切换菜单内容）。 */
   const [rewriteOpen, setRewriteOpen] = useState(false);
   /** 划词改写评论草稿。 */
   const [rewriteComment, setRewriteComment] = useState("");
+  /** 待弹出的右键菜单：预览右键先进编辑模式，等编辑器就绪、光标/选区落到右键位置开始闪烁后再弹
+   *  （菜单弹出时才据选区还原结果确定是否含剪切）。 */
+  const [pendingMenu, setPendingMenu] = useState<{
+    x: number;
+    y: number;
+    text: string;
+  } | null>(null);
+  /** 编辑器实例（MarkdownEditor 外抛）：剪切/粘贴按 CodeMirror 当前选区操作。 */
+  const cmViewRef = useRef<EditorView | null>(null);
   /** 历史记录面板开关（「···」更多选项入口）。 */
   const [historyOpen, setHistoryOpen] = useState(false);
+  /** 剪贴板操作内联提示（底部状态条展示，自动清除；失败是罕见边界，不为此引入 toast 基建）。 */
+  const [clipHint, setClipHint] = useState<string | null>(null);
+  const clipHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /** 内容区右键：有划词选区（且落在编辑器内容区内）→ 弹「AI 改写」菜单（三模式共用 DOM 选区）。 */
+  /** 关闭划词右键菜单（一/二阶段共用）。 */
+  const closeRewriteMenu = useCallback(() => {
+    setContentMenu(null);
+    setRewriteOpen(false);
+  }, []);
+
+  /** 剪贴板失败提示：底部状态条展示 2.5s 自动清除，重复失败重置计时。 */
+  const showClipHint = useCallback((message: string) => {
+    setClipHint(message);
+    if (clipHintTimerRef.current) clearTimeout(clipHintTimerRef.current);
+    clipHintTimerRef.current = setTimeout(() => setClipHint(null), 2500);
+  }, []);
+  useEffect(
+    () => () => {
+      if (clipHintTimerRef.current) clearTimeout(clipHintTimerRef.current);
+    },
+    [],
+  );
+
+  /** 正文区右键（含空白处）→ 弹菜单（复制/剪切/粘贴 + AI 处理）；预览/只读源码态右键先进入编辑模式，
+   *  待光标/选区就位闪烁后再弹菜单（pendingMenu 流程，一套菜单通用）。仅 data-note-content 内容区接管
+   *  （顶部条/属性区/反链区走浏览器默认菜单）；源码 textarea 的选区以 selectionStart/End 为准
+   *  （window.getSelection 对 textarea 不可靠）。 */
   const handleContentContextMenu = (e: React.MouseEvent) => {
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) return;
-    const text = sel.toString().trim();
-    if (!text) return;
-    // 选区须落在内容区内（data-note-content），顶部条/属性区/反链区的选区不触发
-    const container = sel.getRangeAt(0).commonAncestorContainer;
-    const inContent =
-      container instanceof Element
-        ? !!container.closest("[data-note-content]")
-        : !!container.parentElement?.closest("[data-note-content]");
-    if (!inContent) return;
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target?.closest("[data-note-content]")) return;
+    let text = "";
+    if (target instanceof HTMLTextAreaElement) {
+      text = target.value.slice(target.selectionStart, target.selectionEnd);
+    } else {
+      text = window.getSelection()?.toString() ?? "";
+    }
     e.preventDefault();
     setRewriteComment("");
     setRewriteOpen(false);
-    setRewriteMenu({ x: e.clientX, y: e.clientY, text });
+    if (preview) {
+      // 预览/只读源码态：先进编辑模式，光标/选区就位后由 pendingMenu effect 弹菜单
+      setPreview(false);
+      setPendingMenu({ x: e.clientX, y: e.clientY, text });
+    } else {
+      setPendingMenu(null); // 取消仍在等待的 pending（60ms 窗口内再次右键），防旧坐标覆盖新菜单
+      setContentMenu({ x: e.clientX, y: e.clientY, text, selectionLive: true });
+    }
   };
   /** 非用户编辑的 content 更新序号（加载完成/外部刷新/冲突重载时递增），MarkdownEditor 据此同步正文。 */
   const [editorSyncSeq, setEditorSyncSeq] = useState(0);
@@ -146,11 +212,59 @@ export function NoteEditor({ file }: { file: string }) {
         !target?.closest?.("[data-popup-layer]")
       ) {
         setPreview(true);
+        // 60ms 窗口内点编辑器外：连同待弹菜单一起取消，防菜单弹在已回退的预览态上
+        setPendingMenu(null);
       }
     };
     document.addEventListener("mousedown", onDocMouseDown);
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, []);
+
+  /** 待弹出右键菜单 → 延迟 PENDING_MENU_DELAY_MS 待编辑器挂载/重挂载/selectionchange 全部收敛后，
+   *  一次性安置光标/选区并聚焦、紧接弹菜单——光标在菜单出现时真实闪烁，用户才看得到剪切/粘贴
+   *  的作用位置（挂载瞬间的落位会被 StrictMode 重挂载/预览卸载的 selectionchange 吞掉，故不提前落）。
+   *  预览选区原文在源码中匹配还原成编辑器选区（多处取离右键点最近的一处；渲染文本与源码有标记
+   *  差异匹配不到时仅落光标，菜单随之不含剪切）。 */
+  useEffect(() => {
+    if (!pendingMenu) return;
+    const pending = pendingMenu;
+    let cancelled = false;
+    /** 安置光标/选区并聚焦，返回菜单是否含剪切（编辑器未就绪返回 false，不阻塞弹菜单）。 */
+    const restoreSelection = (): boolean => {
+      if (sourceMode) {
+        const ta = editorRootRef.current?.querySelector("textarea");
+        if (!ta) return false;
+        // 同元素只翻只读标志，光标/选区保留，聚焦即闪烁
+        ta.focus();
+        return true;
+      }
+      const view = cmViewRef.current;
+      if (!view) return false;
+      const docText = view.state.doc.toString();
+      // precise=false：坐标未被视口 DOM 覆盖（如文末空白）时返回就近估算位置而非 null
+      const refPos = view.posAtCoords({ x: pending.x, y: pending.y }, false);
+      // 渲染文本与源码可能有差异（加粗标记/实体等），原文匹配不到退回去掉首尾空白再试
+      const needle = docText.includes(pending.text) ? pending.text : pending.text.trim();
+      const located = needle ? locateSelectionInDoc(docText, needle, refPos) : null;
+      view.dispatch(
+        located
+          ? { selection: { anchor: located.from, head: located.to }, scrollIntoView: true }
+          : { selection: { anchor: refPos }, scrollIntoView: true },
+      );
+      view.focus();
+      return !!located;
+    };
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      const selectionLive = restoreSelection();
+      setContentMenu({ x: pending.x, y: pending.y, text: pending.text, selectionLive });
+      setPendingMenu(null);
+    }, PENDING_MENU_DELAY_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [pendingMenu, sourceMode]);
 
   // 加载正文；切换笔记（file 变化）重新读取
   useEffect(() => {
@@ -158,6 +272,8 @@ export function NoteEditor({ file }: { file: string }) {
     // 加载起始的序号快照：加载期间外部修改（序号移动）则丢弃本次结果，避免旧内容覆盖新磁盘
     const seqAtLoad = useVaultStore.getState().externalNoteEdits[file] ?? 0;
     setContent("");
+    // 切笔记：取消待弹的右键菜单（触发 pendingMenu effect cleanup 取消定时器），防旧坐标弹到新笔记
+    setPendingMenu(null);
     // 编辑模式：清空编辑器（防加载窗口内旧笔记内容被误写到新文件，见 MarkdownEditor 同步机制）
     setEditorSyncSeq((s) => s + 1);
     setSaveStatus("idle");
@@ -419,6 +535,128 @@ export function NoteEditor({ file }: { file: string }) {
     }, 500);
   };
 
+  /** 当前编辑面选区（区间 + 源码原文）；编辑面不可用返回 null。 */
+  const currentEditorSelection = (): { from: number; to: number; text: string } | null => {
+    if (sourceMode) {
+      const ta = editorRootRef.current?.querySelector("textarea");
+      if (!ta) return null;
+      return {
+        from: ta.selectionStart,
+        to: ta.selectionEnd,
+        text: ta.value.slice(ta.selectionStart, ta.selectionEnd),
+      };
+    }
+    const view = cmViewRef.current;
+    if (!view) return null;
+    const { from, to } = view.state.selection.main;
+    return { from, to, text: view.state.sliceDoc(from, to) };
+  };
+
+  /** 编辑面区间替换原语：源码 textarea 以 contentRef 拼接走 handleChange（自动保存/冲突门控/
+   *  协作 syncLocalBody 全复用；用 ref 防 await 剪贴板 IPC 窗口内的击键被旧闭包 content 丢弃）；
+   *  CodeMirror dispatch（经 onBodyChange → 自动保存/协作同步/撤销栈）。 */
+  const editEditorRange = (from: number, to: number, ins: string) => {
+    if (sourceMode) {
+      const ta = editorRootRef.current?.querySelector("textarea");
+      if (!ta) return;
+      handleChange(contentRef.current.slice(0, from) + ins + contentRef.current.slice(to));
+      // React 提交新 value 后光标默认跳到末尾，恢复到插入末端
+      const caret = from + ins.length;
+      setTimeout(() => ta.setSelectionRange(caret, caret), 0);
+    } else {
+      const view = cmViewRef.current;
+      if (!view) return;
+      view.dispatch({
+        changes: { from, to, insert: ins },
+        selection: { anchor: from + ins.length },
+        scrollIntoView: true,
+      });
+      view.focus();
+    }
+  };
+
+  /** 无选区插入（空白处粘贴）：源码 textarea 插到光标处；CodeMirror 先把光标移到右键位置再插入
+   *  （光标可能停在陈旧位置或刚进入编辑态的文档起点）。 */
+  const insertAtCaret = (ins: string) => {
+    if (sourceMode) {
+      const ta = editorRootRef.current?.querySelector("textarea");
+      if (!ta) return;
+      editEditorRange(ta.selectionStart, ta.selectionStart, ins);
+    } else {
+      const view = cmViewRef.current;
+      if (!view) return;
+      // contentMenu 判空仅为 TS 收窄（菜单项点击时恒非空）；precise=false 让未覆盖坐标取就近估算
+      const clicked = contentMenu
+        ? view.posAtCoords({ x: contentMenu.x, y: contentMenu.y }, false)
+        : null;
+      const at = clicked ?? view.state.selection.main.head;
+      editEditorRange(at, at, ins);
+    }
+  };
+
+  /** 复制：菜单打开时捕获的选区原文（用户所见即所复制）写系统剪贴板；成功才关菜单，失败可重试。 */
+  const copySelection = () => {
+    if (!contentMenu) return;
+    useAppStore
+      .getState()
+      .writeClipboardText(contentMenu.text)
+      .then(() => closeRewriteMenu())
+      .catch((e) => {
+        console.warn("复制到剪贴板失败", e);
+        showClipHint("复制失败，请重试");
+      });
+  };
+
+  /** 剪切：实读编辑面当前选区写剪贴板——CM 装饰会把 DOM 选区映射为整个源码节点，菜单捕获的
+   *  渲染文本 ≠ 删除范围，「剪贴板 = 被删内容」必须恒成立；先写成功再删，失败中止防文本丢失。 */
+  const cutSelection = async () => {
+    if (!contentMenu) return;
+    const selected = currentEditorSelection();
+    if (!selected?.text) return;
+    try {
+      await useAppStore.getState().writeClipboardText(selected.text);
+    } catch (e) {
+      console.warn("剪切写入剪贴板失败", e);
+      showClipHint("剪切失败，请重试");
+      return;
+    }
+    editEditorRange(selected.from, selected.to, "");
+    closeRewriteMenu();
+  };
+
+  /** 粘贴：读系统剪贴板——有可操作选区则替换，否则插到光标/右键位置；空剪贴板/失败不动作且
+   *  菜单保留（可重试），防误删选区。 */
+  const pasteIntoSelection = async () => {
+    let clip = "";
+    try {
+      clip = await useAppStore.getState().readClipboardText();
+    } catch (e) {
+      console.warn("读取剪贴板失败", e);
+      showClipHint("粘贴失败，请重试");
+      return;
+    }
+    if (!clip) return;
+    if (contentMenu?.text.trim() && contentMenu.selectionLive) {
+      const selected = currentEditorSelection();
+      if (selected) editEditorRange(selected.from, selected.to, clip);
+    } else {
+      insertAtCaret(clip);
+    }
+    closeRewriteMenu();
+  };
+
+  /** 划词 AI 改写提交（评论框 Enter / 发送按钮共用）：入队面板后关菜单。 */
+  const submitRewrite = () => {
+    if (!contentMenu) return;
+    useChatPanelStore.getState().queueNoteRewrite({
+      noteFile: file,
+      label: noteTitleFromFile(file),
+      selectedText: contentMenu.text.trim(),
+      comment: rewriteComment.trim(),
+    });
+    closeRewriteMenu();
+  };
+
   /** Frontmatter 解析：content 变（输入/外部刷新）→ 面板数据即时重解析，形成「编辑/外部修改即刷新」闭环。 */
   const parsed = useMemo(() => parseFrontmatter(content), [content]);
 
@@ -520,6 +758,9 @@ export function NoteEditor({ file }: { file: string }) {
     const eol = content.includes("\r\n") ? "\r\n" : "\n";
     handleChange("---" + eol + "---" + eol + eol + content);
   };
+
+  /** 菜单打开时是否捕获到选区（一阶段菜单形态：完整菜单 vs 仅粘贴）。 */
+  const hasSelection = !!contentMenu?.text.trim();
 
   return (
     <div
@@ -716,6 +957,7 @@ export function NoteEditor({ file }: { file: string }) {
           <MarkdownEditor
             body={parsed.body}
             syncSeq={editorSyncSeq}
+            editorViewRef={cmViewRef}
             // 协作态门控：仅协作激活时进入 Yjs 编辑（collabBinding 可能因协作关闭/断线残留，若不过滤，
             // 残留绑定的陈旧 ytext 会成为编辑模型源，源码模式编辑（只改 content）切回实时预览被回退）
             collab={isCollab ? collabBinding : undefined}
@@ -758,32 +1000,55 @@ export function NoteEditor({ file }: { file: string }) {
         )}
       </div>
 
-      {/* 底部状态条：字数统计 */}
+      {/* 底部状态条：字数统计 + 剪贴板操作提示（2.5s 自动清除） */}
       <div
         className="px-3 py-1 text-[11px] flex-shrink-0 select-none"
         style={{ borderTop: "1px solid var(--border)", color: "var(--text-muted)" }}
       >
         {content.length} 字
+        {clipHint && (
+          <span className="ml-2" style={{ color: "#f87171" }}>
+            {clipHint}
+          </span>
+        )}
       </div>
 
-      {/* 划词 AI 改写菜单：第一阶段 = 「AI 改写」入口；确认后追加评论输入框（repositionDeps 换内容），
-          确认 → 改写请求入队面板（queueNoteRewrite），面板输入框自动插入指令文本 */}
-      {rewriteMenu && (
+      {/* 正文右键菜单（预览切编辑后选区已还原，一套菜单通用）：有选区 = 复制/剪切/粘贴 + 分隔线 +
+          AI 处理置底；空白处（无选区）= 仅粘贴（插到光标/右键位置）。AI 处理确认后进入评论输入框
+          （repositionDeps 换内容），提交 → 改写请求入队面板（queueNoteRewrite） */}
+      {contentMenu && (
         <Menu
-          x={rewriteMenu.x}
-          y={rewriteMenu.y}
-          onClose={() => {
-            setRewriteMenu(null);
-            setRewriteOpen(false);
-          }}
-          widthClass="w-72"
+          x={contentMenu.x}
+          y={contentMenu.y}
+          onClose={closeRewriteMenu}
+          widthClass={rewriteOpen ? "w-72" : "w-40"}
           contentClassName="p-1.5"
           repositionDeps={[rewriteOpen]}
         >
           {!rewriteOpen ? (
-            <MenuItem onClick={() => setRewriteOpen(true)}>
-              <Wand2 size={14} className="flex-shrink-0" /> AI 处理（发送到对话面板）
-            </MenuItem>
+            hasSelection ? (
+              <>
+                <MenuItem onClick={copySelection}>
+                  <Copy size={14} className="flex-shrink-0" /> 复制
+                </MenuItem>
+                {contentMenu.selectionLive && (
+                  <MenuItem onClick={cutSelection}>
+                    <Scissors size={14} className="flex-shrink-0" /> 剪切
+                  </MenuItem>
+                )}
+                <MenuItem onClick={pasteIntoSelection}>
+                  <ClipboardPaste size={14} className="flex-shrink-0" /> 粘贴
+                </MenuItem>
+                <MenuDivider />
+                <MenuItem onClick={() => setRewriteOpen(true)}>
+                  <Wand2 size={14} className="flex-shrink-0" /> AI 处理
+                </MenuItem>
+              </>
+            ) : (
+              <MenuItem onClick={pasteIntoSelection}>
+                <ClipboardPaste size={14} className="flex-shrink-0" /> 粘贴
+              </MenuItem>
+            )
           ) : (
             <div>
               <textarea
@@ -803,39 +1068,20 @@ export function NoteEditor({ file }: { file: string }) {
                   // Enter 确认 / Shift+Enter 换行；IME 组合期间 Enter 上屏不触发
                   if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                     e.preventDefault();
-                    useChatPanelStore.getState().queueNoteRewrite({
-                      noteFile: file,
-                      label: noteTitleFromFile(file),
-                      selectedText: rewriteMenu.text,
-                      comment: rewriteComment.trim(),
-                    });
-                    setRewriteMenu(null);
-                    setRewriteOpen(false);
+                    submitRewrite();
                   }
                 }}
               />
               <div className="flex justify-end gap-1 mt-1.5">
                 <button
-                  onClick={() => {
-                    setRewriteMenu(null);
-                    setRewriteOpen(false);
-                  }}
+                  onClick={closeRewriteMenu}
                   className="px-2 py-1 rounded text-xs hover:opacity-80"
                   style={{ color: "var(--text-secondary)" }}
                 >
                   取消
                 </button>
                 <button
-                  onClick={() => {
-                    useChatPanelStore.getState().queueNoteRewrite({
-                      noteFile: file,
-                      label: noteTitleFromFile(file),
-                      selectedText: rewriteMenu.text,
-                      comment: rewriteComment.trim(),
-                    });
-                    setRewriteMenu(null);
-                    setRewriteOpen(false);
-                  }}
+                  onClick={submitRewrite}
                   className="px-2 py-1 rounded text-xs"
                   style={{ background: "var(--accent)", color: "var(--accent-fg)" }}
                 >
