@@ -396,16 +396,16 @@ export function TableEditor({ panelId }: { panelId: string }) {
     selection?.kind === "cell" && selection.rowId === rowId && selection.fieldId === fieldId;
   /** 行/列/整表的淡金背景（列选中作用于表头与数据单元格）。 */
   const highlightBg = (highlighted: boolean) => (highlighted ? "color-mix(in srgb, var(--accent) 8%, transparent)" : undefined);
-  /** 远端选中覆盖映射：按单元格展开一次构建（cell 精确 / row 整行 / column 整列 / all 全表），
+  /** 远端选中覆盖映射：按单元格展开一次构建（cell 精确 / row 整行 / column 整列；all 全表不渲染——满屏描边干扰协作），
    * 逐格查表 O(1)——替代每格 peersAtCell 的 filter 分配（大表 + 多用户时每渲染 O(N·P) → O(N)）。 */
   const peerShadowByCell = useMemo(() => {
     const map = new Map<string, CollabPeer[]>();
     if (tablePeers.length === 0) return map;
     for (const p of tablePeers) {
       const sel = p.presence?.selection;
-      if (!sel) continue;
+      if (!sel || sel.kind === "all") continue;
       for (const row of rows) {
-        if (sel.kind === "cell" && sel.rowId !== row.id) continue;
+        if ((sel.kind === "cell" || sel.kind === "row") && sel.rowId !== row.id) continue;
         for (const field of fields) {
           if ((sel.kind === "cell" || sel.kind === "column") && sel.fieldId !== field.id) continue;
           const k = `${row.id}:${field.id}`;
