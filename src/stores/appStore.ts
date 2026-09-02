@@ -609,9 +609,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       await deleteCanvasVault(row.file);
       markSelfSave(row.file);
       const { currentCanvasId, currentCanvasFile } = get();
-      // 删除的是当前画布：清空 canvasStore（含未落盘 saveTimer / 进行中的流），
-      // 否则残留 timer 会重写已删文件、watcher 事件匹配旧 id 产生误导 reload
-      if (row.id === currentCanvasId) {
+      // 删除的是当前画布（id 或路径命中——AI 工具等调用方可能只有 file 无真实 id）：清空 canvasStore
+      // （含未落盘 saveTimer / 进行中的流），否则残留 timer 会重写已删文件、watcher 事件匹配旧 id 产生误导 reload
+      const isCurrent = row.id === currentCanvasId || row.file === currentCanvasFile;
+      if (isCurrent) {
         useCanvasStore.getState().resetCanvasState();
       }
       // 删除的是「上次打开」的画布：清空 uiState 记录（否则下次进入仓库尝试恢复已删文件）
@@ -619,8 +620,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         useUiStateStore.getState().closeFile("canvas");
       }
       set({
-        currentCanvasId: row.id === currentCanvasId ? null : currentCanvasId,
-        currentCanvasFile: row.id === currentCanvasId ? null : currentCanvasFile,
+        currentCanvasId: isCurrent ? null : currentCanvasId,
+        currentCanvasFile: isCurrent ? null : currentCanvasFile,
       });
       await refreshCanvasAndTree();
     } catch (e) {

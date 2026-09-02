@@ -291,8 +291,6 @@ export function InspectorPanel() {
                 {selectedAgent.systemPromptFile
                   ? `系统提示词：已注册提示词（${selectedAgent.systemPromptFile}）`
                   : "系统提示词：未设置"}
-                {" · "}
-                {selectedAgent.tools.length ? `${selectedAgent.tools.length} 可配置工具` : "仅只读基础能力"}
               </p>
             )}
           </section>

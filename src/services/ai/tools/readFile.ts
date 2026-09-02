@@ -59,7 +59,7 @@ export const READ_FILE_TOOL = defineTool<ReadFileArgs>({
         offset: args.offset,
         limit: args.limit,
       });
-      // DSH 风格页脚：字节截断 / 尚有后续可翻页 / 已读完全部
+      // 结果页脚：字节截断 / 尚有后续可翻页 / 已读完全部
       const endLine = lines.length ? lines[lines.length - 1].number : args.offset - 1;
       let footer: string;
       if (truncated) {

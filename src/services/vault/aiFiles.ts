@@ -8,7 +8,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { READ_WINDOW_DEFAULT_LINES } from "@/constants/tools";
-import type { GlobVaultResult, GrepVaultResult, ReadWindowResult } from "@/types";
+import type { GlobVaultResult, GrepVaultResult, ListDirResult, ReadWindowResult } from "@/types";
 
 /** 读仓库内任意文本文件（相对仓库根路径；超出仓库根/不存在抛错，由调用方降级）。 */
 export async function readVaultFile(file: string): Promise<string> {
@@ -62,6 +62,11 @@ export async function grepVault(
     path: opts?.path,
     include: opts?.include,
   });
+}
+
+/** 单层列出目录条目（AI list_dir 工具后端）：目录在前、含隐藏项，子目录带子项数。dir 缺省 = 仓库根。 */
+export async function listVaultDir(dir?: string): Promise<ListDirResult> {
+  return invoke<ListDirResult>("list_vault_dir", { dir: dir ?? "" });
 }
 
 /**

@@ -41,6 +41,7 @@ pub fn run() {
             commands::vault::read_vault_file,
             commands::vault::read_vault_file_window,
             commands::vault::write_vault_file,
+            commands::vault::list_vault_dir,
             commands::vault::rename_note,
             commands::vault::read_vault_config,
             commands::vault::write_vault_config,

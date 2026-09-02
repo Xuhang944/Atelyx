@@ -44,7 +44,7 @@ use crate::vault::{
     WikiIndex, CANVAS_SCHEMA, query_wiki_backlinks,
 };
 
-/// read_file 分页窗口的默认/上限参数（对齐 DSH tool-fs 口径）：
+/// read_file 分页窗口的默认/上限参数：
 /// - READ_WINDOW_MAX_LINE_CHARS：单行字符上限，超长截断并附后缀
 /// - READ_WINDOW_MAX_BYTES：单次返回字节预算，超限停加行并标记 truncated（不硬拒，模型可翻页）
 /// - READ_WINDOW_DEFAULT_LINES：默认/单次最大返回行数
@@ -261,6 +261,17 @@ pub fn rename_canvas_vault(
         .parent()
         .ok_or_else(|| format!("非法路径：{}", file))?;
     let new_path = parent.join(format!("{}.atlx", sanitize_filename(&canvas.title)));
+    // 目标已被另一画布占用（内部 id 不同，文件名与 title 脱钩时前端 dedupe 防不住）时拒绝覆盖，
+    // 防静默丢失（同 write_canvas_vault 的保存守卫；同物理文件 = case-only 改名豁免）
+    if !same_physical_file(&old_path, &new_path) {
+        ensure_no_id_conflict(
+            &new_path,
+            &canvas.id,
+            &|p| read_canvas_file(p).ok().map(|c| c.id),
+            "画布",
+            &canvas.title,
+        )?;
+    }
     // 先写新文件再删旧文件，保证不丢数据
     write_canvas_file(&new_path, &canvas)?;
     remove_replaced_file(&old_path, &new_path, "画布")?;
@@ -295,6 +306,9 @@ pub fn delete_canvas_vault(file: String, state: State<'_, VaultState>) -> Result
     let path = safe_join(&root, &file, false)?;
     if !path.exists() {
         return Err(format!("文件不存在：{}", file));
+    }
+    if path.is_dir() {
+        return Err(format!("目标是目录，仅支持删除文件：{}", file));
     }
     std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     cache_evict_canvas(&state, &file);
@@ -418,7 +432,7 @@ pub fn read_vault_file(file: String, state: State<'_, VaultState>) -> Result<Str
 
 /// 写仓库内任意文本文件（指定相对路径；原子写 + 自动建父目录）。
 /// AI write_file/edit_file 等通用文件工具的后端。不做字节硬上限（内容受模型输出 token 天然约束；
-/// 路径安全由 safe_join 保障），对齐 DSH 语义。
+/// 路径安全由 safe_join 保障）。
 #[tauri::command]
 pub fn write_vault_file(
     file: String,
@@ -494,7 +508,7 @@ fn build_read_window(
     let mut truncated = false;
 
     // split_terminator：按 '\n' 切但省略尾部终止符产生的空段——'a\nb\n' 与 'a\nb' 都精确为 2 行，
-    // 空文件 0 行，杜绝把尾部换行数成幽灵行（DSH 语义一致）。
+    // 空文件 0 行，杜绝把尾部换行数成幽灵行。
     for raw in content.split_terminator('\n') {
         total_lines += 1;
         if truncated || total_lines < request.offset || lines.len() >= request.limit {
@@ -525,6 +539,89 @@ fn build_read_window(
         total_lines,
         truncated,
     }
+}
+
+// ===== AI list_dir 单层列目 =====
+
+/// 单层列目上限（AI list_dir 工具；前端 LIST_DIR_MAX_ENTRIES 与此对齐）。
+const LIST_DIR_MAX_ENTRIES: usize = 200;
+
+/// list_dir 单层条目：kind = "dir" | "file"；size 仅文件（字节）；children 仅目录（直接子项数）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListDirEntry {
+    pub name: String,
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub children: Option<usize>,
+}
+
+/// list_dir 结果（entries/total/capped 词汇与 glob_vault/grep_vault 一致）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListDirResult {
+    pub entries: Vec<ListDirEntry>,
+    /// 目录真实条目总数（可能大于 entries.len()，超上限时提示收窄）。
+    pub total: usize,
+    /// 是否因超上限被截断（total > entries.len()）。
+    pub capped: bool,
+}
+
+/// 单层列出目录条目（AI list_dir 工具后端；安全边界 = 仓库根，safe_join 校验）。
+/// 不隐藏 `.` 开头条目（AI 需可查看 `.atelyx` 等应用状态目录）；目录在前、按名称升序；
+/// 子目录带直接子项数、文件带字节大小；超上限截断并标 capped（total 恒为真实总数）。
+#[tauri::command]
+pub fn list_vault_dir(dir: String, state: State<'_, VaultState>) -> Result<ListDirResult, String> {
+    let root = state.root()?;
+    list_dir_entries(&list_dir_target(&root, &dir)?, LIST_DIR_MAX_ENTRIES)
+}
+
+/// 解析列目目标：空串 = 仓库根，其余走 safe_join 并要求确实为目录。
+fn list_dir_target(root: &Path, dir: &str) -> Result<PathBuf, String> {
+    let path = if dir.is_empty() {
+        root.to_path_buf()
+    } else {
+        safe_join(root, dir, false)?
+    };
+    if !path.is_dir() {
+        return Err(format!("路径不存在或不是目录：{}", dir));
+    }
+    Ok(path)
+}
+
+/// 单层列目核心（max 参数化供测试注入小上限）：目录在前、按名称升序。
+fn list_dir_entries(dir: &Path, max: usize) -> Result<ListDirResult, String> {
+    let mut entries: Vec<ListDirEntry> = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        // 非 UTF-8 文件名无法经 JSON 传递，跳过（常规文件系统上不出现）
+        let Some(name) = entry.file_name().into_string().ok() else {
+            continue;
+        };
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let (size, children) = if is_dir {
+            let n = std::fs::read_dir(entry.path()).map(|rd| rd.count()).unwrap_or(0);
+            (None, Some(n))
+        } else {
+            (entry.metadata().ok().map(|md| md.len()), None)
+        };
+        entries.push(ListDirEntry {
+            name,
+            kind: if is_dir { "dir" } else { "file" },
+            size,
+            children,
+        });
+    }
+    // "dir" < "file" 字典序，升序即目录在前；同级按名称字节序
+    entries.sort_by(|a, b| a.kind.cmp(b.kind).then_with(|| a.name.cmp(&b.name)));
+    let total = entries.len();
+    let capped = total > max;
+    if capped {
+        entries.truncate(max);
+    }
+    Ok(ListDirResult { entries, total, capped })
 }
 
 /// 重命名 .md 笔记 + 扫描所有 .atlx 更新 text 节点 file 引用 + 扫描所有 .md 更新内部链接（链接维护）。
@@ -1257,7 +1354,7 @@ mod read_window_tests {
 
     #[test]
     fn total_lines_counts_with_and_without_trailing_newline() {
-        // 尾换行不产生幽灵空行；空文件为 0 行（与 DSH 语义一致）
+        // 尾换行不产生幽灵空行；空文件为 0 行
         assert_eq!(build_read_window("a\nb", req(1, 10), 2000, 200_000).total_lines, 2);
         assert_eq!(build_read_window("a\nb\n", req(1, 10), 2000, 200_000).total_lines, 2);
         assert_eq!(build_read_window("", req(1, 10), 2000, 200_000).total_lines, 0);
@@ -1269,5 +1366,56 @@ mod read_window_tests {
         assert!(r.lines.is_empty());
         assert_eq!(r.total_lines, 3);
         assert!(!r.truncated);
+    }
+}
+
+#[cfg(test)]
+mod list_dir_tests {
+    use super::*;
+
+    /// 临时目录（纳秒级命名防碰撞；测试自清理）。
+    fn tmp_root(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("atelyx-list-dir-{tag}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn dirs_first_with_counts_sizes_and_hidden_kept() {
+        let root = tmp_root("basic");
+        std::fs::create_dir_all(root.join("子目录/内层")).unwrap();
+        std::fs::write(root.join("子目录/a.txt"), "x").unwrap();
+        std::fs::write(root.join("b.md"), "hello").unwrap();
+        std::fs::write(root.join(".隐藏.md"), "h").unwrap();
+        let r = list_dir_entries(&root, 200).unwrap();
+        assert_eq!(r.total, 3);
+        assert!(!r.capped);
+        assert_eq!(r.entries[0].name, "子目录");
+        assert_eq!(r.entries[0].kind, "dir");
+        assert_eq!(r.entries[0].children, Some(2));
+        assert!(r.entries[0].size.is_none());
+        // 隐藏项不过滤（AI 需可查看应用状态目录）；同级按名称字节序（'.' < 'b'）
+        assert_eq!(r.entries[1].name, ".隐藏.md");
+        assert_eq!(r.entries[2].name, "b.md");
+        assert_eq!(r.entries[2].kind, "file");
+        assert_eq!(r.entries[2].size, Some(5));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn caps_at_max_and_reports_real_total() {
+        let root = tmp_root("cap");
+        for i in 0..5 {
+            std::fs::write(root.join(format!("f{i}.txt")), "").unwrap();
+        }
+        let r = list_dir_entries(&root, 3).unwrap();
+        assert_eq!(r.entries.len(), 3);
+        assert_eq!(r.total, 5);
+        assert!(r.capped);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

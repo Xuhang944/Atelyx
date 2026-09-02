@@ -685,6 +685,10 @@ pub fn delete_vault_file(root: &Path, file: &str) -> Result<(), String> {
     if !path.exists() {
         return Err(format!("文件不存在：{}", file));
     }
+    // 目录误传守卫：remove_file 对目录只报系统级错误语义不明，显式拒绝并指因
+    if path.is_dir() {
+        return Err(format!("目标是目录，仅支持删除文件：{}", file));
+    }
     std::fs::remove_file(&path).map_err(|e| e.to_string())
 }
 

@@ -129,6 +129,8 @@ export {
   type GlobVaultResult,
   type GrepMatchRow,
   type GrepVaultResult,
+  type ListDirEntry,
+  type ListDirResult,
 } from "./tool";
 
 export type {

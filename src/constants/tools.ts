@@ -21,12 +21,13 @@ export interface AgentToolMeta {
  * 前端无需重复定义。 */
 export const READ_WINDOW_DEFAULT_LINES = 2000;
 
-/** glob 单次内联返回路径上限 / grep 单次内联返回匹配上限 / grep 单行预览字节上限。
- * 均由 Rust 侧 filesearch.rs 强制（glob_vault/grep_vault），此处仅用于工具描述文案，
- * 口径与 READ_WINDOW_DEFAULT_LINES 一致。 */
+/** glob 单次内联返回路径上限 / grep 单次内联返回匹配上限 / grep 单行预览字节上限 / list_dir 单层条目上限。
+ * 均由 Rust 侧强制（filesearch.rs 的 glob_vault/grep_vault、commands/vault.rs 的 list_vault_dir），
+ * 此处仅用于工具描述文案，口径与 READ_WINDOW_DEFAULT_LINES 一致。 */
 export const GLOB_MAX_RESULTS = 100;
 export const GREP_MAX_MATCHES = 250;
 export const GREP_MAX_LINE_BYTES = 2000;
+export const LIST_DIR_MAX_ENTRIES = 200;
 
 /** 单轮内并行安全的工具调用最大在飞数（有界滚动池；1 = 全串行）。 */
 export const MAX_PARALLEL_TOOL_CALLS = 10;
@@ -38,8 +39,12 @@ export const AGENT_TOOLS_META: AgentToolMeta[] = [
   { id: "read_file", label: "读取文件", readOnly: true },
   { id: "glob", label: "查找文件", readOnly: true },
   { id: "grep", label: "搜索内容", readOnly: true },
+  { id: "list_dir", label: "列出目录", readOnly: true },
   { id: "edit_file", label: "编辑文件" },
   { id: "write_file", label: "写入文件" },
+  { id: "rename_file", label: "重命名文件" },
+  { id: "move_file", label: "移动文件" },
+  { id: "delete_file", label: "删除文件" },
 ];
 
 /** 只读基础工具 id 集合：组装工具名册时无条件并入（不依赖 Agent 勾选）。 */
@@ -51,7 +56,7 @@ export const DEFAULT_AGENT_TOOLS = AGENT_TOOLS_META.filter((t) => !t.readOnly).m
 /**
  * 系统提示词引导（工具含 read_file 时追加，随每条请求进 system 消息）：
  * @引用 的笔记只带文件路径，模型需用 read_file 按路径读取正文，而不是猜测内容；
- * 目录引用（/ 结尾）先 glob 列内容再按需读取。
+ * 目录引用（/ 结尾）先 list_dir 列内容再按需读取。
  */
 export const FILE_REFERENCE_PROMPT =
-  "以 @ 前缀引用的文件是用户明确指定的笔记，其相对仓库根路径列在消息开头「引用文件」列表中。需要其内容时用 read_file 工具读取；在读取之前不要声称已查看过该文件。以 / 结尾的引用是目录：先用 glob 工具（path 参数指向该目录）列出其中的文件，再按需 read_file。";
+  "以 @ 前缀引用的文件是用户明确指定的笔记，其相对仓库根路径列在消息开头「引用文件」列表中。需要其内容时用 read_file 工具读取；在读取之前不要声称已查看过该文件。以 / 结尾的引用是目录：先用 list_dir 工具列出其中的内容（子目录会给出子项数），再按需 read_file；glob 用于按模式检索文件。";

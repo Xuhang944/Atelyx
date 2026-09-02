@@ -1,5 +1,5 @@
 /**
- * 两级模型选择菜单（DSH 风格）：触发器显示「模型名 · 推理等级」，点击弹出根菜单
+ * 两级模型选择菜单：触发器显示「模型名 · 推理等级」，点击弹出根菜单
  * ——两行「模型 ›」「推理等级 ›」各自进入独立子面板，可分别设置模型或推理等级。
  *
  * 模型子面板 = 供应商分组模型列表 + 「跟随仓库默认」；推理等级子面板 = 默认/关闭/低/中/高。
@@ -154,7 +154,7 @@ export function ModelSelect({
         {prefixIcon}
         <span className="flex-1 min-w-0 truncate text-left">
           {modelLabel}
-          {/* 恒显示档位（跟随默认 = 「· 默认」），与 DSH 触发器恒显示 effort 一致 */}
+          {/* 恒显示档位（跟随默认 = 「· 默认」），让当前生效档位始终可见 */}
           <span className="ml-1" style={{ color: "var(--text-muted)" }}>
             · {reasoningEffortLabel(effort)}
           </span>

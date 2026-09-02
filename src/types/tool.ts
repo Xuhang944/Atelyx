@@ -75,6 +75,27 @@ export interface GrepVaultResult {
   capped: boolean;
 }
 
+/** list_dir 单层条目（对应 Rust `list_vault_dir`，camelCase 序列化）。 */
+export interface ListDirEntry {
+  name: string;
+  /** "dir" | "file"。 */
+  kind: "dir" | "file";
+  /** 文件字节大小（仅文件有）。 */
+  size?: number;
+  /** 目录直接子项数（仅目录有）。 */
+  children?: number;
+}
+
+/** list_dir 结果（entries/total/capped 词汇与 glob/grep 一致）。 */
+export interface ListDirResult {
+  /** 内联返回的条目（目录在前、按名称升序，最多上限条）。 */
+  entries: ListDirEntry[];
+  /** 目录真实条目总数（可能大于 entries.length，超上限时用于提示收窄）。 */
+  total: number;
+  /** 是否因超上限被截断（total > entries.length）。 */
+  capped: boolean;
+}
+
 /** 工具执行所需的能力缝（由调用方注入；工具依赖此而非 store）。 */
 export interface ToolCapabilities {
   /** 联网搜索（依赖搜索源配置）。 */
@@ -101,6 +122,26 @@ export interface ToolCapabilities {
     pattern: string,
     opts?: { path?: string; include?: string },
   ) => Promise<GrepVaultResult>;
+  /** 单层列出目录条目（目录在前、含隐藏项；子目录带子项数）。dir 缺省 = 仓库根。 */
+  listDir?: (dir?: string) => Promise<ListDirResult>;
+  /**
+   * 同目录重命名仓库内文件（.md/.atb/.atlx 标题随文件名同步）。newName 须为纯文件名；
+   * 目标重名自动加序号，actualPath 恒为实际落盘路径。失败 ok=false 不抛断整轮。
+   */
+  renameFile?: (
+    oldPath: string,
+    newName: string,
+  ) => Promise<{ ok: boolean; summary: string; actualPath: string }>;
+  /**
+   * 移动仓库内文件到目标文件夹（保持文件名）。targetDir 空 = 仓库根；
+   * 目标重名自动加序号，actualPath 恒为实际落盘路径。失败 ok=false 不抛断整轮。
+   */
+  moveFile?: (
+    oldPath: string,
+    targetDir: string,
+  ) => Promise<{ ok: boolean; summary: string; actualPath: string }>;
+  /** 按路径删除仓库内单个文件（.atb 连带删除其私有附件目录）。失败 ok=false 不抛断整轮。 */
+  deleteFile?: (path: string) => Promise<{ ok: boolean; summary: string }>;
   /** 抓取网页正文。 */
   fetchUrl?: (url: string) => Promise<{ url: string; title?: string; content: string }>;
 }
@@ -126,7 +167,7 @@ export interface ToolDefinition<A = Record<string, unknown>> {
   execute: (args: A, exec: ToolExecContext) => Promise<ToolResult>;
   /**
    * 是否可与同轮其他工具**并行**执行（缺省 false = 串行屏障，等前一批收敛再跑）。
-   * 只读/无副作用工具（read_file/glob/grep/web_search/web_fetch）标 true；读写工具不标，防写竞态。
+   * 只读/无副作用工具（read_file/glob/grep/list_dir/web_search/web_fetch）标 true；读写工具不标，防写竞态。
    */
   parallelSafe?: boolean;
   /** 回填模型的 tool 消息文本，缺省 = `result.content ?? result.summary`。 */

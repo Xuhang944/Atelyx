@@ -29,7 +29,7 @@ export interface ConversationData {
   /**
    * 引用的 Agent 配置 id（settingsStore.agents，仓库级 `.atelyx/agents.json`）：
    * 发送时实时解析——系统提示词（引用已注册提示词笔记）注入 system 消息、勾选工具可用；
-   * 缺省（未设置）= 按预置「对话」Agent 处理（无系统提示词、只读 + 检索 + 联网，无写入/编辑）。
+   * 缺省（未设置）= 按预置「对话」Agent 处理。
    */
   agentId?: string;
   /** LLM 自动生成的话题标题（首轮对话完成后命名，InspectorPanel 来源/血缘显示名用；缺省 = 未命名）。 */

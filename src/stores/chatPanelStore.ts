@@ -23,7 +23,7 @@ import {
 import { runAgentTools, assembleAgentSystemPrompt } from "@/services/ai/tools";
 import { runSearch } from "@/services/search";
 import { recordAgentFileWrite } from "@/services/history";
-import { readVaultFileWindow, writeVaultFile, editVaultFile, globVault, grepVault } from "@/services/vault/aiFiles";
+import { readVaultFileWindow, writeVaultFile, editVaultFile, globVault, grepVault, listVaultDir } from "@/services/vault/aiFiles";
 import { fetchWeb } from "@/services/web";
 import { prefix, scanMentionHits } from "@/utils/text";
 import { appendNarration, appendReasoning, coalesceAgentSteps, fillAssistantReplyText, finalizeReplyText, mergeToolRuns } from "@/utils/agentSteps";
@@ -77,7 +77,7 @@ interface ChatPanelState {
   effortOverride: ReasoningEffort | null;
   /** 拖入输入框的笔记引用队列（文件面板拖拽笔记到 AI 对话输入框，组件消费后清空）。 */
   pendingMentions: EditorChatMessageRef[];
-  /** 新对话态（无激活会话）的待用 Agent：默认预置「对话」（只读 + 检索 + 联网，无写入/编辑），发送首条消息创建会话时固化进会话；新建会话/切仓库时重置为默认。 */
+  /** 新对话态（无激活会话）的待用 Agent：默认预置「对话」，发送首条消息创建会话时固化进会话；新建会话/切仓库时重置为默认。 */
   draftAgentId: string | undefined;
   /** 笔记划词改写请求队列（NoteEditor 划词右键确认后入队；AiChatPanel 消费后清空）。 */
   pendingRewrites: NoteRewriteRequest[];
@@ -246,7 +246,7 @@ async function injectNoteRefs(
     }
   }
   if (!active.length) return { text, injectedFiles };
-  // 目录引用加 / 后缀标注（引导见 FILE_REFERENCE_PROMPT 的目录 glob 句）；树中不存在按文件原样
+  // 目录引用加 / 后缀标注（引导见 FILE_REFERENCE_PROMPT 的目录句）；树中不存在按文件原样
   const pathKind = useVaultStore.getState().pathKind;
   const fileBlock = `[引用文件：\n${active
     .map((r) => (pathKind(r.file) === "dir" ? `${r.file}/` : r.file))
@@ -595,7 +595,7 @@ async function runExchange(
   abortController = controller;
 
   // 系统提示词 + 工具：按 Agent 实时解析（配置在 设置 → Agent，引用已注册提示词笔记实时读正文注入）。
-  // 缺省（未选 Agent）= 预置「对话」（无系统提示词、只读 + 检索 + 联网）；Agent 缺失（已删）降级为普通对话。
+  // 缺省（未选 Agent）= 预置「对话」；Agent 缺失（已删）降级为普通对话。
   const agentReq = await useSettingsStore
     .getState()
     .resolveAgentRequest(updated.agentId);
@@ -780,6 +780,10 @@ async function runExchange(
           readFile: (path, opts) => readVaultFileWindow(path, opts),
           glob: (pattern, opts) => globVault(pattern, opts),
           grep: (pattern, opts) => grepVault(pattern, opts),
+          listDir: (dir) => listVaultDir(dir),
+          renameFile: (oldPath, newName) => useVaultStore.getState().renameFile(oldPath, newName),
+          moveFile: (oldPath, targetDir) => useVaultStore.getState().moveFile(oldPath, targetDir),
+          deleteFile: (path) => useVaultStore.getState().deleteFile(path),
           writeFile: (path, content) => writeVaultFile(path, content).then(() => {
             // Agent 协作历史：AI 写文件以 Agent 身份记入对应 kind 的历史（fire-and-forget）
             void recordAgentFileWrite(path, content);

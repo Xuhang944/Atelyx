@@ -6,10 +6,20 @@
 
 /**
  * 净化文件名：替换 `/\:*?"<>|` 为 `_`，trim 首尾空白。
- * 与 Rust 侧 `sanitize_filename` 行为完全一致。
+ * 与 Rust 侧 `sanitize_filename` 行为完全一致（见 `src-tauri/src/vault.rs`）：
+ * Windows 保留名（CON/PRN/AUX/NUL/COM1-9/LPT1-9，按首个点前的 stem 判定）补 `_` 前缀、
+ * 尾部点/空格补 `_` 后缀——缺这两条会使前端预测的落盘名与 Rust 实际写盘名不一致
+ * （画布改名的保存目标/重命名验证会指错文件）。
  */
+const WINDOWS_RESERVED_RE = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/;
+
 export function sanitizeFilename(title: string): string {
-  return title.replace(/[\/\\:*?"<>|]/g, "_").trim();
+  const cleaned = title.replace(/[\/\\:*?"<>|]/g, "_").trim();
+  const stem = cleaned.split(".")[0] ?? "";
+  // 保留名判定两侧统一 ASCII 大写（不带 i 标志防 Unicode 折叠误判）
+  if (WINDOWS_RESERVED_RE.test(stem.toUpperCase())) return `_${cleaned}`;
+  if (/[.]$/.test(cleaned)) return `${cleaned}_`;
+  return cleaned;
 }
 
 /**

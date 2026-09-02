@@ -20,8 +20,12 @@ import { WEB_FETCH_TOOL } from "./webFetch";
 import { READ_FILE_TOOL } from "./readFile";
 import { GLOB_TOOL } from "./glob";
 import { GREP_TOOL } from "./grep";
+import { LIST_DIR_TOOL } from "./listDir";
 import { EDIT_FILE_TOOL } from "./editFile";
 import { WRITE_FILE_TOOL } from "./writeFile";
+import { RENAME_FILE_TOOL } from "./renameFile";
+import { MOVE_FILE_TOOL } from "./moveFile";
+import { DELETE_FILE_TOOL } from "./deleteFile";
 import { createToolRegistry } from "./registry";
 import { FILE_REFERENCE_PROMPT, READONLY_TOOL_IDS, AGENT_TOOLS_META } from "@/constants/tools";
 
@@ -32,8 +36,12 @@ const AGENT_TOOLS = [
   READ_FILE_TOOL,
   GLOB_TOOL,
   GREP_TOOL,
+  LIST_DIR_TOOL,
   EDIT_FILE_TOOL,
   WRITE_FILE_TOOL,
+  RENAME_FILE_TOOL,
+  MOVE_FILE_TOOL,
+  DELETE_FILE_TOOL,
 ] as unknown as ToolDefinition[];
 
 const registry = createToolRegistry(AGENT_TOOLS);
@@ -44,7 +52,7 @@ export function summarizeAgentTool(name: string, argsJson: string): string {
 }
 
 /** 参数生成中宽松提取的字符串字段（JSON 仍残缺时取首个命中的值拼摘要；字段名与注册工具参数对齐）。 */
-const PARTIAL_ARG_FIELD_RE = /"(?:path|query|pattern|url)"\s*:\s*"((?:[^"\\]|\\.)*)/;
+const PARTIAL_ARG_FIELD_RE = /"(?:path|query|pattern|url|dir|oldPath|newName|newDir)"\s*:\s*"((?:[^"\\]|\\.)*)/;
 
 /**
  * 参数生成中的工具摘要（参数分片边到边刷新，供「生成中」工具行展示进度）：
@@ -68,8 +76,8 @@ export interface AgentToolAssembly {
 }
 
 /** 按勾选 id + 搜索配置组装工具名册；未知 id 静默忽略（不在名册即不并入）。
- * 只读基础工具（read_file/glob/grep）恒并入，不依赖勾选——它们是 Agent 的基础能力；
- * 可勾选工具（web_search/web_fetch/edit_file/write_file）按 enabledIds 并入，web_search 未配置搜索源时剔除。 */
+ * 只读基础工具（READONLY_TOOL_IDS）恒并入，不依赖勾选——它们是 Agent 的基础能力；
+ * 可勾选工具（AGENT_TOOLS_META 非只读项）按 enabledIds 并入，web_search 未配置搜索源时剔除。 */
 export function buildAgentTools(
   enabledIds: string[],
   searchReady: boolean,

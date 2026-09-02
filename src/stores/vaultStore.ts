@@ -22,6 +22,7 @@ import {
   listVaultTree,
   recordNoteDiskContent as recordNoteDiskContentSvc,
   readAttachmentDataUrl as readAttachmentDataUrlSvc,
+  readCanvasVault,
   readNote,
   renameAttachment as renameAttachmentSvc,
   renameFolder as renameFolderSvc,
@@ -54,9 +55,10 @@ import { useChatPanelStore } from "@/stores/chatPanelStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTableStore, hasCollabPeerOnTable } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
-import { baseName, dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename } from "@/utils/filename";
+import { baseName, dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename, siblingPath, stripExt } from "@/utils/filename";
 import { tableToSnapshotText, tablesEqual } from "@/utils/table";
-import type { BacklinkRow, DeleteFolderResult, FileTreeNode, RebuildLinksResult, TextData, VaultFileChange } from "@/types";
+import { errText } from "@/types";
+import type { BacklinkRow, CanvasFileRow, DeleteFolderResult, FileTreeNode, RebuildLinksResult, TextData, VaultFileChange } from "@/types";
 
 /**
  * 文本节点 `.md` 文件名约定：`<sanitized-title>.md`（标题即文件名，无 id 后缀）。
@@ -126,6 +128,28 @@ export function lastFolderRenameTarget(file: string): string | null {
 /** 磁盘内容是否为应用自写（组件不直连 service：NoteEditor 跨编辑面自写识别用）。 */
 export function isKnownNoteDiskContent(file: string, content: string): boolean {
   return isKnownNoteDiskContentSvc(file, content);
+}
+
+/** 相对路径的小写扩展名（不含点；无扩展名 = 空串）。AI 文件工具按扩展名分发用。 */
+function relExt(path: string): string {
+  const i = path.lastIndexOf(".");
+  return i > path.lastIndexOf("/") ? path.slice(i + 1).toLowerCase() : "";
+}
+
+/** 画布路径是否已从磁盘消失（读失败 = 不存在）。renameCanvas/deleteCanvas 吞错后的落盘事实验证用——
+ * canvases 列表不含隐藏/排除目录内的画布，不能作为验证依据。 */
+async function canvasPathGone(file: string): Promise<boolean> {
+  return readCanvasVault(file).then(
+    () => false,
+    () => true,
+  );
+}
+
+/** 画布列表行（rename/move/deleteCanvas 按 file 定位、title 供去重排除；列表未命中时用占位行兜底）。 */
+function canvasRowOf(file: string): CanvasFileRow {
+  const found = useAppStore.getState().canvases.find((c) => c.file === file);
+  if (found) return found;
+  return { id: "", title: stripExt(baseName(file)), file, updatedAt: 0 };
 }
 
 /** loadFiles 并发守卫：递增序号，仅最后一次发起者的扫描结果落盘（后台填充与 watcher 触发并发时防旧结果覆盖）。 */
@@ -383,7 +407,7 @@ interface VaultFileState {
   createNote: (title: string, dir?: string) => Promise<string>;
   /**
    * 重命名 `.md`：新路径 = 同目录 `<sanitized-newTitle>.md`（同名自动加序号，排除自身）。
-   * 返回实际落盘的文件名（被去重时 ≠ 期望名，调用方据此提示）。
+   * 返回实际落盘路径（被去重时 ≠ 期望名，调用方据此提示）。
    * 服务端 `rename_note` 会同步更新所有 .atlx 的 text 节点 file 引用。
    */
   renameNote: (oldFile: string, newTitle: string) => Promise<string>;
@@ -420,7 +444,7 @@ interface VaultFileState {
   createTable: (title: string, dir?: string) => Promise<{ id: string; file: string; title: string }>;
   /**
    * 重命名 `.atb`：新路径 = 同目录 `<sanitized-newTitle>.atb`（同名自动加序号，排除自身）。
-   * 返回实际落盘文件名（被去重时 ≠ 期望名，调用方据此提示）。
+   * 返回实际落盘路径（被去重时 ≠ 期望名，调用方据此提示）。
    * 服务端 `rename_table_vault` 同步更新所有 .atlx 的 table 节点 file 引用 + 文件内 title。
    */
   renameTable: (oldFile: string, newTitle: string) => Promise<string>;
@@ -428,6 +452,20 @@ interface VaultFileState {
   moveTable: (oldFile: string, targetDir: string) => Promise<string>;
   /** 删除 `.atb`（不更新 .atlx 引用，画布 table 节点断链降级）。 */
   deleteTable: (file: string) => Promise<void>;
+  /**
+   * 同目录重命名任意仓库文件（AI 工具入口，扩展名分发到对应动作；.md/.atb/.atlx 标题随文件名同步）。
+   * newName 须为纯文件名（含扩展名，扩展名不可变更）；目标重名自动加序号，
+   * actualPath 恒为实际落盘路径。失败 ok=false 不抛断。
+   */
+  renameFile: (oldPath: string, newName: string) => Promise<{ ok: boolean; summary: string; actualPath: string }>;
+  /**
+   * 移动任意仓库文件到目标文件夹（AI 工具入口，扩展名分发到对应动作；保持文件名）。
+   * targetDir 为相对仓库根目录（空串 = 仓库根）；目标重名自动加序号，
+   * actualPath 恒为实际落盘路径。失败 ok=false 不抛断。
+   */
+  moveFile: (oldPath: string, targetDir: string) => Promise<{ ok: boolean; summary: string; actualPath: string }>;
+  /** 按路径删除任意单个仓库文件（AI 工具入口；.atb 连带删除其私有附件目录）。失败 ok=false 不抛断。 */
+  deleteFile: (path: string) => Promise<{ ok: boolean; summary: string }>;
   /**
    * 复制 `.atb` 为同目录副本：内部 title/id 随新文件名更新（标题即文件名），返回新相对路径。
    * 副本无画布引用，不自动打开。
@@ -663,6 +701,109 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
       useUiStateStore.getState().closeFile("table");
     }
     await get().loadFiles();
+  },
+
+  renameFile: async (oldPath, newName) => {
+    const old = oldPath.trim().replace(/^\/+|\/+$/g, "");
+    const name = newName.trim().replace(/^\/+|\/+$/g, "");
+    if (!old || !name) {
+      return { ok: false, summary: "路径为空", actualPath: old || name };
+    }
+    const ext = relExt(old);
+    if (relExt(name) !== ext) {
+      return { ok: false, summary: "不允许更改文件扩展名", actualPath: old };
+    }
+    if (parentDir(name)) {
+      return { ok: false, summary: "重命名仅限同目录：newName 须为纯文件名，跨目录请用 move_file", actualPath: old };
+    }
+    if (name === baseName(old)) {
+      return { ok: true, summary: "名称未变化，无需重命名", actualPath: old };
+    }
+    // 防抖窗口内的未落盘编辑先落盘：改名后旧 timer 的路径守卫会跳过保存，不 flush 会丢编辑
+    await useAppStore.getState().flushAllPending();
+    try {
+      // renameNote/renameTable 返回完整落盘路径（非文件名）
+      let actual: string;
+      if (ext === "md") actual = await get().renameNote(old, stripExt(name));
+      else if (ext === "atb") actual = await get().renameTable(old, stripExt(name));
+      else if (ext === "atlx") {
+        const row = canvasRowOf(old);
+        const actualTitle = await useAppStore.getState().renameCanvas(row, stripExt(name));
+        const expected = siblingPath(old, `${sanitizeFilename(actualTitle)}.atlx`);
+        // renameCanvas 失败时静默返回期望标题：以「expected 处磁盘 id/title 已更新」事实验证落盘
+        // （canvases 列表不含隐藏/排除目录内的画布，不能作验证依据）
+        const disk = await readCanvasVault(expected);
+        // id 未知（列表外画布）时辅以「旧路径已消失」判定，防 expected 撞上同 title 的他者画布误报成功；
+        // case-only 改名物理路径不变，不要求旧路径消失
+        const caseOnly = expected.toLowerCase() === old.toLowerCase();
+        const idMismatch = row.id !== "" && disk.id !== row.id;
+        const staleOld = row.id === "" && !caseOnly && !(await canvasPathGone(old));
+        if (disk.title !== actualTitle || idMismatch || staleOld) {
+          throw new Error(`画布重命名未生效：${old}`);
+        }
+        actual = expected;
+      } else {
+        // 附件类：renameAttachment 内部还会 dedupe，这里预计算同名防「实际名 ≠ 汇报名」
+        const existing = siblingFileNames(parentDir(old)).filter((n) => siblingPath(old, n) !== old);
+        const safe = dedupeFilename(name, existing);
+        await get().renameAttachment(old, safe);
+        actual = siblingPath(old, safe);
+      }
+      const note = actual === siblingPath(old, name) ? "" : "（新名经去重/净化自动调整）";
+      return { ok: true, summary: `已重命名「${old}」→「${actual}」${note}`, actualPath: actual };
+    } catch (e) {
+      return { ok: false, summary: `重命名失败：${errText(e)}`, actualPath: old };
+    }
+  },
+
+  moveFile: async (oldPath, targetDir) => {
+    const old = oldPath.trim().replace(/^\/+|\/+$/g, "");
+    const dir = targetDir.trim().replace(/^\/+|\/+$/g, "");
+    if (!old) {
+      return { ok: false, summary: "路径为空", actualPath: old };
+    }
+    if (parentDir(old) === dir) {
+      return { ok: true, summary: "目标目录与当前目录相同，无需移动", actualPath: old };
+    }
+    // 防抖窗口内的未落盘编辑先落盘：移动后旧 timer 的路径守卫会跳过保存，不 flush 会丢编辑
+    await useAppStore.getState().flushAllPending();
+    const ext = relExt(old);
+    try {
+      let actual: string;
+      if (ext === "md") actual = await get().moveNote(old, dir);
+      else if (ext === "atb") actual = await get().moveTable(old, dir);
+      else if (ext === "atlx") actual = await useAppStore.getState().moveCanvas(canvasRowOf(old), dir);
+      else actual = await get().moveAttachment(old, dir);
+      return { ok: true, summary: `已移动「${old}」→「${actual}」`, actualPath: actual };
+    } catch (e) {
+      return { ok: false, summary: `移动失败：${errText(e)}`, actualPath: old };
+    }
+  },
+
+  deleteFile: async (path) => {
+    const p = path.trim().replace(/^\/+|\/+$/g, "");
+    if (!p) return { ok: false, summary: "路径为空" };
+    // 防抖窗口内的未落盘编辑先落盘，防删除后残留 timer 把旧状态写回重建文件
+    await useAppStore.getState().flushAllPending();
+    const ext = relExt(p);
+    try {
+      if (ext === "md") {
+        await get().deleteNote(p);
+      } else if (ext === "atb") {
+        await get().deleteTable(p);
+      } else if (ext === "atlx") {
+        // deleteCanvas 失败时静默不抛错：以「路径已从磁盘消失」事实验证
+        await useAppStore.getState().deleteCanvas(canvasRowOf(p));
+        if (!(await canvasPathGone(p))) {
+          throw new Error(`画布删除未生效：${p}`);
+        }
+      } else {
+        await get().deleteAttachment(p);
+      }
+      return { ok: true, summary: `已删除「${p}」` };
+    } catch (e) {
+      return { ok: false, summary: `删除失败：${errText(e)}` };
+    }
   },
 
   duplicateTable: async (file) => {

@@ -15,7 +15,7 @@ export interface AgentConfig {
    * 发送时实时读正文注入，外部编辑即时生效；未设置 = 不带系统提示词。
    */
   systemPromptFile?: string;
-  /** 启用的可配置工具 id 列表（constants/tools.ts 的 AGENT_TOOLS_META；空数组 = 仅只读基础工具 read_file/glob/grep 恒可用）。 */
+  /** 启用的可配置工具 id 列表（constants/tools.ts 的 AGENT_TOOLS_META；空数组 = 仅只读基础工具恒可用）。 */
   tools: string[];
   /**
    * 预置标记（缺省 = 用户自建）：预置 Agent（默认随仓库出现）不可删除；

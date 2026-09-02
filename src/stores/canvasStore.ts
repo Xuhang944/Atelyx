@@ -46,7 +46,7 @@ import { toLlmMessages } from "@/services/ai/client";
 import { abortAutoTitle } from "@/services/ai/autoTitle";
 import { runSearch, resultsToText } from "@/services/search";
 import { runAgentTools, assembleAgentSystemPrompt } from "@/services/ai/tools";
-import { readVaultFileWindow, writeVaultFile, editVaultFile, globVault, grepVault } from "@/services/vault/aiFiles";
+import { readVaultFileWindow, writeVaultFile, editVaultFile, globVault, grepVault, listVaultDir } from "@/services/vault/aiFiles";
 import { fetchWeb } from "@/services/web";
 import {
   findFreeSpot,
@@ -1191,7 +1191,7 @@ async function runStream(conversationId: string): Promise<void> {
 
   try {
     // 系统提示词 + 工具：按 Agent 实时解析（配置在 设置 → Agent，引用已注册提示词笔记实时读正文注入）。
-    // 缺省（未选 Agent）= 预置「对话」（无系统提示词、只读 + 检索 + 联网）；Agent 缺失（已删）降级为普通对话。
+    // 缺省（未选 Agent）= 预置「对话」；Agent 缺失（已删）降级为普通对话。
     const agentReq = await useSettingsStore
       .getState()
       .resolveAgentRequest(nodeData?.agentId);
@@ -1345,6 +1345,10 @@ async function runStream(conversationId: string): Promise<void> {
                 }),
               glob: (pattern, opts) => globVault(pattern, opts),
               grep: (pattern, opts) => grepVault(pattern, opts),
+              listDir: (dir) => listVaultDir(dir),
+              renameFile: (oldPath, newName) => useVaultStore.getState().renameFile(oldPath, newName),
+              moveFile: (oldPath, targetDir) => useVaultStore.getState().moveFile(oldPath, targetDir),
+              deleteFile: (path) => useVaultStore.getState().deleteFile(path),
               writeFile: (path, content) => writeVaultFile(path, content).then(() => {
                 // Agent 协作历史：AI 写文件以 Agent 身份记入对应 kind 的历史（fire-and-forget）
                 void recordAgentFileWrite(path, content);
@@ -1441,7 +1445,7 @@ function assembleContentWithRefs(
   fileRefs: string[],
   prefixParts: string[],
 ): string {
-  // 目录引用加 / 后缀标注（引导见 FILE_REFERENCE_PROMPT 的目录 glob 句）；树中不存在按文件原样
+  // 目录引用加 / 后缀标注（引导见 FILE_REFERENCE_PROMPT 的目录句）；树中不存在按文件原样
   const pathKind = useVaultStore.getState().pathKind;
   const fileBlock = fileRefs.length
     ? `[引用文件：\n${fileRefs.map((f) => `- ${pathKind(f) === "dir" ? `${f}/` : f}`).join("\n")}]\n\n`
