@@ -61,6 +61,64 @@ export const ADD_FIELD_COL_WIDTH = 48;
 export const MIN_TABLE_ZOOM = 0.5;
 export const MAX_TABLE_ZOOM = 2;
 
+// ===== 单元格格式（样式随行 `styles[fieldId]` 持久化，见 types/table.ts CellStyle）=====
+
+/** 字体预设：`key` 落盘（CellStyle.font，紧凑跨平台），`fontFamily` 仅渲染用 CSS 栈。
+ *  缺省（不设） = 表格基准字体；存「默认」项供工具栏选择清除。 */
+export interface FontPreset {
+  key: string;
+  label: string;
+  /** CSS font-family 栈（含跨平台回退）；缺省 = 不设。 */
+  fontFamily?: string;
+}
+
+export const FONT_PRESETS: FontPreset[] = [
+  { key: "default", label: "默认" },
+  { key: "sans", label: "无衬线", fontFamily: "'Segoe UI', 'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif" },
+  { key: "serif", label: "衬线", fontFamily: "Georgia, 'Times New Roman', 'Songti SC', 'SimSun', serif" },
+  { key: "mono", label: "等宽", fontFamily: "'Cascadia Code', Consolas, 'Courier New', 'Noto Sans Mono CJK SC', monospace" },
+  { key: "hei", label: "黑体", fontFamily: "'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif" },
+  { key: "song", label: "宋体", fontFamily: "'SimSun', 'Songti SC', 'Noto Serif CJK SC', serif" },
+  { key: "kai", label: "楷体", fontFamily: "'KaiTi', 'Kaiti SC', 'STKaiti', 'Noto Serif CJK SC', serif" },
+  { key: "fang", label: "仿宋", fontFamily: "'FangSong', 'FangSong_GB2312', 'STFangsong', serif" },
+];
+
+/** 字体预设键 → CSS font-family（缺省 = undefined）；渲染/工具栏共用。 */
+export function fontFamilyOf(key: string | undefined): string | undefined {
+  return FONT_PRESETS.find((f) => f.key === key)?.fontFamily;
+}
+
+/** 字号选项（px；12 = 表格基准字号 text-xs；缺省 = 不设）。 */
+export const FONT_SIZE_OPTIONS = [12, 13, 14, 16, 18, 20, 24] as const;
+
+/** 文字颜色预设色板（hex）；「默认」= 清除（不设 key）。 */
+export const TEXT_COLOR_PRESETS = [
+  "#e05252",
+  "#e07b39",
+  "#c99a16",
+  "#4fae6a",
+  "#2fa3b3",
+  "#4f8fd0",
+  "#8a5ad0",
+  "#d94f9c",
+  "#8a6d4a",
+  "#8a8a8a",
+];
+
+/** 单元格背景色预设色板（hex 浅色系）；「默认」= 清除（不设 key）。 */
+export const BG_COLOR_PRESETS = [
+  "#fde2e2",
+  "#fde7d8",
+  "#fdf0cf",
+  "#e3f3e5",
+  "#dcf1f4",
+  "#e0ecfb",
+  "#ece3fa",
+  "#fbe3f0",
+  "#f0e6d8",
+  "#e8e8e8",
+];
+
 // ===== 图片单元格展示 =====
 
 /** 轮播模式图片区默认高度（自适应行；固定行高时填满行高剩余空间）。 */

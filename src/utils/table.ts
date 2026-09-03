@@ -11,8 +11,10 @@
  * - `selectionRegion`：选中范围 → 矩形区域（复制/粘贴/清空/协作高亮/右键命中统一复用）。
  * - `buildRegionTsv`/`parseTsv`/`applyPasteGrid`：选中区域 ↔ 剪贴板 TSV ↔ 网格回写。
  */
-import { MAX_TABLE_INJECT_ROWS, MAX_COL_WIDTH, MIN_COL_WIDTH } from "@/constants/table";
+import { MAX_TABLE_INJECT_ROWS, MAX_COL_WIDTH, MIN_COL_WIDTH, fontFamilyOf } from "@/constants/table";
+import type { CSSProperties } from "react";
 import type {
+  CellStyle,
   CellValue,
   CollabSelection,
   ImageCellValue,
@@ -288,6 +290,107 @@ export function cellValueEqual(a: CellValue | undefined, b: CellValue | undefine
   return a === b;
 }
 
+// ===== 单元格显示样式（随行 `styles[fieldId]`，与值正交）=====
+
+/** 单元格样式 → 行内 CSS（粗体/斜体/下划线/删除线/字色/底色/字体/字号；缺省返回空对象）。
+ *  TextCell/NumberCell/单选渲染与时间线文本卡片共用。 */
+export function styleToCss(st: CellStyle | undefined): CSSProperties {
+  if (!st) return {};
+  const decoration = [st.u ? "underline" : "", st.s ? "line-through" : ""]
+    .filter(Boolean)
+    .join(" ");
+  return {
+    ...(st.b ? { fontWeight: 700 } : {}),
+    ...(st.i ? { fontStyle: "italic" } : {}),
+    ...(decoration ? { textDecorationLine: decoration } : {}),
+    ...(st.color ? { color: st.color } : {}),
+    ...(st.bg ? { backgroundColor: st.bg } : {}),
+    ...(st.font ? { fontFamily: fontFamilyOf(st.font) } : {}),
+    ...(st.size ? { fontSize: st.size } : {}),
+  };
+}
+
+/** 单元格样式相等（缺省键 ≈ undefined：序列化丢空/缺省键不误判为差异，与值侧口径一致）。 */
+export function styleEqual(a: CellStyle | undefined, b: CellStyle | undefined): boolean {
+  const na = a ?? {};
+  const nb = b ?? {};
+  return (
+    (na.b ?? undefined) === (nb.b ?? undefined) &&
+    (na.i ?? undefined) === (nb.i ?? undefined) &&
+    (na.u ?? undefined) === (nb.u ?? undefined) &&
+    (na.s ?? undefined) === (nb.s ?? undefined) &&
+    (na.color ?? undefined) === (nb.color ?? undefined) &&
+    (na.bg ?? undefined) === (nb.bg ?? undefined) &&
+    (na.font ?? undefined) === (nb.font ?? undefined) &&
+    (na.size ?? undefined) === (nb.size ?? undefined)
+  );
+}
+
+/** 行样式映射相等（缺 key ≈ undefined；空映射 ≈ undefined，序列化丢空不误判）。 */
+function styleMapEqual(
+  a: Record<string, CellStyle> | undefined,
+  b: Record<string, CellStyle> | undefined,
+): boolean {
+  const keys = new Set([...Object.keys(a ?? {}), ...Object.keys(b ?? {})]);
+  for (const k of keys) {
+    if (!styleEqual(a?.[k], b?.[k])) return false;
+  }
+  return true;
+}
+
+/** 选区样式汇总（气泡格式工具栏三态来源）：逐属性判定——某属性在选区全体同值 → 该值
+ *  （布尔 = all-on/off；颜色/字体/字号 undefined = 全体默认），不一致 → "mixed"。
+ *  逐属性而非整样式：避免「某属性其实全体一致」仍被其它属性的差异拖成半选。选区为空返回全默认态。 */
+export interface CellStyleSummary {
+  bold: boolean | "mixed";
+  italic: boolean | "mixed";
+  underline: boolean | "mixed";
+  strike: boolean | "mixed";
+  color: string | undefined | "mixed";
+  bg: string | undefined | "mixed";
+  font: string | undefined | "mixed";
+  size: number | undefined | "mixed";
+}
+
+export function selectionStyleSummary(
+  sel: CollabSelection,
+  fields: TableField[],
+  rows: TableRow[],
+): CellStyleSummary {
+  const region = selectionRegion(sel, fields, rows);
+  const firstStyle =
+    region && region.rowStart <= region.rowEnd
+      ? rows[region.rowStart]?.styles?.[fields[region.colStart].id]
+      : undefined;
+  /** 某属性在选区全部单元格取值是否一致（pick 取该属性；空选区视为一致）。 */
+  const uniform = (pick: (st: CellStyle | undefined) => unknown): boolean => {
+    if (!region) return true;
+    const base = pick(firstStyle);
+    for (let r = region.rowStart; r <= region.rowEnd; r++) {
+      const rowStyles = rows[r]?.styles;
+      for (let c = region.colStart; c <= region.colEnd; c++) {
+        if (pick(rowStyles?.[fields[c].id]) !== base) return false;
+      }
+    }
+    return true;
+  };
+  const boolState = (k: "b" | "i" | "u" | "s"): boolean | "mixed" =>
+    uniform((st) => st?.[k]) ? firstStyle?.[k] === true : "mixed";
+  const valueState = <T>(
+    pick: (st: CellStyle | undefined) => T | undefined,
+  ): T | undefined | "mixed" => (uniform((st) => pick(st)) ? pick(firstStyle) : "mixed");
+  return {
+    bold: boolState("b"),
+    italic: boolState("i"),
+    underline: boolState("u"),
+    strike: boolState("s"),
+    color: valueState((st) => st?.color),
+    bg: valueState((st) => st?.bg),
+    font: valueState((st) => st?.font),
+    size: valueState((st) => st?.size),
+  };
+}
+
 /** 行的「已定义值」映射（显式 undefined 键 ≈ 缺失——序列化时被丢弃，不能当作差异）。 */
 function definedValues(r: TableRow): Map<string, CellValue> {
   const m = new Map<string, CellValue>();
@@ -309,7 +412,13 @@ function fieldEqual(a: TableField, b: TableField): boolean {
 }
 
 function rowEqual(a: TableRow, b: TableRow): boolean {
-  if (a.id !== b.id || (a.height ?? undefined) !== (b.height ?? undefined)) return false;
+  if (
+    a.id !== b.id ||
+    (a.height ?? undefined) !== (b.height ?? undefined) ||
+    !styleMapEqual(a.styles, b.styles)
+  ) {
+    return false;
+  }
   const am = definedValues(a);
   const bm = definedValues(b);
   if (am.size !== bm.size) return false;

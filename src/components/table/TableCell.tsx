@@ -24,7 +24,13 @@ import type { ChangeEvent, KeyboardEvent, MouseEvent } from "react";
 import { useTableStore } from "@/stores/tableStore";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
 import { ImageCell } from "@/components/table/ImageCell";
-import type { TableField, TableRow } from "@/types";
+import { styleToCss } from "@/utils/table";
+import type { CellStyle, TableField, TableRow } from "@/types";
+
+/** 单元格显示样式（`row.styles[fieldId]`；缺省 = 默认样式）。 */
+function cellStyleOf(row: TableRow, fieldId: string): CellStyle | undefined {
+  return row.styles?.[fieldId];
+}
 
 /**
  * 撤销回退本单元格的编辑会话后，把草稿同步为撤销后的 store 值（防失焦提交把已撤销内容写回）。
@@ -124,7 +130,7 @@ export const TableCell = memo(function TableCell({ field, row }: Props) {
         }}
         options={[{ value: "", label: "未选择" }, ...options.map((o) => ({ value: o, label: o }))]}
         className="w-full h-8 px-1.5 text-xs"
-        style={{ color: value ? "var(--text-primary)" : "var(--text-muted)" }}
+        style={{ color: value ? "var(--text-primary)" : "var(--text-muted)", ...styleToCss(cellStyleOf(row, field.id)) }}
         title={typeof value === "string" && value ? value : "未选择"}
       />
     );
@@ -326,6 +332,8 @@ function TextCell({
               overflow: "hidden",
               cursor: "default",
             }),
+        // 单元格样式（字色/底色/字体/字号/粗斜下划线）覆盖基准；底色在隐藏态同样可见
+        ...styleToCss(cellStyleOf(row, field.id)),
       }}
       onDoubleClick={handleDoubleClick}
     >
@@ -352,7 +360,8 @@ function TextCell({
               ? "absolute inset-0 w-full h-full resize-none overflow-auto border-none bg-transparent outline-none text-xs px-1.5 py-1 cursor-text select-text"
               : "absolute inset-0 w-full h-full resize-none border-none bg-transparent outline-none text-xs px-1.5 py-1 opacity-0 pointer-events-none cursor-default"
           }
-          style={{ color: "var(--text-primary)" }}
+          // 编辑态同样套用单元格样式（粗体/字色/字号等），所见即所编辑
+          style={{ color: "var(--text-primary)", ...styleToCss(cellStyleOf(row, field.id)) }}
         />
       )}
     </div>
@@ -457,7 +466,7 @@ function NumberCell({
       {!editing && (
         <div
           className="flex items-center w-full min-h-8 px-1.5 text-xs cursor-default"
-          style={{ color: "var(--text-primary)" }}
+          style={{ color: "var(--text-primary)", ...styleToCss(cellStyleOf(row, field.id)) }}
         >
           <span className="truncate">
             {value !== undefined ? (field.type === "duration" ? `${value} 秒` : String(value)) : ""}
@@ -482,7 +491,7 @@ function NumberCell({
               ? "absolute inset-0 w-full h-full bg-transparent outline-none border-none text-xs px-1.5 cursor-text select-text"
               : "absolute inset-0 w-full h-full bg-transparent outline-none border-none text-xs px-1.5 opacity-0 pointer-events-none cursor-default"
           }
-          style={{ color: "var(--text-primary)" }}
+          style={{ color: "var(--text-primary)", ...styleToCss(cellStyleOf(row, field.id)) }}
         />
       )}
       {editing && field.type === "duration" && (

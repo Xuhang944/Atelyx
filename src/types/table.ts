@@ -49,6 +49,33 @@ export interface TableRow {
   values: Record<string, CellValue | undefined>;
   /** 用户拖拽调整后的行高（px）；缺省 = 内容自然撑开（行高自适应清除）。 */
   height?: number;
+  /**
+   * 按字段 id 存的单元格显示样式（缺 key = 默认样式）。格式与值**正交**：
+   * 不进 `CellValue`，值侧（复制/粘贴 TSV、快照注入、状态栏计算、粘贴回写）零改动；
+   * 随行走补丁/撤销/协作（引用 diff 天然捕获新 row 对象）。
+   */
+  styles?: Record<string, CellStyle>;
+}
+
+/**
+ * 单元格显示样式（随 `.atb` 持久化；只存非默认键，undefined = 默认）。
+ * 布尔键存 `true`；字体存 `constants/table.ts` `FONT_PRESETS` 的键（不存原始 family，
+ * 文件紧凑、跨平台可控）；颜色一律 hex。
+ */
+export interface CellStyle {
+  /** 粗体 / 斜体 / 下划线 / 删除线。 */
+  b?: true;
+  i?: true;
+  u?: true;
+  s?: true;
+  /** 文字颜色（hex）。 */
+  color?: string;
+  /** 单元格背景色（hex）。 */
+  bg?: string;
+  /** 字体预设键（`FONT_PRESETS`；缺省 = 默认字体）。 */
+  font?: string;
+  /** 字号（px；缺省 = 表格基准字号）。 */
+  size?: number;
 }
 
 /**

@@ -95,6 +95,7 @@ export type {
   FieldType,
   CalcType,
   CellValue,
+  CellStyle,
   ImageCellValue,
   TableField,
   TableRow,

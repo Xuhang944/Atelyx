@@ -40,10 +40,12 @@ import {
   reorderByRank,
   sameIdSequence,
   selectionRegion,
+  styleEqual,
   summarizeTableSnapshot,
 } from "@/utils/table";
 import type {
   CalcType,
+  CellStyle,
   CellValue,
   FieldType,
   TableField,
@@ -92,6 +94,9 @@ interface TableStoreState {
   flush: (force?: boolean) => Promise<boolean>;
 
   updateCell: (rowId: string, fieldId: string, value: CellValue | undefined) => void;
+  /** 对当前选中区域应用单元格样式（patch = 增量，undefined 键 = 清除该项；null = 清除全部格式）。
+   *  布尔切换语义由调用方按汇总态决定传 true/undefined（mixed 一律传 true 拉齐）。一步撤销。 */
+  applyCellStyle: (patch: Partial<CellStyle> | null) => void;
   /** 图片单元格追加图片（系统文件选择器 → 附件路径引用）。 */
   addImageToCell: (rowId: string, fieldId: string) => Promise<void>;
   /** 图片单元格移除指定下标图片。 */
@@ -593,6 +598,31 @@ export function hasCollabPeerOnTable(file: string): boolean {
   return useCollabStore.getState().peers.some((p) => p.presence?.file === file);
 }
 
+/** 样式增量合并：patch 中**显式出现**的键才处理（值 undefined = 清除该项，真值 = 设置），
+ * 未出现的键保持原样——同一单元格可叠加多种样式（如先设字号再点粗体，字号不被清掉）。
+ * 用 `in` 判定「显式出现」而非 `patch.x !== undefined`：`Partial` 下缺省键取值为 undefined，
+ * 会把「未触及」误判为「清除」。全空 → undefined（空样式 ≈ 缺省键，落盘保持文件干净）。
+ * 布尔切换由调用方按汇总态决定传 true/undefined。 */
+function mergeCellStyle(cur: CellStyle | undefined, patch: Partial<CellStyle>): CellStyle | undefined {
+  const next: CellStyle = cur ? { ...cur } : {};
+  const applyKey = <K extends keyof CellStyle>(key: K) => {
+    if (key in patch) {
+      const v = patch[key];
+      if (v === undefined) delete next[key];
+      else next[key] = v;
+    }
+  };
+  applyKey("b");
+  applyKey("i");
+  applyKey("u");
+  applyKey("s");
+  applyKey("color");
+  applyKey("bg");
+  applyKey("font");
+  applyKey("size");
+  return Object.keys(next).length === 0 ? undefined : next;
+}
+
 export const useTableStore = create<TableStoreState>((set, get) => ({
   tableFile: null,
   id: "",
@@ -721,6 +751,38 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
     }));
     // 编辑会话的提交（入栈点在会话入口：选中打字/双击）；任何新变更作废 redo（undo 后产生新变更，Ctrl+Y 不得恢复旧快照）
     undoMgr.touchRedo();
+    schedulePersist();
+  },
+
+  applyCellStyle: (patch) => {
+    const s = get();
+    const region = selectionRegion(s.selection, s.fields, s.rows);
+    if (!region) return;
+    let anyChange = false;
+    const outRows = s.rows.map((row, r) => {
+      if (r < region.rowStart || r > region.rowEnd) return row;
+      let styles = row.styles;
+      let rowChanged = false;
+      for (let c = region.colStart; c <= region.colEnd; c++) {
+        const fieldId = s.fields[c].id;
+        const next = patch === null ? undefined : mergeCellStyle(styles?.[fieldId], patch);
+        if (styleEqual(styles?.[fieldId], next)) continue;
+        // 惰性克隆：首次变更才复制映射，不污染原对象（不可变更新约定，防撤销快照被改）
+        if (!styles) styles = {};
+        else if (!rowChanged) styles = { ...styles };
+        if (next === undefined) delete styles[fieldId];
+        else styles[fieldId] = next;
+        rowChanged = true;
+      }
+      if (!rowChanged) return row;
+      // 整行样式清空 → 删 styles 字段（空映射 ≈ 缺省，落盘保持文件干净）
+      const cleanStyles = styles && Object.keys(styles).length === 0 ? undefined : styles;
+      anyChange = true;
+      return { ...row, styles: cleanStyles };
+    });
+    if (!anyChange) return;
+    undoMgr.push();
+    set({ rows: outRows });
     schedulePersist();
   },
 
@@ -921,10 +983,14 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
       const stale = selUsesField(s.selection, fieldId);
       return {
         fields: s.fields.filter((f) => f.id !== fieldId),
-        // 删除列同时清掉所有行的该列值（防 values 残留孤儿键）
+        // 删除列同时清掉所有行的该列值（防 values 残留孤儿键）；样式同口径清理（防 styles 孤儿键）
         rows: s.rows.map((r) => {
           const { [fieldId]: _drop, ...rest } = r.values;
-          return { ...r, values: rest };
+          if (!r.styles || r.styles[fieldId] === undefined) return { ...r, values: rest };
+          const styles = { ...r.styles };
+          delete styles[fieldId];
+          const cleanStyles = Object.keys(styles).length === 0 ? undefined : styles;
+          return { ...r, values: rest, styles: cleanStyles };
         }),
         selection: stale ? null : s.selection,
       };
@@ -944,7 +1010,13 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
     set((s) => {
       const idx = s.rows.findIndex((r) => r.id === rowId);
       if (idx < 0) return {};
-      const copy: TableRow = { id: crypto.randomUUID(), values: { ...s.rows[idx].values } };
+      const src = s.rows[idx];
+      // 复制 = 得到一样的行：值 + 显示样式一并拷贝（styles 映射浅拷即可，CellStyle 不可变）
+      const copy: TableRow = {
+        id: crypto.randomUUID(),
+        values: { ...src.values },
+        ...(src.styles ? { styles: { ...src.styles } } : {}),
+      };
       const next = [...s.rows];
       next.splice(idx + 1, 0, copy);
       return { rows: next };

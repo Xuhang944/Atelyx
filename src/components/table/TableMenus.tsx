@@ -15,6 +15,7 @@ import {
   Copy,
   Pencil,
   Trash2,
+  Type,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { PopupLayer } from "@/components/common/PopupLayer";
@@ -24,9 +25,19 @@ import { useTableStore } from "@/stores/tableStore";
 import { columnAutoWidth } from "@/utils/table";
 import type { FieldType, TableField } from "@/types";
 
-/** 数据单元格右键菜单：复制 / 粘贴（复制 = 当前选中区域 TSV 到系统剪贴板；
- *  粘贴 = 剪贴板 TSV 以选区锚点为起点写入，越界自动补行/补列）。 */
-export function CellMenu({ x, y, onClose }: { x: number; y: number; onClose: () => void }) {
+/** 数据单元格右键菜单：复制 / 粘贴 / 格式（格式 = 在原坐标浮出气泡格式工具栏，见 TableEditor）。
+ *  复制 = 当前选中区域 TSV 到系统剪贴板；粘贴 = 剪贴板 TSV 以选区锚点为起点写入，越界自动补行/补列。 */
+export function CellMenu({
+  x,
+  y,
+  onClose,
+  onFormat,
+}: {
+  x: number;
+  y: number;
+  onClose: () => void;
+  onFormat?: () => void;
+}) {
   return (
     <Menu x={x} y={y} onClose={onClose} widthClass="w-32" stopPointerDown>
       <MenuItem onClick={() => { useTableStore.getState().copySelection(); onClose(); }}>
@@ -35,6 +46,11 @@ export function CellMenu({ x, y, onClose }: { x: number; y: number; onClose: () 
       <MenuItem onClick={() => { void useTableStore.getState().pasteFromClipboard(); onClose(); }}>
         <ClipboardPaste size={14} /> 粘贴
       </MenuItem>
+      {onFormat && (
+        <MenuItem onClick={() => { onClose(); onFormat(); }}>
+          <Type size={14} /> 格式
+        </MenuItem>
+      )}
     </Menu>
   );
 }
@@ -209,11 +225,13 @@ export function ColumnMenu({
   x,
   y,
   onClose,
+  onFormat,
 }: {
   field: TableField | undefined;
   x: number;
   y: number;
   onClose: () => void;
+  onFormat?: () => void;
 }) {
   const setFieldWidth = useTableStore((s) => s.setFieldWidth);
   const insertField = useTableStore((s) => s.insertField);
@@ -268,6 +286,11 @@ export function ColumnMenu({
       >
         <Columns3 size={14} /> 列宽自适应
       </MenuItem>
+      {onFormat && (
+        <MenuItem onClick={() => { onClose(); onFormat(); }}>
+          <Type size={14} /> 格式
+        </MenuItem>
+      )}
       <MenuItem onClick={() => { setMode("insertLeft"); setDraft(""); }}>
         <ArrowLeft size={14} /> 左侧插入字段
       </MenuItem>
@@ -278,8 +301,20 @@ export function ColumnMenu({
   );
 }
 
-/** 行菜单：复制行 / 上移 / 下移 / 行高自适应 / 删除行。 */
-export function RowMenu({ rowId, x, y, onClose }: { rowId: string; x: number; y: number; onClose: () => void }) {
+/** 行菜单：复制行 / 上移 / 下移 / 行高自适应 / 格式 / 删除行。 */
+export function RowMenu({
+  rowId,
+  x,
+  y,
+  onClose,
+  onFormat,
+}: {
+  rowId: string;
+  x: number;
+  y: number;
+  onClose: () => void;
+  onFormat?: () => void;
+}) {
   const rows = useTableStore((s) => s.rows);
   const duplicateRow = useTableStore((s) => s.duplicateRow);
   const removeRow = useTableStore((s) => s.removeRow);
@@ -310,6 +345,11 @@ export function RowMenu({ rowId, x, y, onClose }: { rowId: string; x: number; y:
       >
         <AlignVerticalSpaceAround size={14} /> 行高自适应
       </MenuItem>
+      {onFormat && (
+        <MenuItem onClick={() => { onClose(); onFormat(); }}>
+          <Type size={14} /> 格式
+        </MenuItem>
+      )}
       <MenuDivider />
       <MenuItem
         onClick={() => { removeRow(rowId); onClose(); }}
@@ -377,8 +417,18 @@ export function AddFieldMenu({ x, y, onClose }: { x: number; y: number; onClose:
   );
 }
 
-/** 整表选中右键菜单：全部列宽自适应 / 全部行高自适应。 */
-export function SelectAllMenu({ x, y, onClose }: { x: number; y: number; onClose: () => void }) {
+/** 整表选中右键菜单：全部列宽自适应 / 全部行高自适应 / 格式。 */
+export function SelectAllMenu({
+  x,
+  y,
+  onClose,
+  onFormat,
+}: {
+  x: number;
+  y: number;
+  onClose: () => void;
+  onFormat?: () => void;
+}) {
   const fields = useTableStore((s) => s.fields);
   const rows = useTableStore((s) => s.rows);
   const setFieldWidth = useTableStore((s) => s.setFieldWidth);
@@ -406,6 +456,11 @@ export function SelectAllMenu({ x, y, onClose }: { x: number; y: number; onClose
       >
         <AlignVerticalSpaceAround size={14} /> 行高自适应
       </MenuItem>
+      {onFormat && (
+        <MenuItem onClick={() => { onClose(); onFormat(); }}>
+          <Type size={14} /> 格式
+        </MenuItem>
+      )}
     </Menu>
   );
 }

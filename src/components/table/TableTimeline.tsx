@@ -22,7 +22,7 @@ import {
 import { useTableStore } from "@/stores/tableStore";
 import { useCollabStore } from "@/stores/collabStore";
 import { useTableImageSrc } from "@/hooks/useTableImageSrc";
-import { selectionRegion } from "@/utils/table";
+import { selectionRegion, styleToCss } from "@/utils/table";
 import type { TableField, TableRow } from "@/types";
 
 /** 时间线卡片缩略图：条目路径经 useTableImageSrc 解析（加载中/失败显示文字摘要兜底）。 */
@@ -95,7 +95,7 @@ const TimelineCards = memo(function TimelineCards({
               ) : (
                 <div
                   className="w-full h-full p-1.5 text-[10px] leading-4 overflow-hidden whitespace-pre-wrap break-words"
-                  style={{ color: "var(--text-muted)" }}
+                  style={{ color: "var(--text-muted)", ...styleToCss(textField ? row.styles?.[textField.id] : undefined) }}
                 >
                   {summary || `行 ${i + 1}`}
                 </div>
@@ -175,7 +175,12 @@ const TimelinePreview = memo(function TimelinePreview({
         ) : textField && typeof currentRow.values[textField.id] === "string" && currentRow.values[textField.id] ? (
           <div
             className="max-w-xl max-h-[55vh] overflow-auto p-4 rounded whitespace-pre-wrap text-sm"
-            style={{ background: "var(--bg-secondary)", color: "var(--text-primary)", border: "1px solid var(--border)" }}
+            style={{
+              background: "var(--bg-secondary)",
+              color: "var(--text-primary)",
+              border: "1px solid var(--border)",
+              ...styleToCss(currentRow.styles?.[textField.id]),
+            }}
           >
             {currentRow.values[textField.id] as string}
           </div>

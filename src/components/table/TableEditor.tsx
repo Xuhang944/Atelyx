@@ -38,10 +38,11 @@ import {
   SelectAllMenu,
   StatMenu,
 } from "@/components/table/TableMenus";
-import { computeColumnCalc, fieldDefaultWidth, selectionRegion } from "@/utils/table";
+import { computeColumnCalc, fieldDefaultWidth, selectionRegion, type TableRegion } from "@/utils/table";
 import { HistoryModal } from "@/components/history/HistoryModal";
 import { PopupLayer } from "@/components/common/PopupLayer";
 import { usePopupAnchor } from "@/hooks/usePopupAnchor";
+import { TableFormatToolbar } from "@/components/table/TableFormatToolbar";
 import {
   ADD_FIELD_COL_WIDTH,
   CALC_TYPE_LABELS,
@@ -92,6 +93,10 @@ export function TableEditor({ panelId }: { panelId: string }) {
   const [statMenu, setStatMenu] = useState<{ fieldId: string; x: number; y: number } | null>(null);
   const [allMenu, setAllMenu] = useState<{ x: number; y: number } | null>(null);
   const [cellMenu, setCellMenu] = useState<{ x: number; y: number } | null>(null);
+  // 气泡格式工具栏锚点（视口坐标；null = 关闭）。拖框选完成 / 再次点击已选中单元格 / 右键「格式」浮出
+  const [formatBar, setFormatBar] = useState<{ x: number; y: number } | null>(null);
+  /** 稳定 onClose：工具栏订阅 rows/selection 高频重渲染，内层 document 监听按此依赖避免反复重绑。 */
+  const closeFormatBar = useCallback(() => setFormatBar(null), []);
 
   // ===== 视图缩放（Ctrl+滚轮，CSS zoom；纯视图状态，不持久化、不入撤销栈，切文件随重挂复位）=====
   const [zoom, setZoom] = useState(1);
@@ -282,6 +287,21 @@ export function TableEditor({ panelId }: { panelId: string }) {
   } | null>(null);
   /** 框选拖拽最近一次落到的目标格（同格不重复 setState，防逐像素重渲染）。 */
   const rangeDragCellRef = useRef<string | null>(null);
+
+  /** 区域 → 格式条锚点（选区左上角，视口坐标；CSS zoom 下 getBoundingClientRect 已是视口像素，
+   *  格式条 fixed 定位天然不随表格缩放）。取不到区域 DOM（越界/未渲染）返回 null。 */
+  const formatAnchorOfRegion = useCallback((region: TableRegion): { x: number; y: number } | null => {
+    if (region.rowStart > region.rowEnd) return null;
+    const st = useTableStore.getState();
+    const sel = (rid: string, fid: string) =>
+      rowsElRef.current?.querySelector<HTMLElement>(`[data-row-id="${rid}"] [data-field-id="${fid}"]`);
+    const first = sel(st.rows[region.rowStart]?.id ?? "", st.fields[region.colStart]?.id ?? "");
+    const last = sel(st.rows[region.rowEnd]?.id ?? "", st.fields[region.colEnd]?.id ?? "");
+    if (!first || !last) return null;
+    const r1 = first.getBoundingClientRect();
+    return { x: r1.left, y: r1.top - 6 };
+  }, []);
+
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
       const p = cellPressRef.current;
@@ -309,8 +329,23 @@ export function TableEditor({ panelId }: { panelId: string }) {
       useTableStore.getState().selectRange(p.rowId, p.fieldId, rowId, fieldId);
     };
     const onUp = () => {
+      const wasDrag = cellPressRef.current?.active ?? false;
+      // 本次拖拽是否真正创建/更新过 range（rangeDragCellRef 非空即 selectRange 被调用）。
+      // 图片格长按滑动（noRange 路径）不建 range，若沿用旧选区会误弹格式条——用此守卫排除
+      const didRange = rangeDragCellRef.current !== null;
       cellPressRef.current = null;
       rangeDragCellRef.current = null;
+      // 拖框选完成 → 浮出格式条（锚定选区左上角）；单格点击由 releaseCellPress 处理
+      if (wasDrag && didRange) {
+        const st = useTableStore.getState();
+        if (st.selection?.kind === "range") {
+          const region = selectionRegion(st.selection, st.fields, st.rows);
+          if (region) {
+            const anchor = formatAnchorOfRegion(region);
+            if (anchor) setFormatBar(anchor);
+          }
+        }
+      }
     };
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onUp);
@@ -318,7 +353,7 @@ export function TableEditor({ panelId }: { panelId: string }) {
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerup", onUp);
     };
-  }, []);
+  }, [formatAnchorOfRegion]);
 
   const startCellPress = useCallback((e: React.PointerEvent, rowId: string, fieldId: string) => {
     if (e.button !== 0) return;
@@ -342,12 +377,33 @@ export function TableEditor({ panelId }: { panelId: string }) {
       if (!p || p.active) return;
       cellPressRef.current = null;
       useUiStateStore.getState().setFocusedPanel(panelId);
+      // 再次点击已选中单元格 = 格式化意图（浮出格式条；输入框保持聚焦——开始键入时格式条
+      // 自行关闭继续编辑）；首次点击 = 选中即编辑（聚焦常驻输入框，打字直达）
+      const st = useTableStore.getState();
+      const prevRegion = selectionRegion(st.selection, st.fields, st.rows);
+      const rIdx = st.rows.findIndex((r) => r.id === rowId);
+      const cIdx = st.fields.findIndex((f) => f.id === fieldId);
+      const wasSelected =
+        prevRegion !== null &&
+        rIdx >= prevRegion.rowStart &&
+        rIdx <= prevRegion.rowEnd &&
+        cIdx >= prevRegion.colStart &&
+        cIdx <= prevRegion.colEnd;
       selectCell(rowId, fieldId);
+      if (wasSelected) {
+        const anchor = formatAnchorOfRegion({
+          rowStart: rIdx,
+          rowEnd: rIdx,
+          colStart: cIdx,
+          colEnd: cIdx,
+        });
+        if (anchor) setFormatBar(anchor);
+      }
       rowsElRef.current
         ?.querySelector<HTMLTextAreaElement | HTMLInputElement>("[data-cell-editor]")
         ?.focus();
     },
-    [panelId, selectCell],
+    [panelId, selectCell, formatAnchorOfRegion],
   );
 
   // ===== 列宽 / 行高拖拽调整（指针模拟，与行拖拽同策略）=====
@@ -526,6 +582,8 @@ export function TableEditor({ panelId }: { panelId: string }) {
     if (from.scrollLeft !== to.scrollLeft) to.scrollLeft = from.scrollLeft;
   };
   const onTableScroll = () => {
+    // 滚动即关闭格式条（锚点随滚动失效；拖新选区/右键会重新浮出）
+    setFormatBar(null);
     if (rowsElRef.current && bottomScrollRef.current) {
       syncScroll(rowsElRef.current, bottomScrollRef.current);
     }
@@ -534,11 +592,14 @@ export function TableEditor({ panelId }: { panelId: string }) {
     }
   };
   const onBottomScroll = () => {
+    // 底部/状态栏横向滚动（程序化设 scrollLeft 不触发 onTableScroll）也会使格式条锚点漂移，一并关闭
+    setFormatBar(null);
     if (bottomScrollRef.current && rowsElRef.current) {
       syncScroll(bottomScrollRef.current, rowsElRef.current);
     }
   };
   const onStatBarScroll = () => {
+    setFormatBar(null);
     if (statBarRef.current && rowsElRef.current) {
       syncScroll(statBarRef.current, rowsElRef.current);
     }
@@ -563,7 +624,7 @@ export function TableEditor({ panelId }: { panelId: string }) {
         {/* 视图切换：表格 / 时间线（内存态不持久化） */}
         <div className="flex items-center rounded border flex-shrink-0" style={{ borderColor: "var(--border)" }}>
           <button
-            onClick={() => setView("table")}
+            onClick={() => { setFormatBar(null); setView("table"); }}
             className="px-2 py-0.5 text-xs transition-colors"
             style={{
               color: view === "table" ? "var(--accent-fg)" : "var(--text-secondary)",
@@ -574,7 +635,7 @@ export function TableEditor({ panelId }: { panelId: string }) {
             表格
           </button>
           <button
-            onClick={() => setView("timeline")}
+            onClick={() => { setFormatBar(null); setView("timeline"); }}
             className="px-2 py-0.5 text-xs transition-colors"
             style={{
               color: view === "timeline" ? "var(--accent-fg)" : "var(--text-secondary)",
@@ -958,6 +1019,7 @@ export function TableEditor({ panelId }: { panelId: string }) {
           x={columnMenu.x}
           y={columnMenu.y}
           onClose={() => setColumnMenu(null)}
+          onFormat={() => setFormatBar({ x: columnMenu.x, y: columnMenu.y })}
         />
       )}
       {/* 行菜单 */}
@@ -967,6 +1029,7 @@ export function TableEditor({ panelId }: { panelId: string }) {
           x={rowMenu.x}
           y={rowMenu.y}
           onClose={() => setRowMenu(null)}
+          onFormat={() => setFormatBar({ x: rowMenu.x, y: rowMenu.y })}
         />
       )}
       {/* 添加字段浮层 */}
@@ -983,9 +1046,26 @@ export function TableEditor({ panelId }: { panelId: string }) {
         />
       )}
       {/* 整表选中右键菜单：全部列宽 / 行高自适应 */}
-      {allMenu && <SelectAllMenu x={allMenu.x} y={allMenu.y} onClose={() => setAllMenu(null)} />}
-      {/* 数据单元格右键菜单：复制 / 粘贴 */}
-      {cellMenu && <CellMenu x={cellMenu.x} y={cellMenu.y} onClose={() => setCellMenu(null)} />}
+      {allMenu && (
+        <SelectAllMenu
+          x={allMenu.x}
+          y={allMenu.y}
+          onClose={() => setAllMenu(null)}
+          onFormat={() => setFormatBar({ x: allMenu.x, y: allMenu.y })}
+        />
+      )}
+      {/* 数据单元格右键菜单：复制 / 粘贴 / 格式 */}
+      {cellMenu && (
+        <CellMenu
+          x={cellMenu.x}
+          y={cellMenu.y}
+          onClose={() => setCellMenu(null)}
+          onFormat={() => setFormatBar({ x: cellMenu.x, y: cellMenu.y })}
+        />
+      )}
+
+      {/* 气泡格式工具栏（选中/框选/右键「格式」浮出；外点/Esc/滚动/键入自动关闭） */}
+      {formatBar && <TableFormatToolbar anchor={formatBar} onClose={closeFormatBar} />}
 
       {/* 表格历史面板（工具条「···」→ 历史记录） */}
       <HistoryModal

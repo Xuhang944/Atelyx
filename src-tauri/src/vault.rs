@@ -625,6 +625,10 @@ pub struct TableRow {
     /// 必须在此显式声明，否则 serde 反序列化会丢弃前端传来的该字段，写盘丢失。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<f64>,
+    /// 单元格显示样式按字段 id 存（与值正交：字体/粗体/字色/底色等，缺 key = 默认样式）。
+    /// 必须在此显式声明，否则反序列化丢弃、增量补丁整行替换后写盘丢失样式。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub styles: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// 读 .atb 文件并反序列化（schema 校验同 .atlx 私有格式保护）。
