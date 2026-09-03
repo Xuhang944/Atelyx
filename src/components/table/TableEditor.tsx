@@ -284,6 +284,8 @@ export function TableEditor({ panelId }: { panelId: string }) {
     fieldId: string;
     /** 图片字段格：自身滑动/排序手势，不参与框选。 */
     noRange: boolean;
+    /** 按下前格式条是否已浮出（再点已选中单元格 = 切换开/关 的判定依据）。 */
+    barWasOpen: boolean;
   } | null>(null);
   /** 框选拖拽最近一次落到的目标格（同格不重复 setState，防逐像素重渲染）。 */
   const rangeDragCellRef = useRef<string | null>(null);
@@ -355,19 +357,24 @@ export function TableEditor({ panelId }: { panelId: string }) {
     };
   }, [formatAnchorOfRegion]);
 
-  const startCellPress = useCallback((e: React.PointerEvent, rowId: string, fieldId: string) => {
-    if (e.button !== 0) return;
-    // noRange：图片字段格有自身滑动/排序手势，按下即排除其参与框选（click 选择不受影响）
-    const field = useTableStore.getState().fields.find((f) => f.id === fieldId);
-    cellPressRef.current = {
-      x: e.clientX,
-      y: e.clientY,
-      active: false,
-      rowId,
-      fieldId,
-      noRange: field?.type === "image",
-    };
-  }, []);
+  const startCellPress = useCallback(
+    (e: React.PointerEvent, rowId: string, fieldId: string) => {
+      if (e.button !== 0) return;
+      // noRange：图片字段格有自身滑动/排序手势，按下即排除其参与框选（click 选择不受影响）
+      const field = useTableStore.getState().fields.find((f) => f.id === fieldId);
+      cellPressRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        active: false,
+        rowId,
+        fieldId,
+        noRange: field?.type === "image",
+        // 按下时条是否已浮出（快照，供松手判定切换开/关；deps 随 formatBar 重建保证读到最新提交值）
+        barWasOpen: formatBar !== null,
+      };
+    },
+    [formatBar],
+  );
 
   /** 单元格松手（未拖动）→ 选中 + 标记面板聚焦（点 td 不冒泡到面板层，快捷键门控需显式标记）+
    *  聚焦常驻输入框（已选中单元格的再次点击不触发重渲染，须直接聚焦防失焦后打字失效）。 */
@@ -377,8 +384,8 @@ export function TableEditor({ panelId }: { panelId: string }) {
       if (!p || p.active) return;
       cellPressRef.current = null;
       useUiStateStore.getState().setFocusedPanel(panelId);
-      // 再次点击已选中单元格 = 格式化意图（浮出格式条；输入框保持聚焦——开始键入时格式条
-      // 自行关闭继续编辑）；首次点击 = 选中即编辑（聚焦常驻输入框，打字直达）
+      // 再次点击已选中单元格 = 切换格式条（按下前已浮出 → 本次点击关闭；未浮出 → 浮出）；
+      // 输入框保持聚焦——开始键入时格式条自行关闭继续编辑。首次点击 = 选中即编辑（聚焦输入框）
       const st = useTableStore.getState();
       const prevRegion = selectionRegion(st.selection, st.fields, st.rows);
       const rIdx = st.rows.findIndex((r) => r.id === rowId);
@@ -390,7 +397,10 @@ export function TableEditor({ panelId }: { panelId: string }) {
         cIdx >= prevRegion.colStart &&
         cIdx <= prevRegion.colEnd;
       selectCell(rowId, fieldId);
-      if (wasSelected) {
+      if (wasSelected && p.barWasOpen) {
+        // 条按下时已浮出且点在已选区内 → 关闭（外点关闭已先行，此处兜底确保不重开）
+        setFormatBar(null);
+      } else if (wasSelected) {
         const anchor = formatAnchorOfRegion({
           rowStart: rIdx,
           rowEnd: rIdx,
