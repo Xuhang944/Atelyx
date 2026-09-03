@@ -4,6 +4,7 @@
  * 引用处降级为「文件缺失」。依赖 `capabilities.deleteFile`（vaultStore.deleteFile 按扩展名分发）。
  */
 import { ToolArgsError } from "@/types";
+import { HIDDEN_PATH_ERROR, hasHiddenSegment } from "@/constants/tools";
 import { defineTool } from "./defineTool";
 
 export interface DeleteFileArgs {
@@ -29,6 +30,9 @@ export const DELETE_FILE_TOOL = defineTool<DeleteFileArgs>({
     const raw = (args as { path?: unknown; confirm?: unknown } | undefined) ?? {};
     if (typeof raw.path !== "string" || !raw.path.trim()) {
       throw new ToolArgsError("缺少文件路径 path");
+    }
+    if (hasHiddenSegment(raw.path)) {
+      throw new ToolArgsError(HIDDEN_PATH_ERROR);
     }
     if (raw.confirm !== true) {
       throw new ToolArgsError("删除须显式传 confirm: true 以防误删");

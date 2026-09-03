@@ -20,6 +20,8 @@ pub struct FetchedWebPage {
     pub url: String,
     pub title: Option<String>,
     pub content: String,
+    /// 正文是否命中 MAX_TEXT_CHARS 被截断（模型据此刻画内容规模/决定是否抓子页）。
+    pub truncated: bool,
 }
 
 /// 抓取网页正文（`https://`/`http://`）。
@@ -76,11 +78,12 @@ pub async fn fetch_web(url: String) -> Result<FetchedWebPage, String> {
     // 非 UTF-8（如部分 GBK 页）用替换字符容错，不阻塞
     let html = String::from_utf8_lossy(bytes).into_owned();
     let title = extract_title(&html);
-    let content = limit_chars(html_to_text(&html).trim(), MAX_TEXT_CHARS);
+    let (content, truncated) = truncate_chars(html_to_text(&html).trim(), MAX_TEXT_CHARS);
     Ok(FetchedWebPage {
         url,
         title,
         content,
+        truncated,
     })
 }
 
@@ -224,11 +227,54 @@ fn collapse_ws(s: &str) -> String {
     out
 }
 
-/// 按字符截断（超长加省略号）。
-fn limit_chars(s: &str, max: usize) -> String {
-    let mut out: String = s.chars().take(max).collect();
-    if s.chars().count() > max {
-        out.push('…');
+/// 按字符截断（超长加省略号）；返回是否被截断（模型据此判断内容完整性）。
+fn truncate_chars(s: &str, max: usize) -> (String, bool) {
+    let count = s.chars().count();
+    if count <= max {
+        (s.to_string(), false)
+    } else {
+        let head: String = s.chars().take(max).collect();
+        (format!("{head}…"), true)
     }
-    out
+}
+
+/// 按字符截断（超长加省略号，title 等短片段用；不关心截断标志）。
+fn limit_chars(s: &str, max: usize) -> String {
+    truncate_chars(s, max).0
+}
+
+#[cfg(test)]
+mod web_tests {
+    use super::*;
+
+    #[test]
+    fn truncate_chars_marks_overflow() {
+        let (s, t) = truncate_chars("abcdef", 5);
+        assert!(t);
+        assert_eq!(s, "abcde…");
+        let (s2, t2) = truncate_chars("abcdef", 10);
+        assert!(!t2);
+        assert_eq!(s2, "abcdef");
+        let (s3, t3) = truncate_chars("", 10);
+        assert!(!t3);
+        assert_eq!(s3, "");
+        // 恰好等于上限：不截断
+        let (s4, t4) = truncate_chars("abcde", 5);
+        assert!(!t4);
+        assert_eq!(s4, "abcde");
+    }
+
+    #[test]
+    fn truncate_chars_keeps_multibyte_chars() {
+        // 中文/emoji 按码点截断，不产生半个字符
+        let (s, t) = truncate_chars("中文标题很长", 3);
+        assert!(t);
+        assert_eq!(s, "中文标…");
+        let (s2, t2) = truncate_chars("a😀b", 2);
+        assert!(t2);
+        assert_eq!(s2, "a😀…");
+        let (s3, t3) = truncate_chars("😀😀", 2);
+        assert!(!t3);
+        assert_eq!(s3, "😀😀");
+    }
 }

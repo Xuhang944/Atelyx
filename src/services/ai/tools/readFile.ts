@@ -4,7 +4,7 @@
  * 不硬拒大文件，也不整文件回填撑爆上下文。依赖 `capabilities.readFile`。只读，不建产物节点。
  */
 import { ToolArgsError, errText } from "@/types";
-import { READ_WINDOW_DEFAULT_LINES } from "@/constants/tools";
+import { HIDDEN_PATH_ERROR, READ_WINDOW_DEFAULT_LINES, hasHiddenSegment } from "@/constants/tools";
 import { defineTool } from "./defineTool";
 
 export interface ReadFileArgs {
@@ -41,6 +41,7 @@ export const READ_FILE_TOOL = defineTool<ReadFileArgs>({
     const raw = (args as { path?: unknown; offset?: unknown; limit?: unknown } | undefined) ?? {};
     const p = raw.path;
     if (typeof p !== "string" || !p.trim()) throw new ToolArgsError("缺少文件路径 path");
+    if (hasHiddenSegment(p)) throw new ToolArgsError(HIDDEN_PATH_ERROR);
     return {
       path: p,
       offset: positiveInt(raw.offset, 1, "offset"),

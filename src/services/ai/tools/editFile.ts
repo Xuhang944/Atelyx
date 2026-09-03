@@ -3,6 +3,7 @@
  * 块间不重叠，全部校验通过后统一替换（原子写）。依赖 `capabilities.editFile`。不建产物节点。
  */
 import { ToolArgsError, errText } from "@/types";
+import { HIDDEN_PATH_ERROR, hasHiddenSegment } from "@/constants/tools";
 import { defineTool } from "./defineTool";
 
 export interface EditEntry {
@@ -51,6 +52,7 @@ export const EDIT_FILE_TOOL = defineTool<EditFileArgs>({
         )
       : [];
     if (!path) throw new ToolArgsError("缺少文件路径 path");
+    if (hasHiddenSegment(path)) throw new ToolArgsError(HIDDEN_PATH_ERROR);
     if (edits.length === 0) throw new ToolArgsError("缺少 edits 列表或格式非法（需 {oldText,newText}）");
     return { path, edits };
   },

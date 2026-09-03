@@ -133,6 +133,8 @@ export {
   type GrepVaultResult,
   type ListDirEntry,
   type ListDirResult,
+  type TodoItem,
+  type AgentHistoryReadResult,
 } from "./tool";
 
 export type {

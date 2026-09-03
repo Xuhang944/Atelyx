@@ -17,7 +17,7 @@ use regex::Regex;
 use serde::Serialize;
 use tauri::State;
 
-use crate::vault::{read_dir_filtered, safe_join, VaultState};
+use crate::vault::{has_hidden_segment, read_dir_filtered, safe_join, VaultState};
 
 /// glob 单次内联返回的路径上限（超限附 total，前端提示收窄）。
 const GLOB_MAX_RESULTS: usize = 100;
@@ -109,7 +109,7 @@ fn normalize_base_path(p: &str) -> String {
 }
 
 /// 解析 `path` 参数：缺省 = 仓库根（目录）；给出 = 归一化 + `safe_join` 校验后按「文件/目录」区分。
-/// 返回（相对仓库根的展示前缀，是否单文件）。
+/// 指向隐藏目录（. 开头段）拒绝（AI 发现层完全屏蔽）。返回（相对仓库根的展示前缀，是否单文件）。
 fn resolve_base(root: &Path, path: Option<&str>) -> Result<(String, bool), String> {
     let p = match path {
         None => return Ok((String::new(), false)),
@@ -118,6 +118,9 @@ fn resolve_base(root: &Path, path: Option<&str>) -> Result<(String, bool), Strin
     if p.is_empty() {
         // 归一化后为空（`"/"`/`"./"`/`"."`）→ 视作仓库根
         return Ok((String::new(), false));
+    }
+    if has_hidden_segment(&p) {
+        return Err("路径位于隐藏目录（. 开头段），AI 工具不可访问".to_string());
     }
     let abs = safe_join(root, &p, false)?;
     let meta = std::fs::metadata(&abs).map_err(|_| format!("路径不存在或不可访问：{p}"))?;
@@ -426,6 +429,17 @@ mod filesearch_tests {
         assert_eq!(normalize_base_path("/"), "");
         // `..` 不归一化（留给 safe_join 的穿越校验拒绝）
         assert_eq!(normalize_base_path("../x"), "../x");
+    }
+
+    #[test]
+    fn resolve_base_rejects_hidden_path() {
+        // 显式指向隐藏目录 → 拒绝（在触碰文件系统前即返回 Err）
+        assert!(resolve_base(Path::new("C:/"), Some(".atelyx")).is_err());
+        assert!(resolve_base(Path::new("C:/"), Some("a/.hidden")).is_err());
+        assert!(resolve_base(Path::new("C:/"), Some(".gitignore")).is_err());
+        // 缺省/空 = 仓库根，正常
+        assert!(resolve_base(Path::new("C:/"), None).is_ok());
+        assert!(resolve_base(Path::new("C:/"), Some("")).is_ok());
     }
 
     #[test]

@@ -179,6 +179,15 @@ pub fn is_excluded_rel(rel: &str, exclude: &[String]) -> bool {
     })
 }
 
+/// 相对路径是否含隐藏段（任一段以 `.` 开头，如 `.atelyx/x`、`a/.git/y`）。AI 工具发现层
+/// （glob/grep/list_dir）对隐藏目录完全屏蔽：遍历结果过滤 + 显式把 path/dir 指向隐藏目录时拒绝。
+/// 排除 `..`（父目录段）——它由 safe_join 的越界校验拒绝，报错语义更准确。
+pub(crate) fn has_hidden_segment(rel: &str) -> bool {
+    rel.split('/').any(|seg| {
+        seg.starts_with('.') && !seg.is_empty() && seg != "." && seg != ".."
+    })
+}
+
 /// 读取目录条目（相对路径 + 是否目录），应用全仓库统一过滤：
 /// 隐藏项（`.` 前缀）/ 排除文件夹 / `.tmp` 原子写副产物。递归由各 walker 自行组织
 /// （list_tree_in / scan_canvases_in / walk_md_in / scan_atlx_in 共用，过滤规则只维护一处）。
@@ -2146,5 +2155,31 @@ mod link_rewrite_tests {
         let content = "---\ntags: [[note-b]]\n---\n\n见 [[note-b]]";
         let (out, _) = rewrite_internal_links(content, &resolve);
         assert_eq!(out, "---\ntags: [[note-b]]\n---\n\n见 [note-b](note-b.md)");
+    }
+}
+
+#[cfg(test)]
+mod hidden_segment_tests {
+    use super::*;
+
+    #[test]
+    fn detects_hidden_segments() {
+        // 隐藏目录：根级与任意深度
+        assert!(has_hidden_segment(".atelyx/config.json"));
+        assert!(has_hidden_segment(".git/config"));
+        assert!(has_hidden_segment("a/.hidden/b.md"));
+        assert!(has_hidden_segment(".hidden"));
+        // 隐藏文件（根级 . 开头文件）
+        assert!(has_hidden_segment(".gitignore"));
+        assert!(has_hidden_segment(".env"));
+        // 普通路径不含隐藏段
+        assert!(!has_hidden_segment(""));
+        assert!(!has_hidden_segment("a/b.md"));
+        assert!(!has_hidden_segment("笔记/方案.txt"));
+        assert!(!has_hidden_segment("a"));
+        // 当前目录段 `.` 与父目录段 `..` 不算隐藏（`..` 由 safe_join 越界校验拒绝）
+        assert!(!has_hidden_segment("./a.md"));
+        assert!(!has_hidden_segment(".."));
+        assert!(!has_hidden_segment("../x"));
     }
 }

@@ -22,8 +22,22 @@ import {
 } from "./streaming";
 import { runAgentTools, assembleAgentSystemPrompt } from "@/services/ai/tools";
 import { runSearch } from "@/services/search";
-import { recordAgentFileWrite } from "@/services/history";
-import { readVaultFileWindow, writeVaultFile, editVaultFile, globVault, grepVault, listVaultDir } from "@/services/vault/aiFiles";
+import { readHistoryForAgent, recordAgentFileWrite } from "@/services/history";
+import {
+  appendVaultFile,
+  editVaultFile,
+  globVault,
+  grepVault,
+  listVaultDir,
+  readVaultFileWindow,
+  writeVaultFile,
+} from "@/services/vault/aiFiles";
+import {
+  currentTodosBlock,
+  deleteAgentTodos,
+  readAgentTodos,
+  writeAgentTodos,
+} from "@/services/vault/agentTodos";
 import { fetchWeb } from "@/services/web";
 import { prefix, scanMentionHits } from "@/utils/text";
 import { appendNarration, appendReasoning, coalesceAgentSteps, fillAssistantReplyText, finalizeReplyText, mergeToolRuns } from "@/utils/agentSteps";
@@ -621,6 +635,7 @@ async function runExchange(
     );
 
   // 系统提示词：Agent 提示词 + 引用文件读取引导（工具含 read_file 时追加「@引用 文件用 read_file 读取」）
+  // 易变上下文（当前笔记/任务清单）走尾部 user 消息块，不进系统提示词（保前缀缓存命中）
   const systemText = assembleAgentSystemPrompt(systemPrompt, tools);
 
   const apiMessages = [
@@ -634,6 +649,15 @@ async function runExchange(
   if (currentNoteFile) {
     const last = apiMessages[apiMessages.length - 1];
     last.text += `\n\n${currentNoteContextBlock(currentNoteFile, currentNoteTitle)}`;
+  }
+  // 当前任务清单（todo_write 工具开启时）同以尾部上下文块带出：清单不变则逐字稳定 → 前缀缓存命中；
+  // 清单变化（模型更新过 todo）只影响尾块 token，不打断系统前缀缓存
+  const todosBlock = tools.some((t) => t.name === "todo_write")
+    ? currentTodosBlock(await readAgentTodos(active.id))
+    : "";
+  if (todosBlock) {
+    const last = apiMessages[apiMessages.length - 1];
+    last.text += `\n\n${todosBlock}`;
   }
 
   await runStreamExchange({
@@ -784,6 +808,24 @@ async function runExchange(
           renameFile: (oldPath, newName) => useVaultStore.getState().renameFile(oldPath, newName),
           moveFile: (oldPath, targetDir) => useVaultStore.getState().moveFile(oldPath, targetDir),
           deleteFile: (path) => useVaultStore.getState().deleteFile(path),
+          deleteDir: (dir, force) =>
+            useVaultStore.getState().deleteFolder(dir, force).then((r) => ({
+              ok: r.deleted,
+              summary: r.deleted
+                ? `已删除目录「${dir}」`
+                : r.needsConfirm
+                  ? `目录非空（${r.itemCount} 项）`
+                  : "删除目录失败",
+              needsConfirm: r.needsConfirm,
+              itemCount: r.itemCount,
+            })),
+          readHistory: (path, opts) => readHistoryForAgent(path, opts),
+          appendFile: (path, content) =>
+            appendVaultFile(path, content).then((res) => {
+              if (res.ok) void recordAgentFileWrite(path);
+              return res;
+            }),
+          writeTodos: (todos) => writeAgentTodos(active.id, todos),
           writeFile: (path, content) => writeVaultFile(path, content).then(() => {
             // Agent 协作历史：AI 写文件以 Agent 身份记入对应 kind 的历史（fire-and-forget）
             void recordAgentFileWrite(path, content);
@@ -935,6 +977,8 @@ export const useChatPanelStore = create<ChatPanelState>((set, get) => ({
       void deleteChatSessionMeta(chatMetaFilePath(id)).catch((e) =>
         console.error("删除会话元数据文件失败", e),
       );
+      // 顺手清理该会话的任务清单侧车（孤儿清理；best-effort，失败静默）
+      void deleteAgentTodos(id).catch(() => {});
     }
     let activeSessionId = get().activeSessionId;
     if (activeSessionId === id) {

@@ -3,6 +3,7 @@
  * 像编程工具写文件那样直接落盘；data.path 供画布判断是否建产物节点。依赖 `capabilities.writeFile`。
  */
 import { ToolArgsError, errText } from "@/types";
+import { HIDDEN_PATH_ERROR, hasHiddenSegment } from "@/constants/tools";
 import { defineTool } from "./defineTool";
 
 export interface WriteFileArgs {
@@ -27,6 +28,7 @@ export const WRITE_FILE_TOOL = defineTool<WriteFileArgs>({
     const path = typeof raw.path === "string" ? raw.path.trim() : "";
     const content = typeof raw.content === "string" ? raw.content : "";
     if (!path) throw new ToolArgsError("缺少文件路径 path");
+    if (hasHiddenSegment(path)) throw new ToolArgsError(HIDDEN_PATH_ERROR);
     return { path, content };
   },
   summarize: (args) => {

@@ -4,6 +4,7 @@
  * 跨目录移动请用 move_file。依赖 `capabilities.renameFile`（vaultStore.renameFile 按扩展名分发）。
  */
 import { ToolArgsError } from "@/types";
+import { HIDDEN_PATH_ERROR, hasHiddenSegment } from "@/constants/tools";
 import { defineTool } from "./defineTool";
 
 export interface RenameFileArgs {
@@ -33,6 +34,9 @@ export const RENAME_FILE_TOOL = defineTool<RenameFileArgs>({
     }
     if (typeof raw.newName !== "string" || !raw.newName.trim()) {
       throw new ToolArgsError("缺少新文件名 newName");
+    }
+    if (hasHiddenSegment(raw.oldPath) || hasHiddenSegment(raw.newName)) {
+      throw new ToolArgsError(HIDDEN_PATH_ERROR);
     }
     return { oldPath: raw.oldPath, newName: raw.newName };
   },

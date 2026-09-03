@@ -32,6 +32,21 @@ export const LIST_DIR_MAX_ENTRIES = 200;
 /** 单轮内并行安全的工具调用最大在飞数（有界滚动池；1 = 全串行）。 */
 export const MAX_PARALLEL_TOOL_CALLS = 10;
 
+/** 相对路径是否含隐藏段：任一段以 `.` 开头（如 `.atelyx/x`、`a/.git/y`、根级 `.gitignore`）。
+ * AI 工具完全屏蔽前面带 `.` 的目录/文件，此判定供各工具 validate 兜底（Rust 发现层另有过滤）。
+ * 排除 `..`（父目录段）——它由路径穿越校验（safe_join「含越界段」）拒绝，报错语义更准确。 */
+export function hasHiddenSegment(path: string): boolean {
+  return path
+    .split(/[\\/]+/)
+    .some((seg) => seg.startsWith(".") && seg.length > 1 && seg !== "..");
+}
+
+/** 隐藏段被拒时的统一报错文案（各文件工具 validate 共用）。 */
+export const HIDDEN_PATH_ERROR = "路径位于隐藏目录/文件（. 开头段），AI 工具不可访问";
+
+/** web_fetch 结果标题预览长度上限（气泡摘要/空正文提示里截断标题用）。 */
+export const WEB_FETCH_TITLE_PREVIEW = 80;
+
 /** UI 展示与默认勾选的工具名单（执行层同名集合见 services/ai/tools）。 */
 export const AGENT_TOOLS_META: AgentToolMeta[] = [
   { id: "web_search", label: "联网搜索", needsSearch: true },
@@ -40,11 +55,15 @@ export const AGENT_TOOLS_META: AgentToolMeta[] = [
   { id: "glob", label: "查找文件", readOnly: true },
   { id: "grep", label: "搜索内容", readOnly: true },
   { id: "list_dir", label: "列出目录", readOnly: true },
+  { id: "read_history", label: "读取历史", readOnly: true },
   { id: "edit_file", label: "编辑文件" },
+  { id: "append_file", label: "追加内容" },
   { id: "write_file", label: "写入文件" },
   { id: "rename_file", label: "重命名文件" },
   { id: "move_file", label: "移动文件" },
   { id: "delete_file", label: "删除文件" },
+  { id: "delete_dir", label: "删除目录" },
+  { id: "todo_write", label: "任务清单" },
 ];
 
 /** 只读基础工具 id 集合：组装工具名册时无条件并入（不依赖 Agent 勾选）。 */
@@ -59,4 +78,4 @@ export const DEFAULT_AGENT_TOOLS = AGENT_TOOLS_META.filter((t) => !t.readOnly).m
  * 目录引用（/ 结尾）先 list_dir 列内容再按需读取。
  */
 export const FILE_REFERENCE_PROMPT =
-  "以 @ 前缀引用的文件是用户明确指定的笔记，其相对仓库根路径列在消息开头「引用文件」列表中。需要其内容时用 read_file 工具读取；在读取之前不要声称已查看过该文件。以 / 结尾的引用是目录：先用 list_dir 工具列出其中的内容（子目录会给出子项数），再按需 read_file；glob 用于按模式检索文件。";
+  "以 @ 前缀引用的文件是用户明确指定的笔记，其相对仓库根路径列在消息开头「引用文件」列表中。需要其内容时用 read_file 工具读取；在读取之前不要声称已查看过该文件。以 / 结尾的引用是目录：先用 list_dir 工具列出其中的内容（子目录会给出子项数），再按需 read_file；glob 用于按模式检索文件。以 . 开头的目录/文件（如 .git、.atelyx）不可被 AI 工具访问。";

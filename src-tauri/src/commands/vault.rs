@@ -37,7 +37,7 @@ use crate::vault::{
     read_folder_colors_file, write_folder_colors_file,
     read_agents_file, write_agents_file,
     read_chat_messages_file, write_chat_messages_file,
-    delete_chat_messages_file, read_dir_filtered, regenerate_file_id, cache_evict_canvas,
+    delete_chat_messages_file, read_dir_filtered, has_hidden_segment, regenerate_file_id, cache_evict_canvas,
     BacklinkRow, CanvasFile, CanvasFileRow, CanvasPatch, AgentConfig,
     ChatMessageRecord, ChatMetaFile, ChatSessionMeta, ChatSessionRow, DeleteFolderResult,
     FileTreeNode, VaultConfig, VaultState,
@@ -417,6 +417,7 @@ pub fn write_note(
 /// 读仓库内任意文本文件全文（安全边界 = 仓库根，safe_join 校验；非 UTF-8 返回替换字符容错）。
 /// edit_file / 笔记历史等「整读全文再改」路径的后端。超过 EDIT_READ_MAX_BYTES 拒绝，
 /// 防对超大文件整读回填上下文拖死前端。分页查看走 read_vault_file_window。
+/// 隐藏目录屏蔽由前端工具 validate 层强制（内部能力如历史/任务清单为刻意豁免），本命令层不做路径过滤。
 #[tauri::command]
 pub fn read_vault_file(file: String, state: State<'_, VaultState>) -> Result<String, String> {
     let root = state.root()?;
@@ -431,8 +432,9 @@ pub fn read_vault_file(file: String, state: State<'_, VaultState>) -> Result<Str
 }
 
 /// 写仓库内任意文本文件（指定相对路径；原子写 + 自动建父目录）。
-/// AI write_file/edit_file 等通用文件工具的后端。不做字节硬上限（内容受模型输出 token 天然约束；
-/// 路径安全由 safe_join 保障）。
+/// AI write_file/edit_file/append_file 与任务清单等通用路径的后端。不做字节硬上限
+/// （内容受模型输出 token 天然约束；路径安全由 safe_join 保障）。
+/// 隐藏目录屏蔽由前端工具 validate 层强制（内部能力如任务清单为刻意豁免），本命令层不做路径过滤。
 #[tauri::command]
 pub fn write_vault_file(
     file: String,
@@ -482,16 +484,30 @@ pub fn read_vault_file_window(
 ) -> Result<ReadWindowResult, String> {
     let root = state.root()?;
     let content = read_note_file(&root, &file)?;
+    let req_offset = offset.unwrap_or(1).max(1);
     let request = ReadWindowRequest {
-        offset: offset.unwrap_or(1).max(1),
+        offset: req_offset,
         limit: limit.unwrap_or(READ_WINDOW_DEFAULT_LINES).min(READ_WINDOW_DEFAULT_LINES),
     };
-    Ok(build_read_window(
+    let result = build_read_window(
         &content,
         request,
         READ_WINDOW_MAX_LINE_CHARS,
         READ_WINDOW_MAX_BYTES,
-    ))
+    );
+    // offset 越界显式报错（区别于「文件本来就短/读完」）：模型据此自纠，而不是误判内容为空
+    if offset_out_of_range(req_offset, result.total_lines) {
+        return Err(format!(
+            "offset {} 超出文件范围（文件共 {} 行）",
+            req_offset, result.total_lines
+        ));
+    }
+    Ok(result)
+}
+
+/// offset 是否越界：超出总行数即越界；空文件（0 行）读 offset=1 是合法空读（不误报）。
+fn offset_out_of_range(offset: usize, total_lines: usize) -> bool {
+    offset > total_lines && !(total_lines == 0 && offset == 1)
 }
 
 /// 纯函数：从整文构建分页窗口（命令与单测共用）。逐行处理：剥离尾 `\r`、统计精确 totalLines、
@@ -570,7 +586,7 @@ pub struct ListDirResult {
 }
 
 /// 单层列出目录条目（AI list_dir 工具后端；安全边界 = 仓库根，safe_join 校验）。
-/// 不隐藏 `.` 开头条目（AI 需可查看 `.atelyx` 等应用状态目录）；目录在前、按名称升序；
+/// 完全屏蔽 `.` 开头隐藏项（.atelyx/.git 等对 AI 不可见）；目录在前、按名称升序；
 /// 子目录带直接子项数、文件带字节大小；超上限截断并标 capped（total 恒为真实总数）。
 #[tauri::command]
 pub fn list_vault_dir(dir: String, state: State<'_, VaultState>) -> Result<ListDirResult, String> {
@@ -578,8 +594,11 @@ pub fn list_vault_dir(dir: String, state: State<'_, VaultState>) -> Result<ListD
     list_dir_entries(&list_dir_target(&root, &dir)?, LIST_DIR_MAX_ENTRIES)
 }
 
-/// 解析列目目标：空串 = 仓库根，其余走 safe_join 并要求确实为目录。
+/// 解析列目目标：空串 = 仓库根，其余走 safe_join 并要求确实为目录；指向隐藏目录（. 开头段）拒绝。
 fn list_dir_target(root: &Path, dir: &str) -> Result<PathBuf, String> {
+    if has_hidden_segment(&normalize_list_dir(dir)) {
+        return Err("路径位于隐藏目录（. 开头段），AI 工具不可访问".to_string());
+    }
     let path = if dir.is_empty() {
         root.to_path_buf()
     } else {
@@ -591,7 +610,27 @@ fn list_dir_target(root: &Path, dir: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// 单层列目核心（max 参数化供测试注入小上限）：目录在前、按名称升序。
+/// 列表目录入参归一化（仅用于隐藏段判定：`\`→`/`、去尾斜杠）。
+fn normalize_list_dir(dir: &str) -> String {
+    let mut s = dir.replace('\\', "/");
+    while s.ends_with('/') {
+        s.pop();
+    }
+    s
+}
+
+/// 子目录的直接可见子项数（跳过 `.` 开头隐藏项，与顶层 list_dir 展示口径一致）。
+fn count_visible_children(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// 单层列目核心（max 参数化供测试注入小上限）：目录在前、按名称升序；跳过 `.` 开头隐藏项。
 fn list_dir_entries(dir: &Path, max: usize) -> Result<ListDirResult, String> {
     let mut entries: Vec<ListDirEntry> = Vec::new();
     for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
@@ -600,10 +639,13 @@ fn list_dir_entries(dir: &Path, max: usize) -> Result<ListDirResult, String> {
         let Some(name) = entry.file_name().into_string().ok() else {
             continue;
         };
+        // 隐藏项（. 开头，含 .gitignore 类隐藏文件）对 AI 完全屏蔽
+        if name.starts_with('.') {
+            continue;
+        }
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
         let (size, children) = if is_dir {
-            let n = std::fs::read_dir(entry.path()).map(|rd| rd.count()).unwrap_or(0);
-            (None, Some(n))
+            (None, Some(count_visible_children(&entry.path())))
         } else {
             (entry.metadata().ok().map(|md| md.len()), None)
         };
@@ -1367,6 +1409,18 @@ mod read_window_tests {
         assert_eq!(r.total_lines, 3);
         assert!(!r.truncated);
     }
+
+    #[test]
+    fn offset_out_of_range_predicate() {
+        // 越界 = offset > totalLines；空文件（0 行）读 offset=1 是合法空读，不误报
+        assert!(offset_out_of_range(999, 20));
+        assert!(offset_out_of_range(4, 3));
+        assert!(offset_out_of_range(2, 1));
+        assert!(!offset_out_of_range(1, 1));
+        assert!(!offset_out_of_range(3, 3));
+        assert!(!offset_out_of_range(1, 0));
+        assert!(offset_out_of_range(2, 0));
+    }
 }
 
 #[cfg(test)]
@@ -1385,24 +1439,38 @@ mod list_dir_tests {
     }
 
     #[test]
-    fn dirs_first_with_counts_sizes_and_hidden_kept() {
+    fn dirs_first_with_counts_sizes_and_hidden_skipped() {
         let root = tmp_root("basic");
         std::fs::create_dir_all(root.join("子目录/内层")).unwrap();
+        std::fs::create_dir_all(root.join("子目录/.git")).unwrap(); // 子目录内隐藏项：不应计入 children
         std::fs::write(root.join("子目录/a.txt"), "x").unwrap();
         std::fs::write(root.join("b.md"), "hello").unwrap();
         std::fs::write(root.join(".隐藏.md"), "h").unwrap();
+        std::fs::create_dir_all(root.join(".atelyx")).unwrap();
         let r = list_dir_entries(&root, 200).unwrap();
-        assert_eq!(r.total, 3);
+        // 隐藏项（. 开头段）对 AI 完全屏蔽：.隐藏.md 与 .atelyx 均不出现
+        assert_eq!(r.total, 2);
         assert!(!r.capped);
         assert_eq!(r.entries[0].name, "子目录");
         assert_eq!(r.entries[0].kind, "dir");
+        // 子目录直接子项数 = 可见项（内层 + a.txt），隐藏的 .git 不计入
         assert_eq!(r.entries[0].children, Some(2));
         assert!(r.entries[0].size.is_none());
-        // 隐藏项不过滤（AI 需可查看应用状态目录）；同级按名称字节序（'.' < 'b'）
-        assert_eq!(r.entries[1].name, ".隐藏.md");
-        assert_eq!(r.entries[2].name, "b.md");
-        assert_eq!(r.entries[2].kind, "file");
-        assert_eq!(r.entries[2].size, Some(5));
+        assert_eq!(r.entries[1].name, "b.md");
+        assert_eq!(r.entries[1].kind, "file");
+        assert_eq!(r.entries[1].size, Some(5));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn list_dir_target_rejects_hidden_directory() {
+        let root = tmp_root("hidden");
+        std::fs::create_dir_all(root.join(".atelyx")).unwrap();
+        assert!(list_dir_target(&root, ".atelyx").is_err());
+        assert!(list_dir_target(&root, "a/.hidden").is_err());
+        // 普通目录可通过
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        assert!(list_dir_target(&root, "a").is_ok());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

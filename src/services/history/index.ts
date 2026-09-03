@@ -16,6 +16,7 @@
  * 并发安全：读改写整文件（同事写同一侧文件为罕见边界，后写者胜，容忍偶发丢版本）。
  */
 import { readVaultFile, writeVaultFile } from "@/services/vault/aiFiles";
+import type { AgentHistoryReadResult } from "@/types";
 
 /** 历史作用的文件类型（决定侧文件路径与扩展名识别）。 */
 export type HistoryKind = "note" | "canvas" | "table";
@@ -221,4 +222,42 @@ export async function recordAgentFileWrite(
     note: "AI 工具写入/修改",
     coalesceEditMs: 60_000,
   });
+}
+
+/** read_history 工具单次内联返回的版本摘要上限（只带摘要不带全文；防止撑爆上下文）。 */
+const HISTORY_LIST_MAX = 50;
+
+/**
+ * AI read_history 工具后端：读某仓库文件的历史（按扩展名识别 kind，内部直读
+ * `.atelyx/history/` 侧文件——隐藏屏蔽的刻意豁免）。未传 version 返回版本摘要列表
+ * （不带全文，防撑爆上下文）；传 version 返回该版全文快照（模型 write_file 写回即恢复）。
+ * 无历史/未知类型显式 ok=false。
+ */
+export async function readHistoryForAgent(
+  file: string,
+  opts?: { version?: number },
+): Promise<AgentHistoryReadResult> {
+  const kind = historyKindOfFile(file);
+  if (!kind) {
+    const base = file.split("/").pop() ?? file;
+    return { ok: false, summary: `该文件 ${base} 无历史记录（仅 .md/.atlx/.atb 有）` };
+  }
+  const versions = await loadHistory(kind, file);
+  if (versions.length === 0) return { ok: false, summary: "无历史记录" };
+  if (opts?.version !== undefined) {
+    const content = versionContentAt(versions, opts.version);
+    if (content === null) {
+      return { ok: false, summary: `版本 v${opts.version} 不存在（共 ${versions.length} 版）` };
+    }
+    return { ok: true, summary: `v${opts.version} 快照（${[...content].length} 字符）`, content };
+  }
+  const list = versions.slice(-HISTORY_LIST_MAX).map((v) => ({
+    seq: v.seq,
+    ts: v.ts,
+    authorName: v.author.name,
+    action: v.action,
+    ...(v.summary ? { summary: v.summary } : {}),
+    ...(v.note ? { note: v.note } : {}),
+  }));
+  return { ok: true, summary: `共 ${versions.length} 个版本`, versions: list };
 }

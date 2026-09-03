@@ -18,18 +18,22 @@ import type {
 import { WEB_SEARCH_TOOL } from "./webSearch";
 import { WEB_FETCH_TOOL } from "./webFetch";
 import { READ_FILE_TOOL } from "./readFile";
+import { READ_HISTORY_TOOL } from "./readHistory";
 import { GLOB_TOOL } from "./glob";
 import { GREP_TOOL } from "./grep";
 import { LIST_DIR_TOOL } from "./listDir";
 import { EDIT_FILE_TOOL } from "./editFile";
+import { APPEND_FILE_TOOL } from "./appendFile";
 import { WRITE_FILE_TOOL } from "./writeFile";
 import { RENAME_FILE_TOOL } from "./renameFile";
 import { MOVE_FILE_TOOL } from "./moveFile";
 import { DELETE_FILE_TOOL } from "./deleteFile";
+import { DELETE_DIR_TOOL } from "./deleteDir";
+import { TODO_WRITE_TOOL } from "./todoWrite";
 import { createToolRegistry } from "./registry";
 import { FILE_REFERENCE_PROMPT, READONLY_TOOL_IDS, AGENT_TOOLS_META } from "@/constants/tools";
 
-/** Agent 模式全部工具（注册顺序 = 名册/浮层展示顺序）。各工具参数类型各异，注册为通用定义。 */
+/** Agent 模式全部工具（注册顺序 = 名册/浮层展示顺序，与 AGENT_TOOLS_META 一致）。各工具参数类型各异，注册为通用定义。 */
 const AGENT_TOOLS = [
   WEB_SEARCH_TOOL,
   WEB_FETCH_TOOL,
@@ -37,11 +41,15 @@ const AGENT_TOOLS = [
   GLOB_TOOL,
   GREP_TOOL,
   LIST_DIR_TOOL,
+  READ_HISTORY_TOOL,
   EDIT_FILE_TOOL,
+  APPEND_FILE_TOOL,
   WRITE_FILE_TOOL,
   RENAME_FILE_TOOL,
   MOVE_FILE_TOOL,
   DELETE_FILE_TOOL,
+  DELETE_DIR_TOOL,
+  TODO_WRITE_TOOL,
 ] as unknown as ToolDefinition[];
 
 const registry = createToolRegistry(AGENT_TOOLS);
@@ -100,6 +108,9 @@ export function buildAgentTools(
  * 组装发送给模型的 system 消息文本：Agent 系统提示词 + 引用文件读取引导。
  * 工具含 read_file 时追加引导（只读基础工具恒可用后即恒注入）——让模型知道 @引用 的笔记
  * 应经 read_file 按路径读取正文，而不是假装看过内容。两 store（画布/面板）共用防行为分叉。
+ * 注意：易变上下文（当前任务清单/当前笔记）一律走**尾部 user 消息块**注入（见
+ * agentTodos.currentTodosBlock / chatPanelStore.currentNoteContextBlock），不进系统提示词——
+ * 系统前缀必须保持稳定以命中前缀缓存。
  */
 export function assembleAgentSystemPrompt(
   systemPrompt: string | undefined,

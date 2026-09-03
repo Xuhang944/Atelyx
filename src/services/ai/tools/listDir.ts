@@ -1,11 +1,11 @@
 /**
  * 工具：列出目录（list_dir）。单层列出目录条目：目录在前、按名称升序，子目录带直接子项数，
- * 文件带字节大小；含 `.` 开头隐藏项（应用状态目录 .atelyx 等可见）。想看子目录内容需再对其
+ * 文件带字节大小；不含 `.` 开头隐藏项（.atelyx 等对 AI 完全屏蔽）。想看子目录内容需再对其
  * 调用本工具；按模式检索文件请用 glob。依赖 `capabilities.listDir`（Rust `list_vault_dir`）。
  * 只读，不建产物节点。
  */
 import { ToolArgsError, errText } from "@/types";
-import { LIST_DIR_MAX_ENTRIES } from "@/constants/tools";
+import { HIDDEN_PATH_ERROR, LIST_DIR_MAX_ENTRIES, hasHiddenSegment } from "@/constants/tools";
 import { defineTool } from "./defineTool";
 
 export interface ListDirArgs {
@@ -18,7 +18,7 @@ export const LIST_DIR_TOOL = defineTool<ListDirArgs>({
   parallelSafe: true,
   description:
     "单层列出仓库中指定目录的内容（相对仓库根路径，缺省 = 仓库根）。目录条目在前、按名称升序，" +
-    `子目录标注直接子项数、文件标注字节大小；含隐藏项（. 开头，如 .atelyx）。最多返回前 ${LIST_DIR_MAX_ENTRIES} 条，` +
+    `子目录标注直接子项数、文件标注字节大小；不含 . 开头隐藏项。最多返回前 ${LIST_DIR_MAX_ENTRIES} 条，` +
     "超限说明总数并要求改列子目录。查看子目录内容需再对其调用本工具；按模式检索文件请用 glob。",
   parameters: {
     type: "object",
@@ -34,6 +34,9 @@ export const LIST_DIR_TOOL = defineTool<ListDirArgs>({
     }
     // 空串 = 显式列仓库根（与 Rust 侧「空 = 仓库根」约定对齐），归一为缺省
     const dir = raw.dir.trim();
+    if (dir && hasHiddenSegment(dir)) {
+      throw new ToolArgsError(HIDDEN_PATH_ERROR);
+    }
     return dir ? { dir } : {};
   },
   summarize: (args) => `列出 ${args.dir?.trim() || "仓库根"}`,

@@ -46,7 +46,21 @@ import { toLlmMessages } from "@/services/ai/client";
 import { abortAutoTitle } from "@/services/ai/autoTitle";
 import { runSearch, resultsToText } from "@/services/search";
 import { runAgentTools, assembleAgentSystemPrompt } from "@/services/ai/tools";
-import { readVaultFileWindow, writeVaultFile, editVaultFile, globVault, grepVault, listVaultDir } from "@/services/vault/aiFiles";
+import {
+  appendVaultFile,
+  editVaultFile,
+  globVault,
+  grepVault,
+  listVaultDir,
+  readVaultFileWindow,
+  writeVaultFile,
+} from "@/services/vault/aiFiles";
+import { readHistoryForAgent } from "@/services/history";
+import {
+  currentTodosBlock,
+  readAgentTodos,
+  writeAgentTodos,
+} from "@/services/vault/agentTodos";
 import { fetchWeb } from "@/services/web";
 import {
   findFreeSpot,
@@ -1207,10 +1221,19 @@ async function runStream(conversationId: string): Promise<void> {
     // 引用已在 send 时固化进 user 消息 content（@引用 路径块 / 非文件节点全文注入），此处不再动态拼接
     const apiMessages: LlmMessage[] = toLlmMessages(history);
     // 系统提示词注入：Agent 引用已注册提示词笔记实时读正文（外部编辑即时生效，读失败静默降级）；
-    // 工具含 read_file 时追加「@引用 文件用 read_file 读取」引导。
+    // 工具含 read_file 时追加「@引用 文件用 read_file 读取」引导。易变上下文（任务清单）走尾部块，
+    // 不进系统提示词——系统前缀必须稳定以命中前缀缓存。
     const systemPrompt = assembleAgentSystemPrompt(agentReq?.systemPrompt, tools);
     if (systemPrompt) {
       apiMessages.unshift({ role: "system", text: systemPrompt });
+    }
+    // 当前任务清单（todo_write 开启时）以尾部 user 消息块带出：清单不变则逐字稳定 → 前缀缓存命中
+    const todosBlock = tools.some((t) => t.name === "todo_write")
+      ? currentTodosBlock(await readAgentTodos(conversationId))
+      : "";
+    if (todosBlock) {
+      const last = apiMessages[apiMessages.length - 1];
+      last.text += `\n\n${todosBlock}`;
     }
     await runStreamExchange({
       provider,
@@ -1349,6 +1372,24 @@ async function runStream(conversationId: string): Promise<void> {
               renameFile: (oldPath, newName) => useVaultStore.getState().renameFile(oldPath, newName),
               moveFile: (oldPath, targetDir) => useVaultStore.getState().moveFile(oldPath, targetDir),
               deleteFile: (path) => useVaultStore.getState().deleteFile(path),
+              deleteDir: (dir, force) =>
+                useVaultStore.getState().deleteFolder(dir, force).then((r) => ({
+                  ok: r.deleted,
+                  summary: r.deleted
+                    ? `已删除目录「${dir}」`
+                    : r.needsConfirm
+                      ? `目录非空（${r.itemCount} 项）`
+                      : "删除目录失败",
+                  needsConfirm: r.needsConfirm,
+                  itemCount: r.itemCount,
+                })),
+              readHistory: (path, opts) => readHistoryForAgent(path, opts),
+              appendFile: (path, content) =>
+                appendVaultFile(path, content).then((res) => {
+                  if (res.ok) void recordAgentFileWrite(path);
+                  return res;
+                }),
+              writeTodos: (todos) => writeAgentTodos(conversationId, todos),
               writeFile: (path, content) => writeVaultFile(path, content).then(() => {
                 // Agent 协作历史：AI 写文件以 Agent 身份记入对应 kind 的历史（fire-and-forget）
                 void recordAgentFileWrite(path, content);
@@ -2514,6 +2555,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
     // 文件化后 messages 嵌对话节点 data，无 FK 约束，随画布自动保存增量落盘
     schedulePersist();
+
+    // 分支继承父对话的任务清单（分支 = 同一线程的延续，模型在分支上可见父侧已规划进度；
+    // 写失败静默降级，不阻塞建分支）
+    void readAgentTodos(conversationId)
+      .then((todos) => writeAgentTodos(childId, todos))
+      .catch(() => {});
   },
   abort: (conversationId) => {
     abortControllers.get(conversationId)?.abort();
@@ -2619,6 +2666,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     const deletedConvIds = nodes
       .filter((n) => selectedNodeIds.has(n.id) && n.type === "conversation")
       .map((n) => n.id);
+    // 注意：不清理对话节点的任务清单侧车——本删除可 undo（pushUndo 恢复节点/消息），
+    // 若删侧车则 Ctrl+Z 后对话回来但清单永久丢失；孤儿侧车隐藏且无 watcher 回波，可接受。
 
     // 删除流式中的对话节点：先 abort（否则流无法再被中止，onDone 还会往已删节点写增量）
     if (deletedConvIds.length) {

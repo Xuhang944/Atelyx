@@ -4,6 +4,7 @@
  * 依赖 `capabilities.moveFile`（vaultStore.moveFile 按扩展名分发到对应动作）。
  */
 import { ToolArgsError } from "@/types";
+import { HIDDEN_PATH_ERROR, hasHiddenSegment } from "@/constants/tools";
 import { defineTool } from "./defineTool";
 
 export interface MoveFileArgs {
@@ -36,6 +37,9 @@ export const MOVE_FILE_TOOL = defineTool<MoveFileArgs>({
     }
     if (typeof raw.newDir !== "string") {
       throw new ToolArgsError("缺少目标目录 newDir（仓库根传空串）");
+    }
+    if (hasHiddenSegment(raw.oldPath) || hasHiddenSegment(raw.newDir)) {
+      throw new ToolArgsError(HIDDEN_PATH_ERROR);
     }
     return { oldPath: raw.oldPath, newDir: raw.newDir };
   },

@@ -10,6 +10,8 @@ export interface FetchedWebPage {
   url: string;
   title?: string;
   content: string;
+  /** 正文是否命中大小上限被截断（工具据此提示内容不完整）。 */
+  truncated?: boolean;
 }
 
 /**

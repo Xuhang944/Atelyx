@@ -1,13 +1,15 @@
 /**
- * AI 文件工具的仓库能力（read_file / edit_file / write_file 的落地）。
+ * AI 文件工具的仓库能力（read_file / append_file / edit_file / write_file 的落地）。
  *
  * - `readVaultFile`/`writeVaultFile`：读/写仓库内**任意文本文件**（安全边界 = 仓库根，
  *   Rust `safe_join` 校验 + 原子写 + 自动建父目录）。
+ * - `appendVaultFile`：追加内容到已存在文本文件（读全文 → 拼接 → 原子写；不存在/超限拒绝）。
  * - `editVaultFile`：行级修改（oldText 唯一精确匹配、块间不重叠，全部校验通过后统一替换），
  *   按路径定位（通用，不只 .md），复用笔记行级替换的校验语义。
  */
 import { invoke } from "@tauri-apps/api/core";
 import { READ_WINDOW_DEFAULT_LINES } from "@/constants/tools";
+import { errText } from "@/types";
 import type { GlobVaultResult, GrepVaultResult, ListDirResult, ReadWindowResult } from "@/types";
 
 /** 读仓库内任意文本文件（相对仓库根路径；超出仓库根/不存在抛错，由调用方降级）。 */
@@ -64,7 +66,7 @@ export async function grepVault(
   });
 }
 
-/** 单层列出目录条目（AI list_dir 工具后端）：目录在前、含隐藏项，子目录带子项数。dir 缺省 = 仓库根。 */
+/** 单层列出目录条目（AI list_dir 工具后端）：目录在前、不含 `.` 开头隐藏项，子目录带子项数。dir 缺省 = 仓库根。 */
 export async function listVaultDir(dir?: string): Promise<ListDirResult> {
   return invoke<ListDirResult>("list_vault_dir", { dir: dir ?? "" });
 }
@@ -110,4 +112,34 @@ export async function editVaultFile(
     return { ok: false, summary: `写入失败：${e instanceof Error ? e.message : String(e)}` };
   }
   return { ok: true, summary: `修改文件「${file}」${edits.length} 处` };
+}
+
+/**
+ * 追加内容到仓库内任意文本文件（原子写；append_file 工具后端）。
+ * 只追加到**已存在**文件：读全文 → 拼接 → 原子写；文件不存在/不可读（含超大超
+ * `read_vault_file` 上限）→ 拒绝（新建请用 write_file），防误覆盖。
+ */
+export async function appendVaultFile(
+  file: string,
+  content: string,
+): Promise<{ ok: boolean; summary: string }> {
+  let current: string;
+  try {
+    current = await readVaultFile(file);
+  } catch (e) {
+    return { ok: false, summary: `文件不存在或不可读（新建请用 write_file）：${errText(e)}` };
+  }
+  // 空文件直接写内容（不产生前导换行）；非空按「无尾换行补一个」拼接
+  const next =
+    current === ""
+      ? content
+      : current.endsWith("\n")
+        ? `${current}${content}`
+        : `${current}\n${content}`;
+  try {
+    await writeVaultFile(file, next);
+  } catch (e) {
+    return { ok: false, summary: `写入失败：${errText(e)}` };
+  }
+  return { ok: true, summary: `已追加内容到「${file}」` };
 }

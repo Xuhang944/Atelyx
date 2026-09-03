@@ -5,7 +5,12 @@
  * 依赖 `capabilities.grep`（Rust `grep_vault`）。只读，不建产物节点。
  */
 import { ToolArgsError, errText, type GrepMatchRow } from "@/types";
-import { GREP_MAX_LINE_BYTES, GREP_MAX_MATCHES } from "@/constants/tools";
+import {
+  GREP_MAX_LINE_BYTES,
+  GREP_MAX_MATCHES,
+  HIDDEN_PATH_ERROR,
+  hasHiddenSegment,
+} from "@/constants/tools";
 import { defineTool } from "./defineTool";
 
 export interface GrepArgs {
@@ -79,6 +84,9 @@ export const GREP_TOOL = defineTool<GrepArgs>({
     if (raw.path !== undefined) {
       if (typeof raw.path !== "string" || !raw.path.trim()) {
         throw new ToolArgsError("path 须为非空字符串");
+      }
+      if (hasHiddenSegment(raw.path)) {
+        throw new ToolArgsError(HIDDEN_PATH_ERROR);
       }
       out.path = raw.path;
     }

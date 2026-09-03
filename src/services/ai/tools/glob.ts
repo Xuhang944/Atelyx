@@ -5,7 +5,7 @@
  * 依赖 `capabilities.glob`（Rust `glob_vault`）。只读，不建产物节点。
  */
 import { ToolArgsError, errText } from "@/types";
-import { GLOB_MAX_RESULTS } from "@/constants/tools";
+import { GLOB_MAX_RESULTS, HIDDEN_PATH_ERROR, hasHiddenSegment } from "@/constants/tools";
 import { defineTool } from "./defineTool";
 
 export interface GlobArgs {
@@ -41,6 +41,9 @@ export const GLOB_TOOL = defineTool<GlobArgs>({
     if (raw.path !== undefined) {
       if (typeof raw.path !== "string" || !raw.path.trim()) {
         throw new ToolArgsError("path 须为非空字符串");
+      }
+      if (hasHiddenSegment(raw.path)) {
+        throw new ToolArgsError(HIDDEN_PATH_ERROR);
       }
       out.path = raw.path;
     }

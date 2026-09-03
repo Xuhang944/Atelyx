@@ -28,6 +28,31 @@ export interface ToolResult {
   data?: unknown;
 }
 
+/** todo 清单条目（todo_write 工具的整单替换单元；status 枚举与 UI 一致）。 */
+export interface TodoItem {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
+/** read_history 工具结果：未指定 version 时返回版本摘要列表（不带全文防撑爆上下文），
+ * 指定 version 时返回该版全文快照（供模型 write_file 回写恢复）。 */
+export interface AgentHistoryReadResult {
+  ok: boolean;
+  /** 气泡摘要（成功 = 版本数/目标版本；失败 = 具体原因）。 */
+  summary: string;
+  /** 版本摘要列表（作者名/行为/改动摘要/备注，不含快照正文）。 */
+  versions?: Array<{
+    seq: number;
+    ts: number;
+    authorName: string;
+    action: string;
+    summary?: string;
+    note?: string;
+  }>;
+  /** 指定 version 时的全文快照。 */
+  content?: string;
+}
+
 /** read_file 分页窗口的一行（number = 文件内 1-based 绝对行号）。 */
 export interface ReadWindowLine {
   number: number;
@@ -142,8 +167,19 @@ export interface ToolCapabilities {
   ) => Promise<{ ok: boolean; summary: string; actualPath: string }>;
   /** 按路径删除仓库内单个文件（.atb 连带删除其私有附件目录）。失败 ok=false 不抛断整轮。 */
   deleteFile?: (path: string) => Promise<{ ok: boolean; summary: string }>;
-  /** 抓取网页正文。 */
-  fetchUrl?: (url: string) => Promise<{ url: string; title?: string; content: string }>;
+  /** 删除仓库内目录（force=true 递归删除非空目录）；needsConfirm 供工具转「需显式确认」提示。 */
+  deleteDir?: (
+    dir: string,
+    force?: boolean,
+  ) => Promise<{ ok: boolean; summary: string; needsConfirm: boolean; itemCount: number }>;
+  /** 读某仓库文件的历史（read_history 工具；内部直读 .atelyx/history/，隐藏屏蔽的刻意豁免）。 */
+  readHistory?: (path: string, opts?: { version?: number }) => Promise<AgentHistoryReadResult>;
+  /** 追加内容到已存在的仓库文本文件（append_file 工具；不存在/超限拒绝，不误覆盖）。 */
+  appendFile?: (path: string, content: string) => Promise<{ ok: boolean; summary: string }>;
+  /** 整单替换写入当前会话/画布对话的任务清单（todo_write 工具；内部存 .atelyx/todos/，隐藏屏蔽的刻意豁免）。 */
+  writeTodos?: (todos: TodoItem[]) => Promise<void>;
+  /** 抓取网页正文（truncated = 正文是否命中大小上限被截断）。 */
+  fetchUrl?: (url: string) => Promise<{ url: string; title?: string; content: string; truncated?: boolean }>;
 }
 
 /** 工具执行上下文（signal 中止 + 注入的能力）。 */
