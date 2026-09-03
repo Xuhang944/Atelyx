@@ -277,6 +277,9 @@ export function NoteEditor({ file }: { file: string }) {
     // 加载起始的序号快照：加载期间外部修改（序号移动）则丢弃本次结果，避免旧内容覆盖新磁盘
     const seqAtLoad = useVaultStore.getState().externalNoteEdits[file] ?? 0;
     setContent("");
+    // 镜像清空 contentRef：与 content 恒同步（撤销栈以 contentRef 记「输入前全文」，切笔记不残留
+    // 上一笔记内容被误记为 before；加载完成后再同步为真实内容，见下方 !dirty 分支）
+    contentRef.current = "";
     // 切笔记：取消待弹的右键菜单（触发 pendingMenu effect cleanup 取消定时器），防旧坐标弹到新笔记
     setPendingMenu(null);
     // 编辑模式：清空编辑器（防加载窗口内旧笔记内容被误写到新文件，见 MarkdownEditor 同步机制）
@@ -292,6 +295,9 @@ export function NoteEditor({ file }: { file: string }) {
         lastSavedRef.current = c;
         if (!dirtyRef.current) {
           setContent(c);
+          // 核心同步：contentRef 与加载内容一致——否则首次编辑 recordEdit 以残留 "" 记「输入前全文」，
+          // Ctrl+Z 一步把整篇笔记清空（协作/非协作同一加载路径，行为一致）
+          contentRef.current = c;
           // 编辑模式：加载完成同步编辑器（仅正文，frontmatter 不动）
           setEditorSyncSeq((s) => s + 1);
         }
