@@ -10,6 +10,7 @@ import {
   ensureDefaultVault,
   openVault,
   convertWhiteboardToAtlx,
+  remapSideloads,
 } from "@/services/vault";
 import {
   readGlobalConfig,
@@ -19,11 +20,13 @@ import {
 } from "@/services/global";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useVaultStore } from "@/stores/vaultStore";
+import { useNoteUndoStore } from "@/stores/noteUndoStore";
 import { useChatPanelStore } from "@/stores/chatPanelStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import { useCalendarStore } from "@/stores/calendarStore";
 import { useCollabStore } from "@/stores/collabStore";
+import { migrateHistoryFile } from "@/services/history";
 import { markSelfSave } from "@/utils/selfSave";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { baseName, dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename, siblingPath, stripExt } from "@/utils/filename";
@@ -327,16 +330,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       await useTableStore.getState().flush();
       await useChatPanelStore.getState().flush(get().vaultId);
       await useCalendarStore.getState().flush();
+      // 笔记编辑器挂起输入也须在 openVault 前落盘：切仓库后 NoteEditor 卸载 cleanup 因
+      // noteList 已清空跳过保存（防跨仓库写），若不在此 flush，最后 500ms 输入会丢
+      await useVaultStore.getState().flushPendingNotes();
       const info = await openVault(root);
       const now = Math.floor(Date.now() / 1000);
       const recents = bumpRecentVault(get().recentVaults, info, now);
-      // 登记最近仓库失败不阻塞切换：global.json 写入异常（权限/磁盘）只影响最近列表，
-      // 若放行抛错会被下方 catch 吞掉，导致后续重载（配置/画布列表/文件树/AI 会话）全部跳过
-      try {
-        await updateGlobalConfig({ recentVaults: recents });
-      } catch (e) {
-        console.error("登记最近仓库失败", e);
-      }
+      // set + 清空须在下一个 await 之前同步完成，双保险防跨仓库写入：
+      // 1) NoteEditor debounce timer 是 macrotask，openVault→set 间无 await 则无隙可乘；
+      // 2) 清空 noteList 先于 React 提交卸载（见下方注释），cleanup 的 stillExists 守卫必跳过。
       set({
         vaultRoot: info.root,
         vaultName: info.name,
@@ -351,9 +353,21 @@ export const useAppStore = create<AppState>((set, get) => ({
         currentTableFile: null,
         currentTableTitle: "",
       });
-      // 立即清空旧仓库文件树：文件面板不再残留上一仓库的文件（新树加载完成前显示「正在加载仓库…」读条）
-      // 同步清空笔记内容缓存：相对路径跨仓库无意义，防新仓库同路径错读旧仓库缓存
-      useVaultStore.setState({ tree: [], noteList: [], tableList: [], noteContents: {} });
+      // 立即清空旧仓库文件树 + 笔记内容缓存/挂起输入 + 撤销栈（**必须在任何 await 之前**）：
+      // NoteEditor 随 currentNoteFile 置空而卸载，其 cleanup 按「noteList 是否仍含该文件」决定是否
+      // flush——若此处落后于下一个 await（React 提交卸载），noteList 还是旧仓库列表，cleanup 会把
+      // 旧仓库内容经已切换的 root 写进新仓库同路径文件（跨仓库污染）。挂起输入已在 openVault 前
+      // flush 落盘旧仓库，此处清残留（含 flush 后、切仓库前新输入），不丢数据。
+      useVaultStore.setState({ tree: [], noteList: [], tableList: [], noteContents: {}, pendingNoteContent: {} });
+      // 切仓库清空笔记撤销栈（防同路径串文件；会话内其余操作不清，见 noteUndoStore）
+      useNoteUndoStore.getState().clearAll();
+      // 登记最近仓库失败不阻塞切换：global.json 写入异常（权限/磁盘）只影响最近列表，
+      // 若放行抛错会被下方 catch 吞掉，导致后续重载（配置/画布列表/文件树/AI 会话）全部跳过
+      try {
+        await updateGlobalConfig({ recentVaults: recents });
+      } catch (e) {
+        console.error("登记最近仓库失败", e);
+      }
       // 加载仓库级配置覆盖（.atelyx/config.json），需在发消息前完成
       await useSettingsStore.getState().loadVaultConfig();
       // 切换仓库：清空旧画布运行时状态（防残留 saveTimer 跨仓库写盘/旧消息残留）
@@ -393,9 +407,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   backToVaultSelect: () => {
-    // 回启动页：AI 会话/日历日程落盘防 debounce 丢改动（应用级 UI 状态跨仓库/跨会话保留，无需清理）
+    // 回启动页：AI 会话/日历日程/笔记挂起输入落盘防 debounce 丢改动（root 未切换，写旧仓库安全；
+    // 冲突未决/已删文件条目由 flushPendingNotes 内部保留）
     void useChatPanelStore.getState().flush(get().vaultId);
     void useCalendarStore.getState().flush();
+    void useVaultStore.getState().flushPendingNotes();
     useSettingsStore.getState().clearVaultConfig();
     // 清设置弹窗（防止下次进入工作区残留重开）
     set({ settingsModal: null });
@@ -419,6 +435,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     await useTableStore.getState().flush();
     await useChatPanelStore.getState().flush(get().vaultId);
     await useCalendarStore.getState().flush();
+    // 笔记编辑器挂起的 debounce 输入（组件内 timer，不走 store）也在此统一落盘 +
+    // 补历史存档点，防关窗/切仓库/AI 重命名移动删除前丢最后 500ms 输入
+    await useVaultStore.getState().flushPendingNotes();
     await useUiStateStore.getState().flush();
     await useSettingsStore.getState().flush();
     // 协作连接收尾不在此处（本函数启动自动更新检查时也会调用）：dispose 会断开会话内协作连接
@@ -550,6 +569,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       // 当前画布磁盘 .atlx 已被 Rust 改（title + 同目录改文件名），同步乐观锁基准防下次保存误冲突
       const newFile = siblingPath(row.file, `${sanitizeFilename(actual)}.atlx`);
       markSelfSave([row.file, newFile]);
+      // 侧文件先确保在新编码名下，再随重命名迁移（同笔记/表格路径）
+      await migrateHistoryFile("canvas", row.file).catch(() => {});
+      // 历史侧文件随迁（画布 kind 目录）；失败静默降级，不阻塞重命名主流程
+      await remapSideloads(row.file, newFile).catch(() => {});
       await useCanvasStore.getState().syncBaseUpdatedAt();
       // 同步当前画布 file（防下次保存写旧路径产生双文件）
       useUiStateStore.getState().renameLastFile("canvas", row.file, newFile);
@@ -572,6 +595,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       await moveCanvasVault(row.file, newFile);
       markSelfSave([row.file, newFile]);
+      // 侧文件先确保在新编码名下，再随移动迁移（同 renameCanvas）
+      await migrateHistoryFile("canvas", row.file).catch(() => {});
+      // 历史侧文件随迁（画布 kind 目录）；失败静默降级，不阻塞移动主流程
+      await remapSideloads(row.file, newFile).catch(() => {});
       // 当前打开的就是被移动的画布：同步 file，防下次保存写旧路径产生双文件
       useUiStateStore.getState().renameLastFile("canvas", row.file, newFile);
       if (get().currentCanvasFile === row.file) {

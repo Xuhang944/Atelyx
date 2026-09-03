@@ -38,6 +38,8 @@ use crate::vault::{
     read_agents_file, write_agents_file,
     read_chat_messages_file, write_chat_messages_file,
     delete_chat_messages_file, read_dir_filtered, has_hidden_segment, regenerate_file_id, cache_evict_canvas,
+    remap_sideloads as remap_sideloads_impl,
+    remap_sideloads_by_dir as remap_sideloads_by_dir_impl,
     BacklinkRow, CanvasFile, CanvasFileRow, CanvasPatch, AgentConfig,
     ChatMessageRecord, ChatMetaFile, ChatSessionMeta, ChatSessionRow, DeleteFolderResult,
     FileTreeNode, VaultConfig, VaultState,
@@ -840,6 +842,31 @@ pub fn rename_folder(
         let _ = rename_folder_impl(&root, &new_dir, &old_dir);
         return Err(format!("更新笔记内部链接失败，重命名已回滚（请重试）：{e}"));
     }
+    Ok(())
+}
+
+/// 迁移单个文件的全部候选历史侧文件到新编码路径（笔记/表格/画布重命名/移动后调用）。
+/// 源不存在静默跳过、目标已存在跳过，单文件失败不阻断（历史尽力而为，不阻塞重命名主流程）。
+#[tauri::command]
+pub fn remap_sideloads(
+    old_file: String,
+    new_file: String,
+    state: State<'_, VaultState>,
+) -> Result<(), String> {
+    let root = state.root()?;
+    remap_sideloads_impl(&root, &old_file, &new_file);
+    Ok(())
+}
+
+/// 迁移某文件夹下全部历史侧文件到新目录前缀（文件夹重命名后调用，语义同 remap_sideloads）。
+#[tauri::command]
+pub fn remap_sideloads_by_dir(
+    old_dir: String,
+    new_dir: String,
+    state: State<'_, VaultState>,
+) -> Result<(), String> {
+    let root = state.root()?;
+    remap_sideloads_by_dir_impl(&root, &old_dir, &new_dir);
     Ok(())
 }
 

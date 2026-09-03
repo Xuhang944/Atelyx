@@ -705,6 +705,110 @@ pub fn delete_vault_file(root: &Path, file: &str) -> Result<(), String> {
     std::fs::remove_file(&path).map_err(|e| e.to_string())
 }
 
+// ===== 历史侧文件迁移（随重命名/移动/文件夹改名）=====
+
+/// 侧文件名编码契约（最小百分号转义）：仅转义文件系统非法字符（`% / \ : * ? " < > |`）、
+/// 控制符与 DEL（UTF-8 字节 `%XX`，大写十六进制），中文等合法字符保留原样——与前端
+/// `services/history/index.ts` 的 `encodeSideName` 完全一致，重命名迁移两端各自计算，
+/// 字符集改动须两侧同步（`percent_decode` 对 `%XX` 解码，`%` 本身被转义故无歧义）。
+/// 不能用 encodeURIComponent 式全量转义：CJK 字符会膨胀成 9 字符，中文长路径的侧文件名
+/// 超出 NAS/SMB 服务端 ~260 字符路径上限（客户端 `\\?\UNC\` 扩展前缀无效），历史读写
+/// 对这些笔记永久失败。最小转义下侧文件路径长度 ≈ 笔记自身路径 + 常数 overhead。
+/// 注：`commands/search.rs` 另有一份私有编码（搜索请求用，保留字符集不同）——勿合并。
+pub(crate) fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        let u = c as u32;
+        if u < 0x20 || u == 0x7f || matches!(c, '%' | '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+            for b in c.to_string().bytes() {
+                out.push_str(&format!("%{:02X}", b));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// 历史侧文件根与 kind 子目录（note 保持旧路径 `.atelyx/history/<enc>.json` 向后兼容；
+/// canvas/table 按 kind 分目录摊平）。与前端 `services/history/index.ts` 的目录结构一致。
+const HISTORY_DIR: &str = ".atelyx/history";
+const HISTORY_KIND_SUBDIRS: [&str; 3] = ["", "canvas/", "table/"];
+
+/// 迁移单个文件的全部候选历史侧文件（note/canvas/table 三处只命中存在的一处）：
+/// `.atelyx/history[/<kind>/]<enc(old)>.json` → 同结构新编码路径。
+/// 只认最小编码名——旧 encodeURIComponent 存量须先由前端 `migrateHistoryFile` 迁至新名，
+/// remap 才找得到源（by_dir 解码文件名，可直读旧名）。
+/// 源不存在（无历史/已迁移过）静默跳过；目标已存在（罕见：新路径已累积历史）跳过不覆盖。
+/// 单个失败不阻断其它（历史尽力而为，不阻塞重命名主流程）。
+pub fn remap_sideloads(root: &Path, old_file: &str, new_file: &str) {
+    let old_enc = percent_encode(old_file);
+    let new_enc = percent_encode(new_file);
+    for sub in HISTORY_KIND_SUBDIRS {
+        let old_rel = format!("{HISTORY_DIR}/{sub}{old_enc}.json");
+        let new_rel = format!("{HISTORY_DIR}/{sub}{new_enc}.json");
+        if old_rel == new_rel {
+            continue;
+        }
+        // 仅当源存在且为文件（safe_join 已防穿越）才迁移；失败静默降级
+        let Ok(old_path) = safe_join(root, &old_rel, false) else {
+            continue;
+        };
+        if !old_path.is_file() {
+            continue;
+        }
+        let Ok(new_path) = safe_join(root, &new_rel, true) else {
+            continue;
+        };
+        if new_path.exists() {
+            continue;
+        }
+        let _ = std::fs::rename(&old_path, &new_path);
+    }
+}
+
+/// 文件夹重命名后迁移其下全部历史侧文件：遍历 `.atelyx/history[/<kind>/]`，
+/// 对每个 `.json` 侧文件解码文件名，命中 `old_dir/` 前缀者改写到 `new_dir/` 前缀同结构新名。
+/// 目标已存在跳过（防覆盖）；单文件失败静默（历史尽力而为，不阻塞文件夹重命名主流程）。
+/// 目录参数先剥尾随 `/`（与 rename_folder 主流程的宽容语义一致，防 `a//` 前缀永不命中）。
+pub fn remap_sideloads_by_dir(root: &Path, old_dir: &str, new_dir: &str) {
+    let old_dir = old_dir.trim_end_matches('/');
+    let new_dir = new_dir.trim_end_matches('/');
+    if old_dir.is_empty() || new_dir.is_empty() {
+        return; // 空目录无意义（根目录不可重命名），静默返回
+    }
+    let prefix = format!("{old_dir}/");
+    for sub in HISTORY_KIND_SUBDIRS {
+        let dir_rel = format!("{HISTORY_DIR}/{sub}");
+        let Ok(dir) = safe_join(root, &dir_rel, false) else {
+            continue;
+        };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = match entry.file_name().into_string() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            if !name.ends_with(".json") {
+                continue;
+            }
+            let stem = &name[..name.len() - 5];
+            let decoded = percent_decode(stem);
+            let Some(rest) = decoded.strip_prefix(&prefix) else {
+                continue;
+            };
+            let new_name = format!("{}.json", percent_encode(&format!("{new_dir}/{rest}")));
+            let dst = dir.join(&new_name);
+            if dst.exists() {
+                continue;
+            }
+            let _ = std::fs::rename(entry.path(), dst);
+        }
+    }
+}
+
 /// 读仓库内文件字节（按相对路径，safe_join 防穿越）。用于 read_attachment_data_url。
 pub fn read_file_bytes(root: &Path, file: &str) -> Result<Vec<u8>, String> {
     let path = safe_join(root, file, false)?;
@@ -2181,5 +2285,189 @@ mod hidden_segment_tests {
         assert!(!has_hidden_segment("./a.md"));
         assert!(!has_hidden_segment(".."));
         assert!(!has_hidden_segment("../x"));
+    }
+}
+
+#[cfg(test)]
+mod sideload_remap_tests {
+    use super::*;
+
+    /// 临时目录（纳秒级命名防碰撞；残留于系统临时目录）。
+    fn tmp_root(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("atelyx-remap-{tag}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 写一个历史侧文件（kind_sub = "" / "canvas/" / "table/"）。
+    fn write_side(root: &Path, kind_sub: &str, file: &str, content: &str) {
+        let rel = format!(
+            "{HISTORY_DIR}/{kind_sub}{}.json",
+            percent_encode(file)
+        );
+        let path = root.join(&rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    /// 断言某历史侧文件存在且内容匹配。
+    fn assert_side(root: &Path, kind_sub: &str, file: &str, content: &str) {
+        let rel = format!(
+            "{HISTORY_DIR}/{kind_sub}{}.json",
+            percent_encode(file)
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join(&rel)).unwrap(),
+            content,
+            "侧文件 {} 不存在或内容不符",
+            rel
+        );
+    }
+
+    /// 断言某历史侧文件不存在。
+    fn assert_side_gone(root: &Path, kind_sub: &str, file: &str) {
+        let rel = format!(
+            "{HISTORY_DIR}/{kind_sub}{}.json",
+            percent_encode(file)
+        );
+        assert!(
+            !root.join(&rel).exists(),
+            "侧文件 {} 应已被迁移走",
+            rel
+        );
+    }
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        // 最小编码契约：仅转义非法字符与 %（UTF-8 %XX），CJK 等合法字符保留原样——
+        // 全量转义会让 CJK 膨胀 9 倍，长中文路径的侧文件名超 NAS 服务端路径上限
+        let f = "笔记/我的 笔记.md";
+        assert_eq!(percent_encode(f), "笔记%2F我的 笔记.md");
+        assert_eq!(percent_decode(&percent_encode(f)), f);
+        assert_eq!(percent_encode("a/b.md"), "a%2Fb.md");
+        assert_eq!(percent_decode("a%2Fb.md"), "a/b.md");
+        // 文件名含 %：自身被编码为 %25，往返一致且无歧义（空格合法保留原样）
+        let pct = "a%20b 笔记.md";
+        assert_eq!(percent_encode(pct), "a%2520b 笔记.md");
+        assert_eq!(percent_decode(&percent_encode(pct)), pct);
+        // 非法 % 序列不 panic、原样保留
+        assert_eq!(percent_decode("a%zz"), "a%zz");
+    }
+
+    #[test]
+    fn remap_single_file_all_kinds() {
+        let root = tmp_root("single");
+        write_side(&root, "", "笔记/旧.md", "v1");
+        write_side(&root, "canvas/", "画布/旧.atlx", "cv1");
+        write_side(&root, "table/", "表格/旧.atb", "tb1");
+        remap_sideloads(&root, "笔记/旧.md", "笔记/新.md");
+        remap_sideloads(&root, "画布/旧.atlx", "画布/新.atlx");
+        remap_sideloads(&root, "表格/旧.atb", "表格/新.atb");
+        assert_side(&root, "", "笔记/新.md", "v1");
+        assert_side(&root, "canvas/", "画布/新.atlx", "cv1");
+        assert_side(&root, "table/", "表格/新.atb", "tb1");
+        assert_side_gone(&root, "", "笔记/旧.md");
+        assert_side_gone(&root, "canvas/", "画布/旧.atlx");
+        assert_side_gone(&root, "table/", "表格/旧.atb");
+    }
+
+    #[test]
+    fn remap_missing_source_is_noop() {
+        let root = tmp_root("missing");
+        // 无历史侧文件：静默跳过不报错（首次重命名/从未保存过）
+        remap_sideloads(&root, "无.md", "有.md");
+        assert_side_gone(&root, "", "有.md");
+    }
+
+    #[test]
+    fn remap_skips_existing_target() {
+        let root = tmp_root("target");
+        write_side(&root, "", "旧.md", "old");
+        write_side(&root, "", "新.md", "newer");
+        remap_sideloads(&root, "旧.md", "新.md");
+        // 目标已存在：跳过不覆盖，旧文件保留
+        assert_side(&root, "", "新.md", "newer");
+        assert_side(&root, "", "旧.md", "old");
+    }
+
+    #[test]
+    fn remap_by_dir_prefix() {
+        let root = tmp_root("bydir");
+        write_side(&root, "", "项目A/笔记1.md", "a1");
+        write_side(&root, "", "项目A/子/笔记2.md", "a2");
+        write_side(&root, "canvas/", "项目A/画布.atlx", "cv");
+        write_side(&root, "canvas/", "其他/画布.atlx", "other");
+        remap_sideloads_by_dir(&root, "项目A", "项目B");
+        assert_side(&root, "", "项目B/笔记1.md", "a1");
+        assert_side(&root, "", "项目B/子/笔记2.md", "a2");
+        assert_side(&root, "canvas/", "项目B/画布.atlx", "cv");
+        // 前缀外的侧文件不受影响
+        assert_side(&root, "canvas/", "其他/画布.atlx", "other");
+        assert_side_gone(&root, "", "项目A/笔记1.md");
+        assert_side_gone(&root, "", "项目A/子/笔记2.md");
+        assert_side_gone(&root, "canvas/", "项目A/画布.atlx");
+    }
+
+    #[test]
+    fn remap_by_dir_empty_history_dir() {
+        let root = tmp_root("empty");
+        // .atelyx/history 不存在或为空：静默返回
+        remap_sideloads_by_dir(&root, "a", "b");
+    }
+
+    #[test]
+    fn remap_by_dir_skips_existing_target() {
+        let root = tmp_root("bytarget");
+        write_side(&root, "", "项目A/笔记.md", "old");
+        write_side(&root, "", "项目B/笔记.md", "newer");
+        remap_sideloads_by_dir(&root, "项目A", "项目B");
+        // 目标已存在：跳过不覆盖，两边都保留
+        assert_side(&root, "", "项目B/笔记.md", "newer");
+        assert_side(&root, "", "项目A/笔记.md", "old");
+    }
+
+    #[test]
+    fn remap_sideloads_by_dir_trims_trailing_slash() {
+        let root = tmp_root("trailing");
+        write_side(&root, "", "项目A/笔记.md", "v1");
+        // 调用方带尾斜杠：须归一化后正常迁移（防 `a//` 前缀永不命中）
+        remap_sideloads_by_dir(&root, "项目A/", "项目B/");
+        assert_side(&root, "", "项目B/笔记.md", "v1");
+        assert_side_gone(&root, "", "项目A/笔记.md");
+    }
+
+    #[test]
+    fn remap_by_dir_migrates_legacy_encoded_names() {
+        // 存量侧文件（旧 encodeURIComponent 名）随文件夹改名直接迁移：
+        // by_dir 解码文件名（兼容 %XX 大写/小写 hex）后按前缀改写、再最小重编码。
+        // 项/目/笔/记 = %E9%A1%B9 %E7%9B%AE %E7%AC%94 %E8%AE%B0（encodeURIComponent 全量转义）
+        let root = tmp_root("legacy");
+        let legacy = format!(
+            "{HISTORY_DIR}/%E9%A1%B9%E7%9B%AEA%2F%E7%AC%94%E8%AE%B01.md.json"
+        );
+        std::fs::create_dir_all(root.join(HISTORY_DIR)).unwrap();
+        std::fs::write(root.join(&legacy), "legacy-v1").unwrap();
+        remap_sideloads_by_dir(&root, "项目A", "项目B");
+        assert_side(&root, "", "项目B/笔记1.md", "legacy-v1");
+        assert!(
+            !root.join(&legacy).exists(),
+            "旧 encodeURIComponent 名侧文件应已被迁移走"
+        );
+    }
+
+    #[test]
+    fn remap_by_dir_prefix_boundary() {
+        // 前缀必须带 `/` 分隔：old_dir="项目A" 不得命中同级「项目A2/…」（否则迁移错位）
+        let root = tmp_root("boundary");
+        write_side(&root, "", "项目A/笔记.md", "a");
+        write_side(&root, "", "项目A2/笔记.md", "a2");
+        remap_sideloads_by_dir(&root, "项目A", "项目B");
+        assert_side(&root, "", "项目B/笔记.md", "a");
+        assert_side(&root, "", "项目A2/笔记.md", "a2"); // 近邻名不受影响
+        assert_side_gone(&root, "", "项目A/笔记.md");
     }
 }

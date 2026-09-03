@@ -1990,9 +1990,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       const bodyMd = await readNote(file);
       // 逐节点判定刷新/跳过（见 utils/noteRefresh#decideTextNodeRefresh）：
       // - 节点正文 == 磁盘 → 已一致跳过；
-      // - 自上次落盘后改过正文（bodyMd ≠ lastSaved 同 id 节点）→ 保留本地编辑跳过，
-      //   防「提交编辑 A → 保存写盘 → 回波到达前又提交编辑 B → 回波把 B 覆盖回 A」丢字；
-      // - 未编辑过/新建未落盘且磁盘不同 → 刷新到磁盘最新。
+      // - 自上次落盘后改过正文（bodyMd ≠ lastSaved 同 id 节点）且磁盘仍停在节点基线 →
+      //   保留本地编辑跳过，防「提交编辑 A → 保存写盘 → 回波到达前又提交编辑 B → 回波把 B 覆盖回 A」丢字；
+      // - 未编辑过/新建未落盘 → 刷新到磁盘最新；
+      // - 已编辑但磁盘已前进到节点基线之后（笔记编辑器/AI 写入）→ 外部最新者胜，刷新到磁盘，
+      //   防陈旧基线上的编辑回写覆盖磁盘新内容（笔记编辑器静默回退根因，见 noteRefresh）。
       // 不能用 isKnownNoteDiskContent（lastWrittenMd）判回波：AI 文件写入也会登记基线，
       // 会把「磁盘新于节点内存」误判为自写回波而跳过刷新，节点保持陈旧——下次画布保存
       // 经 toFileNode 把旧正文回写覆盖 Agent 编辑。
@@ -2006,7 +2008,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         const savedBody = saved
           ? (saved.data as unknown as TextData).bodyMd
           : undefined;
-        if (decideTextNodeRefresh(cur, savedBody) === "refresh") {
+        if (decideTextNodeRefresh(cur, savedBody, bodyMd) === "refresh") {
           staleDecisions.set(n.id, cur);
         }
       }

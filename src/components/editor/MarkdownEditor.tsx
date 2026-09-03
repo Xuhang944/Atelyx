@@ -43,11 +43,11 @@ import {
 } from "@codemirror/language";
 import { markdown, markdownKeymap } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { defaultKeymap } from "@codemirror/commands";
 import { tags } from "@lezer/highlight";
 import type { Text as YText } from "yjs";
 import type { Awareness } from "y-protocols/awareness";
-import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
+import { yCollab } from "y-codemirror.next";
 import { useAppStore } from "@/stores/appStore";
 import { useVaultStore } from "@/stores/vaultStore";
 import { EXTERNAL_LINK_RE } from "@/utils/markdown";
@@ -564,14 +564,20 @@ interface Props {
   syncSeq: number;
   /** 用户编辑回调：输出编辑器当前全文 markdown 正文。 */
   onBodyChange: (markdown: string) => void;
-  /** 协作绑定：提供时进入 Yjs 协同编辑（y-codemirror 绑 Y.Text + y-undo 替 CM history + 远端光标）；
-   *  缺省 = 现有本地单写者纯文本编辑。 */
+  /** 协作绑定：提供时进入 Yjs 协同编辑（y-codemirror 绑 Y.Text + 远端光标）；
+   *  缺省 = 现有本地单写者纯文本编辑。撤销键不在本组件绑定（见 NoteEditor 窗口级路由）。 */
   collab?: { ytext: YText; awareness: Awareness };
   /** 编辑器实例外抛（NoteEditor 划词右键剪切/粘贴按选区 dispatch 用）；创建后赋值、卸载置 null。 */
   editorViewRef?: { current: EditorView | null };
+  /**
+   * 协作挂载时 ytext 与 body 分歧的处置（NoteEditor 注入；参数 = ytext 正文 LF）。
+   * 编辑器以 ytext 为编辑模型源，分歧时由父级决定「收敛 content 到 ytext（干净）」
+   * 还是「本地正文写回 ytext（有未落盘编辑，本地最新者胜）」——防陈旧 ytext 回退本地输入。
+   */
+  onCollabDivergence?: (ytextText: string) => void;
 }
 
-export function MarkdownEditor({ body, syncSeq, onBodyChange, collab, editorViewRef }: Props) {
+export function MarkdownEditor({ body, syncSeq, onBodyChange, collab, editorViewRef, onCollabDivergence }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   /** 装饰 widget 的 dispatch 转发：StateField 闭包捕获 ref 而非函数，view 创建后赋值才有效。 */
@@ -584,6 +590,8 @@ export function MarkdownEditor({ body, syncSeq, onBodyChange, collab, editorView
   /** 回调/body 经 ref 转发：create 闭包在挂载时构建一次，捕获不到后续渲染的最新值。 */
   const onBodyChangeRef = useRef(onBodyChange);
   onBodyChangeRef.current = onBodyChange;
+  const onCollabDivergenceRef = useRef(onCollabDivergence);
+  onCollabDivergenceRef.current = onCollabDivergence;
   const bodyRef = useRef(body);
   bodyRef.current = body;
 
@@ -627,20 +635,15 @@ export function MarkdownEditor({ body, syncSeq, onBodyChange, collab, editorView
           ? collab.ytext.toString()
           : bodyRef.current.replace(/\r\n/g, "\n"),
         extensions: [
-          // addKeymap: false——Enter/Backspace 绑定统一由下方 keymap.of 组合提供
+          // addKeymap: false——Enter/Backspace 绑定统一由 keymap.of 组合提供
           markdown({ codeLanguages: languages, addKeymap: false }),
           EditorView.lineWrapping,
-          // 协作模式：y-codemirror 绑 Y.Text（远端实时合并 + 远端光标/选中渲染），
-          // 撤销走 y-undo（各自只回滚自己的操作），不再用 CM history
-          ...(collab
-            ? [
-                yCollab(collab.ytext, collab.awareness),
-                keymap.of([...markdownKeymap, ...defaultKeymap, ...yUndoManagerKeymap]),
-              ]
-            : [
-                history(),
-                keymap.of([...markdownKeymap, ...defaultKeymap, ...historyKeymap]),
-              ]),
+          // keymap 协作/非协作一致（协作只多 yCollab 绑定，行为不因协作开关分叉）：
+          // 撤销/重做不在 CM 内绑定——统一由 NoteEditor 窗口级路由接按文件持久栈；
+          // CM 内置 history 与 y-undo 均随 EditorView 销毁丢失（预览↔编辑/重挂载即清），
+          // 持久栈跨重挂载保留，也不与窗口路由双撤销
+          keymap.of([...markdownKeymap, ...defaultKeymap]),
+          ...(collab ? [yCollab(collab.ytext, collab.awareness)] : []),
           syntaxHighlighting(highlightStyle),
           editorTheme,
           livePreview(opts, dispatchRef),
@@ -657,9 +660,10 @@ export function MarkdownEditor({ body, syncSeq, onBodyChange, collab, editorView
     if (editorViewRef) editorViewRef.current = view;
     if (collab) {
       // 协作：ytext 已作编辑模型源，不再用 body 覆盖。若 ytext 与 body 相悖
-      // （预览期远端已改写本端未感知）→ 回传一次同步 NoteEditor.content（预览/保存反映收敛态）
+      // （预览期远端已改写本端未感知 / 本地有未落盘编辑）→ 交父级处置：干净收敛
+      // content 到 ytext、有未落盘编辑则本地正文写回 ytext（防陈旧基线回退本地输入）。
       if (collab.ytext.toString() !== bodyRef.current.replace(/\r\n/g, "\n")) {
-        onBodyChangeRef.current(collab.ytext.toString());
+        onCollabDivergenceRef.current?.(collab.ytext.toString());
       }
     } else {
       // 非协作：初始注入挂载时的 body（原行为）

@@ -301,6 +301,8 @@ export function markNoteDiskWrite(file: string): void {
  * 源码模式编辑只走 content（不经 yCollab 绑定），不写回 ytext 会让 ytext 陈旧——切回实时预览
  * 时 MarkdownEditor 以陈旧 ytext 为编辑模型源并回传 content，源码编辑被回退。实时预览编辑的
  * ytext 已由 yCollab 同步，`toString` 一致即 no-op（无回环）；写回触发 ytext update 广播，对端实时可见。
+ * **整篇替换语义（本地最新者胜）**：对端若有未收敛编辑会被整篇覆盖——属刻意取舍（挂载分歧
+ * 「脏→本地胜」处置用），非增量合并。
  */
 export function applyLocalBody(file: string, bodyLF: string): void {
   const e = entries.get(file);

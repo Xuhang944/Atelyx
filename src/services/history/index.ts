@@ -2,8 +2,8 @@
  * 通用历史记录（画布/笔记/表格共用，每文件隐藏侧文件，审计/回滚轴）。
  *
  * 磁盘仍以源文件（.atlx/.md/.atb）为真源；历史是独立的审计轴，存
- * `.atelyx/history/<kind>/<encodeURIComponent(file)>.json`（note 保持旧路径 `.atelyx/history/<enc>.json`
- * 向后兼容；随仓库走、跨设备一致；`.atelyx` 隐藏目录被文件树与 watcher 排除，写历史不触发回波）。
+ * `.atelyx/history/<kind>/<最小编码名>.json`（note 保持顶层路径；随仓库走、跨设备一致；
+ * `.atelyx` 隐藏目录被文件树与 watcher 排除，写历史不触发回波）。
  * 每个版本存**全文快照**（回滚即时可靠）+ 相对上一版本的 diff 摘要（展示「改了啥」；
  * 笔记默认行级，画布/表格经 `summarize` 回调生成实体级人话摘要），
  * 版本粒度 = 落盘存档点 + 外部写入 + 手动回滚 + Agent 工具写入（连贯编辑合并为一个存档点，不逐键）。
@@ -15,7 +15,7 @@
  * 防膨胀：留存默认全留，可配 `maxVersions` 剪枝（保留最近 N 版）；diff 摘要而非整存两份正文。
  * 并发安全：读改写整文件（同事写同一侧文件为罕见边界，后写者胜，容忍偶发丢版本）。
  */
-import { readVaultFile, writeVaultFile } from "@/services/vault/aiFiles";
+import { deleteVaultFile, readVaultFile, writeVaultFile } from "@/services/vault/aiFiles";
 import type { AgentHistoryReadResult } from "@/types";
 
 /** 历史作用的文件类型（决定侧文件路径与扩展名识别）。 */
@@ -53,6 +53,27 @@ interface HistoryFile {
   versions: HistoryVersion[];
 }
 
+/**
+ * 历史侧文件字节预算（写盘前剪枝：超限丢最旧保最新）。与 Rust `read_vault_file`
+ * 的 5MB 整读上限对齐：历史文件一旦膨胀超过该上限，`loadHistory` 读失败返回空数组、
+ * 随后 `recordHistoryVersion` 会以「仅新版本」整文件覆盖写回 → 全部旧版本一次性静默
+ * 清空（数据丢失）。故写入前必须把序列化体积压到预算内，保证永不触及读上限。
+ * 用 UTF-8 字节数（TextEncoder）而非 JS 字符串长度——Rust 侧按字节判定，中文内容
+ * 两者不等长。
+ */
+const HISTORY_BYTE_BUDGET = 5_000_000;
+
+/** 剪枝：序列化体积超预算时从最旧开始丢，仅剩 1 版也超预算时保留 1 版兜底（尽力而为）。 */
+function pruneVersions(versions: HistoryVersion[], budget: number): HistoryVersion[] {
+  let next = versions;
+  const size = () =>
+    new TextEncoder().encode(JSON.stringify({ versions: next })).length;
+  while (next.length > 1 && size() > budget) {
+    next = next.slice(1);
+  }
+  return next;
+}
+
 /** AI Agent 工具写文件的固定身份（协作历史里的「Agent 协作」条目）。 */
 export const AGENT_AUTHOR: HistoryAuthor = {
   id: "ai-agent",
@@ -63,9 +84,40 @@ export const AGENT_AUTHOR: HistoryAuthor = {
 /** 侧文件根（隐藏目录，随仓库走）。 */
 const HISTORY_DIR = ".atelyx/history";
 
-/** 侧文件相对路径：note 保持旧路径向后兼容，canvas/table 按 kind 分目录摊平。 */
-export function historyPathFor(kind: HistoryKind, file: string): string {
+/**
+ * 侧文件名编码（最小百分号转义）：仅转义文件系统非法字符（`% / \ : * ? " < > |`）、
+ * 控制符与 DEL（UTF-8 %XX，大写十六进制），中文等合法字符保留原样。
+ * 不能用 encodeURIComponent——它把每个 CJK 字符膨胀成 9 字符（`项`→`%E9%A1%B9`），
+ * 中文长路径的侧文件名会超出 NAS/SMB 服务端 ~260 字符路径上限（实测客户端 `\\?\UNC\`
+ * 扩展前缀无效，服务端仍拒绝写入），导致长名笔记的历史永远写不进/读不出。最小编码下
+ * 侧文件路径长度 ≈ 笔记自身路径 + 常数 overhead——笔记可访问则侧文件必可访问。
+ * 编码须与 Rust `vault.rs` 的 `percent_encode` 保持同一字符集（重命名迁移两端各自计算），
+ * 解码复用 Rust `percent_decode`（`%` 本身也被转义，`%XX` 序列无歧义）。
+ */
+function encodeSideName(file: string): string {
+  let out = "";
+  for (const ch of file) {
+    const code = ch.codePointAt(0)!;
+    out +=
+      code < 0x20 || code === 0x7f || "%/\\:*?\"<>|".includes(ch)
+        ? "%" +
+          code.toString(16).toUpperCase().padStart(2, "0")
+        : ch;
+  }
+  return out;
+}
+
+/** 旧版侧文件名（encodeURIComponent 全量转义）：存量侧文件的读取/迁移来源。 */
+function legacyHistoryPathFor(kind: HistoryKind, file: string): string {
   const encoded = encodeURIComponent(file);
+  return kind === "note"
+    ? `${HISTORY_DIR}/${encoded}.json`
+    : `${HISTORY_DIR}/${kind}/${encoded}.json`;
+}
+
+/** 侧文件相对路径：note 顶层，canvas/table 按 kind 分目录；文件名为最小编码（见 encodeSideName）。 */
+export function historyPathFor(kind: HistoryKind, file: string): string {
+  const encoded = encodeSideName(file);
   return kind === "note"
     ? `${HISTORY_DIR}/${encoded}.json`
     : `${HISTORY_DIR}/${kind}/${encoded}.json`;
@@ -77,17 +129,67 @@ export function setHistoryAuthor(author: HistoryAuthor): void {
   myAuthor = author;
 }
 
-/** 读取侧文件版本列表；缺失/损坏 → 空数组（历史尽力而为，不阻塞编辑）。 */
+/**
+ * 读取侧文件版本列表；缺失/损坏 → 空数组（历史尽力而为，不阻塞编辑）。
+ * 新编码名缺失时回退读旧 encodeURIComponent 名（存量侧文件），实现读侧兼容。
+ */
 export async function loadHistory(
   kind: HistoryKind,
   file: string,
 ): Promise<HistoryVersion[]> {
+  return (await loadVersions(kind, file)).versions;
+}
+
+/** 双路径读取：新编码名优先，缺失回落旧编码存量名；fromLegacy 供迁移收尾判定。 */
+async function loadVersions(
+  kind: HistoryKind,
+  file: string,
+): Promise<{ versions: HistoryVersion[]; fromLegacy: boolean }> {
   try {
     const raw = await readVaultFile(historyPathFor(kind, file));
     const parsed = JSON.parse(raw) as HistoryFile;
-    return Array.isArray(parsed.versions) ? parsed.versions : [];
+    return { versions: Array.isArray(parsed.versions) ? parsed.versions : [], fromLegacy: false };
   } catch {
-    return [];
+    // 新名缺失/损坏：回落旧编码存量侧文件
+  }
+  try {
+    const raw = await readVaultFile(legacyHistoryPathFor(kind, file));
+    const parsed = JSON.parse(raw) as HistoryFile;
+    return { versions: Array.isArray(parsed.versions) ? parsed.versions : [], fromLegacy: true };
+  } catch {
+    return { versions: [], fromLegacy: false };
+  }
+}
+
+/**
+ * 存量侧文件迁移：确保该文件的历史位于新编码名下——新名缺失且旧名存在时把版本迁移过去；
+ * 无论来源，最后清理旧编码侧文件（防新旧并存致仓库历史聚合重复计数；删除失败静默）。
+ * 重命名/移动迁移（Rust remap_sideloads 只按新编码名查找）依赖侧文件已处于新名下——
+ * 迁移必须先于 remap 完成；幂等，任一步失败静默（下次再试）。
+ */
+export async function migrateHistoryFile(
+  kind: HistoryKind,
+  file: string,
+): Promise<void> {
+  const { versions, fromLegacy } = await loadVersions(kind, file);
+  if (fromLegacy) {
+    try {
+      await writeVaultFile(
+        historyPathFor(kind, file),
+        JSON.stringify({ versions: pruneVersions(versions, HISTORY_BYTE_BUDGET) }),
+      );
+    } catch {
+      // 迁移写入失败：旧文件仍在，下次再试
+      return;
+    }
+  }
+  // 纯 ASCII 文件名下 encodeURIComponent 与最小编码输出相同（新旧路径一致），不存在
+  // 「旧文件」——删除即删真实历史；仅路径不同（含 CJK/非法字符）时才有旧文件可清
+  if (legacyHistoryPathFor(kind, file) === historyPathFor(kind, file)) return;
+  try {
+    await deleteVaultFile(legacyHistoryPathFor(kind, file));
+  } catch {
+    // 无旧文件或删除失败：静默
   }
 }
 
@@ -127,15 +229,21 @@ export async function recordHistoryVersion(
     note?: string;
     maxVersions?: number;
     coalesceEditMs?: number;
+    /** 侧文件字节预算（缺省 HISTORY_BYTE_BUDGET；测试注入小值验证剪枝）。 */
+    byteBudget?: number;
     /** 作者覆盖（Agent 工具写入等非当前用户来源）。 */
     authorOverride?: HistoryAuthor;
     /** 版本摘要生成（缺省 = 行级 diff）；prev = 上一版本全文（首版为空串）。表格/画布传实体级摘要。 */
     summarize?: (prev: string, next: string) => string;
   },
 ): Promise<void> {
-  const versions = await loadHistory(kind, file);
+  const { versions, fromLegacy } = await loadVersions(kind, file);
   const last = versions[versions.length - 1];
-  if (last && last.content === opts.content && last.action === opts.action) return;
+  if (last && last.content === opts.content && last.action === opts.action) {
+    // 内容 no-op：但读自旧编码存量时仍迁移到新名（防重命名迁移/仓库聚合在旧名上失联）
+    if (fromLegacy) await migrateHistoryFile(kind, file);
+    return;
+  }
   const author = opts.authorOverride ?? myAuthor;
   const summaryOf = (prev: string, next: string): string =>
     opts.summarize ? opts.summarize(prev, next) : diffSummary(prev, next);
@@ -153,8 +261,13 @@ export async function recordHistoryVersion(
     last!.author = author;
     last!.summary = summaryOf(prev, opts.content);
     if (opts.note) last!.note = opts.note;
+    // 写盘前同样过字节预算：coalesce 滑动更新也可能把总量推过预算（大笔记贴近上限时
+    // 单次内容增长即触发），否则下次整读失败 → 非 coalesce 路径「仅新版本」覆盖写回清空历史
+    const pruned = pruneVersions(versions, opts.byteBudget ?? HISTORY_BYTE_BUDGET);
     try {
-      await writeVaultFile(historyPathFor(kind, file), JSON.stringify({ versions }));
+      await writeVaultFile(historyPathFor(kind, file), JSON.stringify({ versions: pruned }));
+      // 读自旧编码存量 → 新文件已写出，删除旧文件（防仓库历史聚合重复计数；缺失报错被吞）
+      if (fromLegacy) await deleteVaultFile(legacyHistoryPathFor(kind, file)).catch(() => {});
     } catch {
       // 历史写入失败（只读/权限）不应阻塞编辑：静默降级
     }
@@ -175,8 +288,12 @@ export async function recordHistoryVersion(
   if (max > 0 && next.length > max) {
     next = next.slice(next.length - max);
   }
+  // 字节预算剪枝（与版本数上限叠加，优先保最新）：防历史文件膨胀触及读上限被整份清空
+  next = pruneVersions(next, opts.byteBudget ?? HISTORY_BYTE_BUDGET);
   try {
     await writeVaultFile(historyPathFor(kind, file), JSON.stringify({ versions: next }));
+    // 读自旧编码存量 → 新文件已写出，删除旧文件（缺失报错被吞；防聚合重复计数）
+    if (fromLegacy) await deleteVaultFile(legacyHistoryPathFor(kind, file)).catch(() => {});
   } catch {
     // 历史写入失败（只读/权限）不应阻塞编辑：静默降级
   }

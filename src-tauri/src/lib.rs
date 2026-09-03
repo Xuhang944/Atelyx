@@ -74,6 +74,9 @@ pub fn run() {
             commands::vault::copy_vault_folder,
             commands::vault::rename_attachment,
             commands::vault::read_attachment_data_url,
+            // 历史侧文件迁移（笔记/表格/画布重命名/移动与文件夹改名后随迁历史版本）
+            commands::vault::remap_sideloads,
+            commands::vault::remap_sideloads_by_dir,
             // 多维表格（.atb）文件 CRUD
             commands::table::create_table_vault,
             commands::table::read_table_vault,

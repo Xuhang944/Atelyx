@@ -41,6 +41,14 @@ export async function writeVaultFile(file: string, content: string): Promise<voi
   await invoke("write_vault_file", { file, content });
 }
 
+/**
+ * 删除仓库内任意文件（通用单文件删除命令封装；历史侧文件存量迁移清理用）。
+ * 文件不存在时命令层报错，由调用方降级。
+ */
+export async function deleteVaultFile(file: string): Promise<void> {
+  await invoke("delete_note", { file });
+}
+
 interface FileEditEntry {
   oldText: string;
   newText: string;

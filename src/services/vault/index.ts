@@ -28,6 +28,7 @@ import {
 } from "@/utils/canvasCollab";
 import { coalesceAgentSteps, normalizeAgentSteps } from "@/utils/agentSteps";
 import { readTableVault } from "@/services/table";
+import { recordHistoryVersion } from "@/services/history";
 import {
   type CanvasFile,
   type CanvasCreateResult,
@@ -327,6 +328,24 @@ export async function renameFolder(
   await invoke("rename_folder", { oldDir, newDir });
 }
 
+/**
+ * 迁移单个文件的全部候选历史侧文件到新编码路径（笔记/表格/画布重命名/移动后调用）。
+ * Rust 侧按最小编码（`percent_encode`，与 `services/history` 的 `encodeSideName` 同字符集）
+ * 定位 `.atelyx/history[/<kind>/]<enc>.json`；单文件 remap 只认新编码名——调用方必须先
+ * `migrateHistoryFile` 把旧编码存量迁移到新名下，remap 才找得到源（by_dir 解码文件名、可直读旧名）。
+ * 源不存在（无历史）静默跳过、目标已存在跳过，不阻塞重命名主流程。
+ */
+export async function remapSideloads(oldFile: string, newFile: string): Promise<void> {
+  await invoke("remap_sideloads", { oldFile, newFile });
+}
+
+/**
+ * 迁移某文件夹下全部历史侧文件到新目录前缀（文件夹重命名后调用，语义同 remapSideloads）。
+ */
+export async function remapSideloadsByDir(oldDir: string, newDir: string): Promise<void> {
+  await invoke("remap_sideloads_by_dir", { oldDir, newDir });
+}
+
 // ===== 运行时 ↔ 磁盘格式转换 =====
 
 /** 最近写入的 .md 内容缓存（脏检测：仅内容变化才写盘，避免每次保存全量重写全部笔记）。 */
@@ -479,6 +498,13 @@ async function toFileNode(
         try {
           await writeNote(td.file, td.bodyMd);
           setLastWrittenMd(td.file, td.bodyMd);
+          // 画布文本节点写回 .md：记笔记历史存档点（60s 合并；与编辑器保存同源，防
+          // 只在画布上编辑的笔记无历史记录）。历史尽力而为，失败静默不阻塞画布保存
+          void recordHistoryVersion("note", td.file, {
+            content: td.bodyMd,
+            action: "edit",
+            coalesceEditMs: 60_000,
+          });
         } catch (e) {
           console.error("写笔记失败", e);
         }

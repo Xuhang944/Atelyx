@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import type { EditorView } from "@codemirror/view";
 import { useVaultStore, lastFolderRenameTarget, lastNoteRenameTarget, isKnownNoteDiskContent, type NoteSaveStatus } from "@/stores/vaultStore";
+import { useNoteUndoStore } from "@/stores/noteUndoStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAppStore } from "@/stores/appStore";
 import { useChatPanelStore } from "@/stores/chatPanelStore";
@@ -66,6 +67,7 @@ function locateSelectionInDoc(
 
 export function NoteEditor({ file }: { file: string }) {
   const readNoteContent = useVaultStore((s) => s.readNoteContent);
+  const readNoteFresh = useVaultStore((s) => s.readNoteFresh);
   const saveNoteContent = useVaultStore((s) => s.saveNoteContent);
   // 外部修改感知：watcher note 事件 bump 序号（vaultStore.markNoteExternallyEdited），据此重读磁盘
   const externalEditSeq = useVaultStore((s) => s.externalNoteEdits[file] ?? 0);
@@ -196,6 +198,9 @@ export function NoteEditor({ file }: { file: string }) {
       mountedRef.current = false;
     };
   }, []);
+  /** 撤销/重做回放标记：applyNoteUndo 走 handleChange 复用保存/协作/冲突门控，
+   *  但回放内容不得再记入撤销栈（防自我入栈形成撤销链）。 */
+  const applyingUndoRef = useRef(false);
 
   /** 编辑器根节点引用：点击编辑器外部 → 取消编辑模式（回渲染预览）。 */
   const editorRootRef = useRef<HTMLDivElement>(null);
@@ -313,9 +318,16 @@ export function NoteEditor({ file }: { file: string }) {
         const target =
           stillExists ? file : lastNoteRenameTarget(file) ?? lastFolderRenameTarget(file);
         if (target) {
-          void saveNoteContent(target, contentRef.current).catch((e) =>
-            console.error("笔记保存失败", e)
-          );
+          const pendingContent = contentRef.current;
+          void saveNoteContent(target, pendingContent)
+            .then(() => {
+              // 清除挂起登记前比对内容：flush 在途期间若有新编辑重新登记（多面板/快速切回），
+              // 不误清新值（与 vaultStore.flushPendingNotes「只清未被替换条目」同语义）
+              if (useVaultStore.getState().pendingNoteContent[file] === pendingContent) {
+                useVaultStore.getState().setPendingNoteContent(file, null);
+              }
+            })
+            .catch((e) => console.error("笔记保存失败", e));
         }
       }
     };
@@ -329,7 +341,8 @@ export function NoteEditor({ file }: { file: string }) {
     if (externalEditSeq <= processedSeqRef.current) return;
     processedSeqRef.current = externalEditSeq;
     let cancelled = false;
-    void readNoteContent(file)
+    // 直读真实磁盘（绕过内容缓存——缓存可能滞后于在途写盘，用缓存比较会漏检/误判外部修改）
+    void readNoteFresh(file)
       .then((disk) => {
         if (cancelled || !mountedRef.current || disk === lastSavedRef.current) return;
         if (isCollab) {
@@ -373,6 +386,14 @@ export function NoteEditor({ file }: { file: string }) {
           }
           setConflictState(true);
         } else {
+          // 守卫：静默刷新仅当内存无更新的本地内容（contentRef === lastSavedRef）。当前不变量下
+          // （handleChange 恒置 dirtyRef、所有内容变更路径同步 lastSavedRef）该分支不可达，属
+          // 意图内防御——若未来出现不经 handleChange 的路径（直接 setContent）使内存新于基准
+          // 而 dirty 为假，宁可弹冲突也不静默覆盖内存内容
+          if (contentRef.current !== lastSavedRef.current) {
+            setConflictState(true);
+            return;
+          }
           setContent(disk);
           contentRef.current = disk;
           lastSavedRef.current = disk;
@@ -387,11 +408,11 @@ export function NoteEditor({ file }: { file: string }) {
     return () => {
       cancelled = true;
     };
-  }, [externalEditSeq, file, readNoteContent, setSaveStatus, setConflictState, isCollab]);
+  }, [externalEditSeq, file, readNoteFresh, setSaveStatus, setConflictState, isCollab]);
 
-  /** 冲突「重新加载」：丢弃本地改动，恢复磁盘最新内容并解除冲突。 */
+  /** 冲突「重新加载」：丢弃本地改动，恢复磁盘最新内容并解除冲突（直读真实磁盘，防命中陈旧缓存）。 */
   const reloadFromDisk = useCallback(() => {
-    void readNoteContent(file)
+    void readNoteFresh(file)
       .then((disk) => {
         if (!mountedRef.current) return;
         setContent(disk);
@@ -404,7 +425,7 @@ export function NoteEditor({ file }: { file: string }) {
         setEditorSyncSeq((s) => s + 1);
       })
       .catch(() => {});
-  }, [file, readNoteContent, setConflictState, setSaveStatus]);
+  }, [file, readNoteFresh, setConflictState, setSaveStatus]);
 
   /** 历史回滚完成：把编辑器拨到回滚后内容（记入磁盘基准，编辑器/预览/属性区刷新）。 */
   const handleNoteRollback = useCallback(
@@ -454,6 +475,16 @@ export function NoteEditor({ file }: { file: string }) {
   }, [resolveReq, reloadFromDisk, saveLocalOverExternal]);
 
   const handleChange = (v: string) => {
+    // 无变化短路：卸载 flush 重报当前全文/属性面板改回原值/分歧收敛内容一致等「空步」
+    // 不入撤销栈、不置脏不抖状态（内容未变，无任何必要副作用）
+    if (v === contentRef.current) return;
+    // 用户输入登记（撤销栈 + 挂起输入）：撤销回放（applyNoteUndo）不记栈；
+    // 撤销栈记「本次输入前全文」（连续输入合并为一步，见 services/noteUndo）；
+    // pendingNoteContent 供 flushAllPending/切仓库前把未落盘输入统一落盘 + 补历史
+    if (!applyingUndoRef.current) {
+      useNoteUndoStore.getState().recordEdit(file, contentRef.current);
+      useVaultStore.getState().setPendingNoteContent(file, v);
+    }
     dirtyRef.current = true;
     contentRef.current = v;
     setContent(v);
@@ -489,6 +520,8 @@ export function NoteEditor({ file }: { file: string }) {
             useNoteCollabStore.getState().notifyNoteDiskWrite(file);
             if (seq === saveSeqRef.current) dirtyRef.current = false;
             if (mountedRef.current && seq === saveSeqRef.current) setSaveStatus("saved");
+            // 保存完成且无新输入：清除挂起登记（期间又有新输入则保留，由下一轮保存接管）
+            if (seq === saveSeqRef.current) useVaultStore.getState().setPendingNoteContent(file, null);
             // 记录编辑存档点（60s 内连续编辑合并为一版，不逐键）
             void useVaultStore.getState().noteHistoryRecord(file, v, "edit");
           })
@@ -498,8 +531,9 @@ export function NoteEditor({ file }: { file: string }) {
         return;
       }
       // 写盘前校验磁盘基准：期间磁盘已被外部改动（disk ≠ lastSavedRef）则放弃本次写盘并转冲突提示，
-      // 防 debounce 到点把外部修改覆盖掉（自写回放磁盘 = lastSavedRef，不受影响）
-      void readNoteContent(file)
+      // 防 debounce 到点把外部修改覆盖掉（自写回放磁盘 = lastSavedRef，不受影响）。
+      // 直读真实磁盘（绕过内容缓存——缓存可能滞后于在途写盘，用缓存比较会漏检外部修改）
+      void readNoteFresh(file)
         .then((disk) => {
           if (!mountedRef.current || seq !== saveSeqRef.current) return;
           if (disk !== lastSavedRef.current) {
@@ -521,6 +555,8 @@ export function NoteEditor({ file }: { file: string }) {
               if (seq === saveSeqRef.current) dirtyRef.current = false;
               // 期间又有新输入（新定时器已接管）→ 不显示「已自动保存」；组件已卸载不再写状态
               if (mountedRef.current && seq === saveSeqRef.current) setSaveStatus("saved");
+              // 保存完成且无新输入：清除挂起登记
+              if (seq === saveSeqRef.current) useVaultStore.getState().setPendingNoteContent(file, null);
               // 记录编辑存档点（60s 内连续编辑合并为一版，不逐键）
               void useVaultStore.getState().noteHistoryRecord(file, v, "edit");
             })
@@ -534,6 +570,62 @@ export function NoteEditor({ file }: { file: string }) {
         });
     }, 500);
   };
+
+  /**
+   * 撤销/重做应用：从当前文件撤销栈取目标全文 → 走 handleChange（复用保存/协作/冲突门控 +
+   * debounce 落盘），置 applyingUndoRef 防回放内容自我入栈；再 bump editorSyncSeq 让
+   * MarkdownEditor 以新正文重建（applyBody，不进 CM 撤销栈）。栈按 file 键隔离，
+   * 只作用于当前编辑器文件，各文件互不混淆。
+   */
+  const applyNoteUndo = (dir: "undo" | "redo") => {
+    const target =
+      dir === "undo"
+        ? useNoteUndoStore.getState().undo(file, contentRef.current)
+        : useNoteUndoStore.getState().redo(file, contentRef.current);
+    if (target === null) return;
+    applyingUndoRef.current = true;
+    handleChange(target);
+    applyingUndoRef.current = false;
+    // 撤销/重做是应持久化的编辑：登记挂起输入（handleChange 在 applyingUndoRef 下跳过登记，
+    // 而 recordEdit 跳过与 pending 登记是两个维度——漏登记会在 500ms 内 flush 时落盘撤销前旧内容）
+    useVaultStore.getState().setPendingNoteContent(file, target);
+    setEditorSyncSeq((s) => s + 1);
+  };
+
+  /**
+   * 笔记撤销/重做窗口级快捷键（编辑态 preview=false 时生效，协作/非协作一致）：
+   * Mod-z / Mod-y / Mod-Shift-z → applyNoteUndo。撤销入口不依赖编辑器聚焦、不依赖
+   * CM keymap——CM 内置 history 与 y-undo 均随 EditorView 销毁丢失（退出编辑→重进即清），
+   * 持久栈按文件驻留 store；CM 与源码 textarea 均不再绑定撤销键（MarkdownEditor 分支
+   * 已去除），无双撤销。画布快捷键仅在画布面板聚焦时启用，编辑态与画布聚焦互斥
+   * （点画布即退出编辑），无冲突。
+   * 目标过滤：属性面板/弹层输入框（input/select、非源码 textarea）交给浏览器原生撤销；
+   * 其余目标（CM content、源码 textarea、双击重进后焦点落 body、工具栏）一律接管——
+   * 编辑态下笔记即活动编辑面（点其它面板/弹窗即退出编辑），无越权撤销。
+   */
+  const applyUndoRef = useRef(applyNoteUndo);
+  applyUndoRef.current = applyNoteUndo;
+  useEffect(() => {
+    if (preview) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      const key = e.key.toLowerCase();
+      if (key !== "z" && key !== "y") return;
+      const t = e.target as Element | null;
+      if (t instanceof HTMLInputElement || t instanceof HTMLSelectElement) return;
+      if (t instanceof HTMLTextAreaElement && !t.hasAttribute("data-note-content")) return;
+      e.preventDefault();
+      if (key === "z") {
+        if (e.shiftKey) applyUndoRef.current("redo");
+        else applyUndoRef.current("undo");
+      } else {
+        applyUndoRef.current("redo");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [preview]);
 
   /** 当前编辑面选区（区间 + 源码原文）；编辑面不可用返回 null。 */
   const currentEditorSelection = (): { from: number; to: number; text: string } | null => {
@@ -958,6 +1050,19 @@ export function NoteEditor({ file }: { file: string }) {
             body={parsed.body}
             syncSeq={editorSyncSeq}
             editorViewRef={cmViewRef}
+            // 协作挂载分歧：干净 → 收敛 content 到协作基线（编辑器已以 ytext 为模型源）；
+            // 有未落盘编辑 → 本地正文写回 ytext（本地最新者胜，防陈旧基线回退本地输入）
+            onCollabDivergence={(ytextText) => {
+              const bodyLF = parsed.body.replace(/\r\n/g, "\n");
+              if (contentRef.current === lastSavedRef.current) {
+                const body = parsed.body.includes("\r\n")
+                  ? ytextText.replace(/\n/g, "\r\n")
+                  : ytextText;
+                handleChange(parsed.fmPrefix + body);
+              } else {
+                useNoteCollabStore.getState().syncLocalBody(file, bodyLF);
+              }
+            }}
             // 协作态门控：仅协作激活时进入 Yjs 编辑（collabBinding 可能因协作关闭/断线残留，若不过滤，
             // 残留绑定的陈旧 ytext 会成为编辑模型源，源码模式编辑（只改 content）切回实时预览被回退）
             collab={isCollab ? collabBinding : undefined}
