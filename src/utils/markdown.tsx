@@ -338,6 +338,96 @@ export const remarkSoftLineBreak: Plugin<[], Root> = () => (tree: Root) => {
   }
 };
 
+// ===== 正文内联标签 `#标签` → 胶囊渲染（与属性徽章同一视觉）=====
+
+/** 标签正则：`#` 前非字母/数字/`#`/`_`/`/`（排除标题、日期 `#2024`、`foo#bar`、`##x`、URL 片段 `x.com/#faq`），
+ * 标签字符集含字母数字 `_ - /`，须含 ≥1 个字母（与 Rust 侧 extract_inline_tags 同一语义；渲染层额外跳过代码/链接内文本）。
+ * `u` 标志使 `\p{L}` 匹配 Unicode 字母（中文标签）。 */
+const INLINE_TAG_RE = /(^|[^\p{L}\p{N}_#/])#([\p{L}\p{N}_\-/]+)/gu;
+
+/** 把文本按内联标签拆分为分段（string = 原文片段，{tag} = 需胶囊化的标签）；无标签返回单段。 */
+function splitInlineTags(value: string): (string | { tag: string })[] {
+  const parts: (string | { tag: string })[] = [];
+  let last = 0;
+  INLINE_TAG_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = INLINE_TAG_RE.exec(value))) {
+    const tag = m[2] ?? "";
+    if (!/[\p{L}]/u.test(tag)) continue;
+    // 起点 = `#` 位置（匹配含前缀字符，`^` 匹配前缀为空）：start 之前原文保留，胶囊从 `#` 起含整标签
+    const start = m.index + (m[1]?.length ?? 0);
+    const end = start + 1 + tag.length;
+    if (start > last) parts.push(value.slice(last, start));
+    parts.push({ tag });
+    last = end;
+  }
+  if (last < value.length) parts.push(value.slice(last));
+  return parts;
+}
+
+/** hast 节点最小结构（宽松类型，与既有 transform 风格一致；不依赖 hast 包解析）。 */
+interface HastNode {
+  type: string;
+  value?: string;
+  tagName?: string;
+  properties?: Record<string, unknown>;
+  children?: HastNode[];
+}
+
+/**
+ * 正文内联 `#标签` → 胶囊 span。跳过 code/pre/a 与 KaTeX 数学 DOM 内的文本（代码/链接/数学里的 `#` 不是标签）。
+ * 置于 REHYPE_PLUGINS 末尾——sanitize 之后创建 span，不受白名单限制，
+ * 只产出受控 class（无脚本执行面）。识别规则与 Rust 侧标签索引一致；链接内标签仅入索引、预览不渲染（视觉从简）。
+ */
+export const rehypeInlineTags: Plugin<[], HastNode> = () => (tree: HastNode) => {
+  const processChildren = (children: HastNode[], skip: boolean): HastNode[] => {
+    const out: HastNode[] = [];
+    for (const child of children) {
+      if (child.type === "text") {
+        if (skip) {
+          out.push(child);
+          continue;
+        }
+        const parts = splitInlineTags(child.value ?? "");
+        // 仅单段纯文本 = 无标签（原样保留）；纯 `#tag` 文本拆分为 [{tag}]（长度 1 但非字符串），
+        // 需继续拆分——否则整行/整段仅一个标签时预览不渲染胶囊
+        if (parts.length === 0 || (parts.length === 1 && typeof parts[0] === "string")) {
+          out.push(child);
+          continue;
+        }
+        for (const p of parts) {
+          if (typeof p === "string") {
+            out.push({ type: "text", value: p });
+          } else {
+            out.push({
+              type: "element",
+              tagName: "span",
+              properties: { className: ["inline-tag"] },
+              children: [{ type: "text", value: `#${p.tag}` }],
+            });
+          }
+        }
+      } else if (child.type === "element") {
+        // 跳过 code/pre/a 与 KaTeX 数学 DOM（`\text{#tag}` 等是数学内容不是标签；katex 输出经 rehypeKatex 已定型）
+        const props = (child.properties ?? {}) as { className?: unknown };
+        const cls = Array.isArray(props.className) ? props.className.join(" ") : "";
+        const childSkip =
+          skip ||
+          child.tagName === "code" ||
+          child.tagName === "pre" ||
+          child.tagName === "a" ||
+          cls.includes("katex");
+        child.children = processChildren(child.children ?? [], childSkip);
+        out.push(child);
+      } else {
+        out.push(child);
+      }
+    }
+    return out;
+  };
+  tree.children = processChildren(tree.children ?? [], false);
+};
+
 /** 公共插件列表：两处节点组件共用，勿各自复制。
  * remark-frontmatter 放 remarkCompat 前：先识别文档开头 `---` 块为 yaml 节点，transform 阶段删除。 */
 export const MARKDOWN_PLUGINS = [remarkGfm, remarkMath, remarkFrontmatter, remarkCompat];
@@ -345,6 +435,7 @@ export const REHYPE_PLUGINS: PluggableList = [
   [rehypeSanitize, MARKDOWN_SANITIZE_SCHEMA],
   rehypeHighlight,
   rehypeKatex,
+  rehypeInlineTags,
 ];
 
 // ===== wiki 链接工具 + 组件工厂 =====

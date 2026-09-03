@@ -30,6 +30,7 @@ use crate::vault::{
     rename_folder as rename_folder_impl, rename_note_file, rel_with_new_title,
     resolve_link_target, rewrite_internal_links, safe_join, same_physical_file,
     sanitize_filename, walk_md_in, write_canvas_file, write_note as write_note_file, write_vault_config as write_vault_config_file,
+    aggregate_tag_counts, refresh_tag_index,
     list_chat_sessions_file,
     read_chat_session_meta_file, write_chat_session_meta_file, delete_chat_session_meta_file,
     read_editor_chats_meta_file, write_editor_chats_meta_file,
@@ -44,6 +45,7 @@ use crate::vault::{
     ChatMessageRecord, ChatMetaFile, ChatSessionMeta, ChatSessionRow, DeleteFolderResult,
     FileTreeNode, VaultConfig, VaultState,
     WikiIndex, CANVAS_SCHEMA, query_wiki_backlinks,
+    TagIndex, TagRow,
 };
 
 /// read_file 分页窗口的默认/上限参数：
@@ -97,6 +99,13 @@ pub fn open_vault(
                 if guard.is_none() {
                     *guard = Some(WikiIndex::default());
                     let _ = refresh_wiki_index(&warm_root, &warm_exclude, guard.as_mut().unwrap());
+                }
+            }
+            // 标签索引后台预热：与反链同策略（失败静默，查询侧懒构建兜底）
+            if let Ok(mut guard) = st.tags.lock() {
+                if guard.is_none() {
+                    *guard = Some(TagIndex::default());
+                    let _ = refresh_tag_index(&warm_root, &warm_exclude, guard.as_mut().unwrap());
                 }
             }
         }
@@ -341,6 +350,21 @@ pub fn scan_wiki_backlinks(
     }
     refresh_wiki_index(&root, &exclude, guard.as_mut().unwrap())?;
     Ok(query_wiki_backlinks(guard.as_ref().unwrap(), &note_name, &note_file))
+}
+
+/// 全仓库标签词汇表（frontmatter `tags` + 正文内联 `#标签`；索引缓存 + 指纹增量刷新）。
+/// 只扫 .md 不扫 .atlx；与文件树同过滤（跳过隐藏/排除目录，`.atelyx/对话历史` 不算）。
+/// 返回出现次数降序 + 名称升序、上限 1000；纯内存缓存，磁盘为真相（外部编辑自愈）。
+#[tauri::command]
+pub fn scan_vault_tags(state: State<'_, VaultState>) -> Result<Vec<TagRow>, String> {
+    let root = state.root()?;
+    let exclude = state.exclude_folders()?;
+    let mut guard = state.tags.lock().map_err(|e| e.to_string())?;
+    if guard.is_none() {
+        *guard = Some(TagIndex::default());
+    }
+    refresh_tag_index(&root, &exclude, guard.as_mut().unwrap())?;
+    Ok(aggregate_tag_counts(guard.as_ref().unwrap()))
 }
 
 /// 重建内部链接的结果统计。

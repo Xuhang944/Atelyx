@@ -7,9 +7,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use nanoid::nanoid;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 /// 磁盘文件缓存条目：mtime（纳秒）+ 长度作失效指纹——外部编辑/同步盘改动命中指纹变化，
@@ -25,6 +26,8 @@ pub struct VaultState {
     pub session: Mutex<Option<VaultSession>>,
     /// 反链索引缓存：纯内存、磁盘为真相（每次查询按指纹 diff 自愈）；切换仓库时随 set 清空，查询时懒构建。
     pub wiki: Mutex<Option<WikiIndex>>,
+    /// 标签索引缓存：同反链（纯内存、磁盘为真相、指纹增量刷新；切仓库随 set 清空、查询懒构建）。
+    pub tags: Mutex<Option<TagIndex>>,
     /// 已解析 `.atlx` 缓存（key = 相对仓库根路径）：指纹校验失效，切仓库随 set 清空。
     pub canvas_cache: Mutex<HashMap<String, CachedFile<CanvasFile>>>,
     /// 已解析 `.atb` 缓存（同 canvas_cache）。
@@ -43,6 +46,7 @@ impl Default for VaultState {
         Self {
             session: Mutex::new(None),
             wiki: Mutex::new(None),
+            tags: Mutex::new(None),
             canvas_cache: Mutex::new(HashMap::new()),
             table_cache: Mutex::new(HashMap::new()),
         }
@@ -81,9 +85,10 @@ impl VaultState {
             root: canonical,
             exclude_folders,
         });
-        // 以下三个辅助锁（wiki/canvas_cache/table_cache）poison 时清空动作无副作用，吞掉即可；
+        // 以下四个辅助锁（wiki/tags/canvas_cache/table_cache）poison 时清空动作无副作用，吞掉即可；
         // 读路径（query/read_cached）对 poison 走 map_err 传播（见 416/433 行），与本处策略一致。
         let _ = self.wiki.lock().map(|mut w| *w = None);
+        let _ = self.tags.lock().map(|mut t| *t = None);
         // 切仓库清空文件缓存：不同仓库的同名相对路径不得混用
         let _ = self.canvas_cache.lock().map(|mut c| c.clear());
         let _ = self.table_cache.lock().map(|mut c| c.clear());
@@ -1668,6 +1673,219 @@ fn file_stamp(path: &Path) -> Option<FileStamp> {
     })
 }
 
+// ===== 标签索引（纯内存缓存，磁盘为真相；与反链索引同构）=====
+//
+// 设计要点：
+// - 正文任意处 `#标签` 与 frontmatter `tags` 共同构成仓库标签词汇表（属性区 tags 候选建议的数据源）；
+// - 与反链索引同一套指纹增量刷新（mtime+size diff，只重读变化 .md，缺失剔除，外部编辑自愈）；
+// - 只扫 .md（不扫 .atlx/对话历史）；标签须含 ≥1 个字母（排除 `#2024`/`#1` 日期序号误判）。
+// - 正文提取跳过 frontmatter/围栏代码（含 ≤3 空格缩进）/缩进代码（≥4 空格行首）/行内代码；
+//   识别规则与前端渲染一致，渲染层额外跳过链接内文本（链接内标签仅入索引不渲染，视觉从简）。
+
+/// 标签行：标签名 + 全仓库出现次数（scan_vault_tags 返回，候选按 count 降序）。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagRow {
+    pub tag: String,
+    pub count: u32,
+}
+
+/// 标签索引：rel 路径 → 指纹 + 标签集合（聚合遍历纯内存，无 I/O）。
+#[derive(Default)]
+pub struct TagIndex {
+    files: HashMap<String, FileStamp>,
+    tags: HashMap<String, HashSet<String>>,
+}
+
+/// 增量刷新标签索引：stat 遍历，只重读指纹变化的文件；消失文件剔除。
+pub fn refresh_tag_index(
+    root: &Path,
+    exclude: &[String],
+    index: &mut TagIndex,
+) -> Result<(), String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    walk_md_in(root, "", exclude, &mut |rel, path| {
+        seen.insert(rel.to_string());
+        let Some(stamp) = file_stamp(path) else {
+            return Ok(());
+        };
+        if index.files.get(rel).map(|old| *old == stamp).unwrap_or(false) {
+            return Ok(());
+        }
+        // 不可读文件（非 UTF-8/权限）跳过，不中断整仓索引——与其他扫描路径行为一致
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return Ok(());
+        };
+        index.files.insert(rel.to_string(), stamp);
+        index.tags.insert(rel.to_string(), extract_note_tags(&content));
+        Ok(())
+    })?;
+    index.files.retain(|rel, _| seen.contains(rel));
+    index.tags.retain(|rel, _| seen.contains(rel));
+    Ok(())
+}
+
+/// 聚合标签计数：count 降序 + 名称升序，上限 1000（候选建议按常用优先）。
+pub fn aggregate_tag_counts(index: &TagIndex) -> Vec<TagRow> {
+    let mut counts: HashMap<&str, u32> = HashMap::new();
+    for set in index.tags.values() {
+        for tag in set {
+            *counts.entry(tag.as_str()).or_insert(0) += 1;
+        }
+    }
+    let mut rows: Vec<TagRow> = counts
+        .into_iter()
+        .map(|(tag, count)| TagRow { tag: tag.to_string(), count })
+        .collect();
+    rows.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.tag.cmp(&b.tag)));
+    rows.truncate(1000);
+    rows
+}
+
+/// 提取一篇笔记的全部标签：frontmatter `tags` + 正文内联 `#标签`（去重）。
+fn extract_note_tags(content: &str) -> HashSet<String> {
+    let mut tags: HashSet<String> = HashSet::new();
+    let mut body_start = 0;
+    // 仅文档开头 `---` 块内的 `tags` 键算 frontmatter（非开头 `---` 是正文横隔条，不算）
+    if content.starts_with("---\n") || content.starts_with("---\r\n") {
+        if let Some(end) = frontmatter_end(content) {
+            parse_fm_tags(&content[..end], &mut tags);
+            body_start = end;
+        }
+    }
+    extract_inline_tags(&content[body_start..], &mut tags);
+    tags
+}
+
+/// 解析 frontmatter 块的 `tags` 键：`tags: [a, b]` 内联数组、`tags:\n  - a` 块列表、`tags: foo` 标量，
+/// 去引号去空。块列表项正则要求 `-` 后跟空白（防 `---` 文档结束符被当成 `-` 列表项）。
+fn parse_fm_tags(fm: &str, tags: &mut HashSet<String>) {
+    static INLINE_RE: OnceLock<Regex> = OnceLock::new();
+    static KEY_LINE_RE: OnceLock<Regex> = OnceLock::new();
+    static ITEM_RE: OnceLock<Regex> = OnceLock::new();
+    static SCALAR_RE: OnceLock<Regex> = OnceLock::new();
+    let inline = INLINE_RE.get_or_init(|| Regex::new(r"(?m)^\s*tags\s*:\s*\[([^\]]*)\]").unwrap());
+    let key_line = KEY_LINE_RE.get_or_init(|| Regex::new(r"(?m)^\s*tags\s*:\s*$").unwrap());
+    let item = ITEM_RE.get_or_init(|| Regex::new(r"^\s*-\s+(.+?)\s*$").unwrap());
+    let scalar = SCALAR_RE.get_or_init(|| Regex::new(r"(?m)^\s*tags\s*:\s*(.+?)\s*$").unwrap());
+    // 内联数组优先（`tags: [a, b]`；括号捕获天然排除尾部注释）
+    if let Some(caps) = inline.captures(fm) {
+        if let Some(group) = caps.get(1) {
+            for raw in group.as_str().split(',') {
+                let t = clean_tag_value(raw);
+                if !t.is_empty() {
+                    tags.insert(t.to_string());
+                }
+            }
+        }
+        return;
+    }
+    // 块列表：`tags:` 行后连续 `- x` 行（空行跳过，首个非空非列表行结束该块）
+    if let Some(m) = key_line.find(fm) {
+        for line in fm[m.end()..].lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            match item.captures(line) {
+                Some(caps) => {
+                    let t = clean_tag_value(caps.get(1).unwrap().as_str());
+                    if !t.is_empty() {
+                        tags.insert(t.to_string());
+                    }
+                }
+                None => break,
+            }
+        }
+        return;
+    }
+    // 标量（`tags: foo`；剥离 ` # 注释`）
+    if let Some(caps) = scalar.captures(fm) {
+        if let Some(group) = caps.get(1) {
+            let t = clean_tag_value(group.as_str());
+            if !t.is_empty() {
+                tags.insert(t.to_string());
+            }
+        }
+    }
+}
+
+/// 剥离 YAML 行内注释（` # ...`，`foo#bar` 无空格前缀不算注释）与引号，返回干净标签值。
+fn clean_tag_value(raw: &str) -> &str {
+    raw.split(" #").next().unwrap_or(raw).trim().trim_matches(['"', '\''])
+}
+
+/// 从正文（已剥 frontmatter）提取内联 `#标签`：跳过围栏代码（含 ≤3 空格缩进）/缩进代码/行内代码；
+/// `#` 前一字符非字母/数字/`#`/`_`/`/`（排除 `foo#bar`、`##tag`、URL 片段 `x.com/#faq`），标签须含 ≥1 个字母。
+/// 识别规则与前端渲染一致；渲染层额外跳过链接内文本（标签仅入索引不渲染，视觉从简）。
+fn extract_inline_tags(body: &str, tags: &mut HashSet<String>) {
+    let bytes = body.as_bytes();
+    let len = body.len();
+    let mut i = 0;
+    while i < len {
+        if at_line_start(body, i) {
+            // 缩进代码块（≥4 空格行首）：整行跳过（行首 ≥4 空格按代码行处理）
+            let rest = &body[i..];
+            let lead = rest.bytes().take_while(|&b| b == b' ').count();
+            if lead >= 4 {
+                let end = rest.find('\n').map_or(len, |p| i + p + 1);
+                i = end;
+                continue;
+            }
+            // 围栏代码块：行首或 ≤3 空格缩进（嵌套列表里的围栏；闭合端 fence_close_end 已容忍 ≤3 空格）
+            let after = &rest[lead..];
+            if let Some(open_len) = fence_len_at(after, 0) {
+                let open_char = after.chars().next().unwrap();
+                if let Some(close) = fence_close_end(&after[open_len..], open_char, open_len) {
+                    i += lead + open_len + close;
+                    continue;
+                }
+            }
+        }
+        // 行内代码：反引号 run 至等长（或更长）run 闭合
+        if bytes[i] == b'`' {
+            let n = backtick_run_at(body, i);
+            if let Some(close) = backtick_close(body, i + n, n) {
+                i = close;
+                continue;
+            }
+        }
+        if bytes[i] == b'#' {
+            if let Some(tag) = tag_at(body, i) {
+                tags.insert(tag.clone());
+                i += tag.len() + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+}
+
+/// `i` 处若为合法标签起点（`#` 后跟 ≥1 个标签字符且含字母），返回标签名（不含 `#`）。
+fn tag_at(body: &str, i: usize) -> Option<String> {
+    if let Some(prev) = body[..i].chars().next_back() {
+        // `/` 入排除集：URL 片段 `https://x.com/#faq` 的 `#` 前是 `/`，不是标签
+        if prev.is_alphanumeric() || prev == '#' || prev == '_' || prev == '/' {
+            return None;
+        }
+    }
+    let mut end = 0usize;
+    let mut has_alpha = false;
+    for ch in body[i + 1..].chars() {
+        if ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '/' {
+            end += ch.len_utf8();
+            if ch.is_alphabetic() {
+                has_alpha = true;
+            }
+        } else {
+            break;
+        }
+    }
+    if end == 0 || !has_alpha {
+        return None;
+    }
+    Some(body[i + 1..i + 1 + end].to_string())
+}
+
 /// 提取引用：`[[target]]` / `[[target|别名]]` + `[label](path)`（回溯 `[` 检查前导 `!` 排除图片）。
 fn extract_refs(content: &str) -> Vec<WikiRef> {
     let mut refs = Vec::new();
@@ -2469,5 +2687,98 @@ mod sideload_remap_tests {
         assert_side(&root, "", "项目B/笔记.md", "a");
         assert_side(&root, "", "项目A2/笔记.md", "a2"); // 近邻名不受影响
         assert_side_gone(&root, "", "项目A/笔记.md");
+    }
+}
+
+#[cfg(test)]
+mod tag_index_tests {
+    use super::*;
+
+    /// 断言提取结果集合与期望一致（顺序无关）。
+    fn assert_tags(content: &str, expect: &[&str]) {
+        let got = extract_note_tags(content);
+        let want: HashSet<String> = expect.iter().map(|s| s.to_string()).collect();
+        assert_eq!(got, want, "content: {:?}", content);
+    }
+
+    #[test]
+    fn inline_and_frontmatter_union() {
+        // frontmatter 内联数组 + 正文内联标签
+        assert_tags(
+            "---\ntags: [a, b]\n---\n正文 #c 和 #a\n",
+            &["a", "b", "c"],
+        );
+    }
+
+    #[test]
+    fn frontmatter_block_list() {
+        assert_tags(
+            "---\ntags:\n  - x\n  - y\n---\nbody\n",
+            &["x", "y"],
+        );
+    }
+
+    #[test]
+    fn heading_and_number_not_tag() {
+        // 标题 `# 标题`/`###`、日期 `#2024`、序号 `#1` 都不是标签
+        assert_tags("# 标题\n## 子标题\n#2024 和 #1\n", &[]);
+    }
+
+    #[test]
+    fn code_blocks_and_inline_code_skipped() {
+        assert_tags(
+            "前 #real\n```\n#code-in-fence\n```\n`#inline` #after\n",
+            &["real", "after"],
+        );
+    }
+
+    #[test]
+    fn word_boundary_and_double_hash() {
+        // `foo#bar`、`##tag` 排除；`#a#b` 只取 `a`
+        assert_tags("foo#bar ##tag #a#b\n", &["a"]);
+    }
+
+    #[test]
+    fn chinese_and_nested_tags() {
+        // 中文标签与层级标签
+        assert_tags("#重要 #项目/前端\n", &["重要", "项目/前端"]);
+    }
+
+    #[test]
+    fn body_only_without_frontmatter() {
+        assert_tags("只有正文 #tag\n", &["tag"]);
+    }
+
+    #[test]
+    fn frontmatter_not_at_start_is_hr() {
+        // 非开头的 `---` 是横隔条，不是 frontmatter；其后 `#tag` 仍算正文标签
+        assert_tags("正文\n---\n#tag\n", &["tag"]);
+    }
+
+    #[test]
+    fn scalar_and_inline_comment() {
+        // `tags: foo` 标量；` # 注释` 剥离（`foo#bar` 无空格前缀不算注释）
+        assert_tags("---\ntags: 标签\n---\n", &["标签"]);
+        assert_tags("---\ntags: a # todo\n---\n", &["a"]);
+        assert_tags("---\ntags:\n  - x # 备注\n  - y\n---\n", &["x", "y"]);
+        assert_tags("---\ntags: foo#bar\n---\n", &["foo#bar"]);
+    }
+
+    #[test]
+    fn crlf_frontmatter() {
+        assert_tags("---\r\ntags: [a, b]\r\n---\r\n正文 #c\r\n", &["a", "b", "c"]);
+    }
+
+    #[test]
+    fn indented_code_blocks_skipped() {
+        // ≥4 空格缩进行按代码处理；≤3 空格缩进围栏（嵌套列表）整块跳过
+        assert_tags("正文\n    #indented\n#real\n", &["real"]);
+        assert_tags("列表项\n  ~~~js\n  #code\n  ~~~\n#real\n", &["real"]);
+    }
+
+    #[test]
+    fn url_fragment_not_tag() {
+        // URL 片段 `#` 前是 `/`，不是标签
+        assert_tags("见 https://x.com/#faq\n", &[]);
     }
 }

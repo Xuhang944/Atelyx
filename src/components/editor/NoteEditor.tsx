@@ -817,6 +817,16 @@ export function NoteEditor({ file }: { file: string }) {
     }
   };
 
+  /** 全仓库标签词汇表（属性区 tags 输入候选）：懒加载一次，失败静默降级空数组（仍可手输标签）。 */
+  const vaultTags = useVaultStore((s) => s.vaultTags);
+  const tagCandidates = useMemo(() => (vaultTags ?? []).map((t) => t.tag), [vaultTags]);
+  const tagCandidatesRequestedRef = useRef(false);
+  const requestTagCandidates = useCallback(() => {
+    if (tagCandidatesRequestedRef.current) return;
+    tagCandidatesRequestedRef.current = true;
+    void useVaultStore.getState().loadVaultTags();
+  }, []);
+
   /** 笔记链接打开/新建（公共接线簇，见 hooks/useVaultLinkHandlers；本编辑器不做画布定位）。 */
   const { handleOpenWikiNote, isVaultPathNote, handleOpenVaultPathNote, handleCreateNote } =
     useVaultLinkHandlers();
@@ -977,14 +987,16 @@ export function NoteEditor({ file }: { file: string }) {
         </span>
       </div>
 
-      {/* 属性区：渲染/实时预览编辑模式内嵌编辑器顶部（可点击编辑）；
-          源码模式由 textarea 显示 YAML 原文，不重复显示；格式错误时也显示（错误条 + 源码模式修复入口） */}
-      {!sourceMode && (parsed.fmPrefix !== "" || !parsed.ok) && (
+      {/* 属性区：胶囊行式融入正文顶部（可点击编辑）；渲染/实时预览编辑模式显示，源码模式由 textarea
+          显示 YAML 原文不重复显示；无 frontmatter 时也显示空态「添加属性」行（内联添加首个属性）；格式错误时显示红条 */}
+      {!sourceMode && !loadError && (
         <NotePropertiesView
           data={parsed.data}
           parseError={!parsed.ok}
           onUpdate={handlePropertiesUpdate}
           onOpenSource={() => setSourceMode(true)}
+          tagCandidates={tagCandidates}
+          onRequestTagCandidates={requestTagCandidates}
         />
       )}
 

@@ -257,6 +257,24 @@ class WikiLinkWidget extends WidgetType {
   }
 }
 
+/** 内联标签 `#tag` widget：胶囊样式（与属性徽章同一视觉），纯展示不可点。 */
+class TagWidget extends WidgetType {
+  constructor(private readonly tag: string) {
+    super();
+  }
+
+  eq(other: TagWidget) {
+    return other.tag === this.tag;
+  }
+
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "md-editor-tag";
+    span.textContent = `#${this.tag}`;
+    return span;
+  }
+}
+
 /** 列表标记 widget：无序列表小圆点 / 有序列表序号（替代被隐藏的 `- `、`1. ` 标记）。 */
 class ListMarkerWidget extends WidgetType {
   constructor(private readonly text: string) {
@@ -341,6 +359,24 @@ interface ContainerInfo extends RangeInfo {
 
 const rangeKey = (r: RangeInfo) => `${r.from}:${r.to}`;
 
+/** 行内标签正则（与预览/Rust 提取同语义）：`#` 前非字母/数字/`#`/`_`/`/`（排除标题、日期、`foo#bar`、URL 片段），
+ * 标签含字母、字符集字母数字 `_ - /`。 */
+const INLINE_TAG_RE = /(^|[^\p{L}\p{N}_#/])#([\p{L}\p{N}_\-/]+)/gu;
+
+/** 行内 `#标签` 匹配区间（行文本 + 行起点偏移 → 绝对区间；`from` = `#` 位置，`to` 含标签尾）。 */
+function inlineTagRanges(lineText: string, lineFrom: number): RangeInfo[] {
+  const out: RangeInfo[] = [];
+  INLINE_TAG_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = INLINE_TAG_RE.exec(lineText))) {
+    const tag = m[2] ?? "";
+    if (!/[\p{L}]/u.test(tag)) continue;
+    const start = lineFrom + m.index + (m[1]?.length ?? 0);
+    out.push({ from: start, to: start + 1 + tag.length });
+  }
+  return out;
+}
+
 /** `[text](url)` / `![alt](url)`（含可选 title）解析；不匹配返回 null（保持原文）。 */
 function parseBracketLink(text: string): { label: string; url: string } | null {
   const m =
@@ -365,6 +401,8 @@ function buildDecorations(
   const containers: ContainerInfo[] = [];
   const taskMarkers: TaskMarkerInfo[] = [];
   const dividerLines: RangeInfo[] = [];
+  /** 标签不渲染的范围：围栏/缩进代码、行内代码、链接/图片（`#` 是代码或锚点，保持原文）。 */
+  const tagSkips: RangeInfo[] = [];
 
   tree.iterate({
     enter: (node) => {
@@ -372,6 +410,10 @@ function buildDecorations(
       if (MARK_NAMES.has(name)) {
         marks.push({ from: node.from, to: node.to, name });
       } else if (INLINE_CONTAINER_NAMES.has(name)) {
+        // 行内代码/链接/图片：标签在其中保持原文（InlineCode 属容器节点，一并纳入 tagSkips）
+        if (name === "InlineCode" || name === "Link" || name === "Autolink" || name === "Image") {
+          tagSkips.push({ from: node.from, to: node.to });
+        }
         // 标记叶节点是容器节点的直接子节点（SyntaxNodeRef 无子树遍历，经 node.node 取）
         const childMarks: RangeInfo[] = [];
         for (let child = node.node?.firstChild; child; child = child.nextSibling) {
@@ -380,6 +422,8 @@ function buildDecorations(
           }
         }
         containers.push({ from: node.from, to: node.to, name, marks: childMarks });
+      } else if (name === "FencedCode" || name === "IndentedCode") {
+        tagSkips.push({ from: node.from, to: node.to });
       } else if (name === "TaskMarker") {
         // 任务复选框：沿父链找 ListItem（TaskMarker → Task → ListItem）取 ListMark 前缀，
         // 整段替换为复选框
@@ -505,6 +549,20 @@ function buildDecorations(
       });
       widgetEntries.push({ from, to, dec });
       widgetBounds.push({ from, to });
+    }
+  }
+
+  // 内联标签 `#tag` → 胶囊 widget（光标行显示原文；代码/链接范围保持原文——与预览/Rust 提取同语义）
+  const allTagSkips = [...tagSkips, ...widgetBounds];
+  for (let lineNum = 1; lineNum <= doc.lines; lineNum++) {
+    if (lineNum === cursorLine) continue;
+    const line = doc.line(lineNum);
+    for (const r of inlineTagRanges(line.text, line.from)) {
+      if (allTagSkips.some((w) => r.from >= w.from && r.to <= w.to)) continue;
+      const tag = doc.sliceString(r.from + 1, r.to);
+      const dec = Decoration.replace({ widget: new TagWidget(tag) });
+      widgetEntries.push({ from: r.from, to: r.to, dec });
+      widgetBounds.push({ from: r.from, to: r.to });
     }
   }
 

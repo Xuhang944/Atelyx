@@ -8,6 +8,7 @@
  * - 空对象序列化时不输出 `---` 块（删光属性后文件自然回到无 frontmatter 态）。
  */
 import matter from "gray-matter";
+import { BADGE_PROPERTY_KEYS } from "@/constants/notes";
 
 // gray-matter 依赖 Node 全局 Buffer（lib/utils.js 的 toBuffer 调 Buffer.from，每次解析都执行），
 // WebView2 浏览器无此全局 → 提供最小 shim：本项目输入恒为字符串，原样返回即可（kind-of 判断 buffer 类型不依赖全局）。
@@ -29,11 +30,89 @@ export interface ParsedFrontmatter {
   ok: boolean;
 }
 
-/** 徽章类 key（内置标签属性）：渲染为 `#` 前缀徽章；其余数组渲染为 Clock 列表。 */
-const BADGE_KEYS = new Set(["tags", "aliases", "cssclasses"]);
+/** 徽章类 key（内置标签属性）：渲染为 `#` 前缀徽章；其余数组渲染为 Clock 列表。
+ *  名单唯一来源 = constants/notes.ts 的 BADGE_PROPERTY_KEYS（避免两处维护分歧）。 */
+const BADGE_KEYS = new Set(BADGE_PROPERTY_KEYS);
 
 export function isBadgeKey(key: string): boolean {
   return BADGE_KEYS.has(key);
+}
+
+// ===== 属性值类型（键名前图标 + 类型切换菜单共用）=====
+//
+// YAML 值即类型（文本即真相，无独立 schema）：类型由值推断，切换类型 = 把值转换为目标 YAML 类型落盘。
+
+/** 属性值类型：文本 / 标签（徽章数组）/ 日期 / 数字 / 布尔 / 列表（Clock 数组）。 */
+export type PropertyValueType = "text" | "tag" | "date" | "number" | "boolean" | "list";
+
+/** 按键名 + 值推断当前类型：数组按徽章键区分标签/列表（非徽章键数组 = 列表）。 */
+export function inferPropertyType(key: string, value: unknown): PropertyValueType {
+  if (Array.isArray(value)) return isBadgeKey(key) ? "tag" : "list";
+  if (value instanceof Date) return "date";
+  if (typeof value === "number") return "number";
+  if (typeof value === "boolean") return "boolean";
+  return "text";
+}
+
+/** Date 显示/转文本用：YYYY-MM-DD。gray-matter/js-yaml 把 `2024-01-15` 解析为 UTC 零点 Date，
+ *  用 UTC getter 取日历日（本地 getter 在西时区会偏移前一天）。 */
+export function formatDate(d: Date): string {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** 把值转换为目标类型；不可转换返回 null（调用方保留原值，防破坏 YAML 数据）。 */
+export function convertPropertyValue(
+  value: unknown,
+  type: PropertyValueType,
+): unknown | null {
+  switch (type) {
+    case "text":
+      if (value === null || value === undefined) return "";
+      if (value instanceof Date) return formatDate(value);
+      if (Array.isArray(value)) return value.map(String).join("，");
+      return String(value);
+    case "tag":
+    case "list": {
+      if (value === null || value === undefined) return [];
+      const arr = Array.isArray(value) ? value : [value];
+      return arr
+        .map((v) => (v instanceof Date ? formatDate(v) : String(v)))
+        .filter((s) => s.trim() !== "");
+    }
+    case "date": {
+      if (value instanceof Date) return value;
+      if (typeof value === "number") {
+        const d = new Date(value);
+        return Number.isNaN(d.getTime()) ? null : d;
+      }
+      if (typeof value === "string" && value.trim() !== "") {
+        const d = new Date(value.trim());
+        return Number.isNaN(d.getTime()) ? null : d;
+      }
+      return null;
+    }
+    case "number": {
+      if (typeof value === "number") return value;
+      if (typeof value === "boolean") return value ? 1 : 0;
+      if (typeof value === "string" && /^-?\d+(\.\d+)?$/.test(value.trim())) {
+        return parseFloat(value);
+      }
+      return null;
+    }
+    case "boolean": {
+      if (typeof value === "boolean") return value;
+      if (typeof value === "number") return value !== 0;
+      if (typeof value === "string") {
+        const s = value.trim().toLowerCase();
+        if (s === "true" || s === "yes" || s === "1") return true;
+        if (s === "false" || s === "no" || s === "0") return false;
+      }
+      return null;
+    }
+  }
 }
 
 /** gray-matter 的类型声明未覆盖 js-yaml dump 的透传参数，此处补充（官方文档说明 options 会传给 js-yaml）。 */

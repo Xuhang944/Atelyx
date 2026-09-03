@@ -522,6 +522,24 @@ body {
   color: var(--text-muted);
   border-bottom: 1px dashed currentColor;
 }
+/* ===== 内联标签 `#标签` 胶囊（预览 markdown-body 与编辑器 md-editor 共用同一视觉）=====
+ * 淡强调底色 + 强调色字体（与属性区 tags 徽章一致）；font-size 略小于正文；
+ * max-width + ellipsis 防超长标签撑破行（nowrap 需限宽才不溢出）。 */
+.markdown-body .inline-tag,
+.md-editor-tag {
+  display: inline-block;
+  max-width: 12em;
+  padding: 0 0.35em;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-size: 0.85em;
+  line-height: 1.4;
+  vertical-align: baseline;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .markdown-body blockquote.callout {
   margin: 0.5em 0;
   padding: 0.5em 1em;

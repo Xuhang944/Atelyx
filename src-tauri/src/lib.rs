@@ -36,6 +36,7 @@ pub fn run() {
             commands::vault::delete_canvas_vault,
             commands::vault::read_note,
             commands::vault::scan_wiki_backlinks,
+            commands::vault::scan_vault_tags,
             commands::vault::rebuild_internal_links,
             commands::vault::write_note,
             commands::vault::read_vault_file,

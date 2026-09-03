@@ -30,6 +30,7 @@ import {
   renameFolder as renameFolderSvc,
   renameNote as renameNoteSvc,
   scanWikiBacklinks as scanWikiBacklinksSvc,
+  scanVaultTags as scanVaultTagsSvc,
   rebuildInternalLinks as rebuildInternalLinksSvc,
   writeNote,
 } from "@/services/vault";
@@ -62,7 +63,7 @@ import { useUiStateStore } from "@/stores/uiStateStore";
 import { baseName, dedupeFilename, parentDir, remapDirPrefix, sanitizeFilename, siblingPath, stripExt } from "@/utils/filename";
 import { tableToSnapshotText, tablesEqual } from "@/utils/table";
 import { errText } from "@/types";
-import type { BacklinkRow, CanvasFileRow, DeleteFolderResult, FileTreeNode, RebuildLinksResult, TextData, VaultFileChange } from "@/types";
+import type { BacklinkRow, CanvasFileRow, DeleteFolderResult, FileTreeNode, RebuildLinksResult, TagRow, TextData, VaultFileChange } from "@/types";
 
 /**
  * 文本节点 `.md` 文件名约定：`<sanitized-title>.md`（标题即文件名，无 id 后缀）。
@@ -433,6 +434,10 @@ interface VaultFileState {
   /** 笔记内容缓存（file → 正文；仅本会话内读过的笔记，FIFO 上限）。布局切换/重开笔记直接命中，
    *  避免每次 NoteEditor 挂载都读盘（与 tableStore 的「已加载不重读」同语义）；切仓库清空。 */
   noteContents: Record<string, string>;
+  /** 全仓库标签词汇表（属性区 tags 候选建议数据源；按需加载，Rust 侧指纹缓存保证开销可控）。 */
+  vaultTags: TagRow[] | null;
+  /** 拉取全仓库标签词汇表（失败静默置 null，调用方降级为无候选）。 */
+  loadVaultTags: () => Promise<void>;
   /** 笔记编辑器未落盘的最近输入（file → 正文；handleChange 登记、保存完成/flush 后清除）。
    *  供 flushAllPending（关窗守卫/AI 重命名移动删除前）把组件内 debounce timer 之外的
    *  挂起输入统一落盘 + 补历史存档点——组件卸载与关窗都不丢最后 500ms。 */
@@ -639,6 +644,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
   noteList: [],
   tableList: [],
   noteContents: {},
+  vaultTags: null,
   pendingNoteContent: {},
 
   pathKind: (path) => {
@@ -973,6 +979,14 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
   /** 直读笔记磁盘全文（绕过内容缓存）：外部修改感知/写前校验需要真实磁盘而非可能滞后的缓存。 */
   readNoteFresh: (file) => readNote(file),
   scanWikiBacklinks: (noteName, noteFile) => scanWikiBacklinksSvc(noteName, noteFile),
+  loadVaultTags: async () => {
+    try {
+      // 失败静默置 null：候选下拉降级为无建议，不影响手动输入标签
+      set({ vaultTags: await scanVaultTagsSvc() });
+    } catch {
+      set({ vaultTags: null });
+    }
+  },
   rebuildInternalLinks: () => rebuildInternalLinksSvc(),
   readAttachmentDataUrl: (file) => readAttachmentDataUrlSvc(file),
 

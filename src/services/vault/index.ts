@@ -51,6 +51,7 @@ import {
   type TextFileData,
   type BacklinkRow,
   type RebuildLinksResult,
+  type TagRow,
   type VaultConfig,
   type VaultInfo,
   type AgentConfig,
@@ -115,6 +116,11 @@ export async function scanWikiBacklinks(
   noteFile: string,
 ): Promise<BacklinkRow[]> {
   return invoke<BacklinkRow[]>("scan_wiki_backlinks", { noteName, noteFile });
+}
+
+/** 全仓库标签词汇表（frontmatter `tags` + 正文内联 `#标签`；Rust 侧索引缓存 + 指纹增量刷新）。 */
+export async function scanVaultTags(): Promise<TagRow[]> {
+  return invoke<TagRow[]>("scan_vault_tags");
 }
 
 /** 一键重建内部链接：全仓库 .md 统一规范为 `[名](基于仓库的路径)`（Rust 侧字节级跨度改写 + 原子写）。 */

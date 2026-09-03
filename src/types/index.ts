@@ -91,6 +91,8 @@ export type { CalendarItem } from "./calendar";
 
 export type { DatedNote, RepoHistoryEntry, DailyCount, RepoHistoryResult } from "./home";
 
+export type { TagRow } from "./tags";
+
 export type {
   FieldType,
   CalcType,
