@@ -1,6 +1,6 @@
 /**
- * 表格编辑器弹层菜单（字段菜单 / 表头右键列菜单 / 行菜单 / 添加字段浮层 /
- * 整表右键菜单 / 状态栏计算类型菜单）。
+ * 表格编辑器弹层菜单（字段菜单 / 表头右键列菜单 / 行菜单 / 数据单元格复制粘贴菜单 /
+ * 添加字段浮层 / 整表右键菜单 / 状态栏计算类型菜单）。
  *
  * 弹层壳统一走 `common/PopupLayer`（视口钳制 + Esc/点击外部关闭 + 容器样式，
  * 经 `common/Menu` 包装）；状态栏计算菜单（StatMenu）固定向上弹出走 PopupLayer 的 align="bottom"。
@@ -10,7 +10,9 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
+  ClipboardPaste,
   Columns3,
+  Copy,
   Pencil,
   Trash2,
 } from "lucide-react";
@@ -21,6 +23,21 @@ import { CALC_TYPE_LABELS, CALC_TYPES_BY_FIELD, FIELD_TYPE_LABELS } from "@/cons
 import { useTableStore } from "@/stores/tableStore";
 import { columnAutoWidth } from "@/utils/table";
 import type { FieldType, TableField } from "@/types";
+
+/** 数据单元格右键菜单：复制 / 粘贴（复制 = 当前选中区域 TSV 到系统剪贴板；
+ *  粘贴 = 剪贴板 TSV 以选区锚点为起点写入，越界自动补行/补列）。 */
+export function CellMenu({ x, y, onClose }: { x: number; y: number; onClose: () => void }) {
+  return (
+    <Menu x={x} y={y} onClose={onClose} widthClass="w-32" stopPointerDown>
+      <MenuItem onClick={() => { useTableStore.getState().copySelection(); onClose(); }}>
+        <Copy size={14} /> 复制
+      </MenuItem>
+      <MenuItem onClick={() => { void useTableStore.getState().pasteFromClipboard(); onClose(); }}>
+        <ClipboardPaste size={14} /> 粘贴
+      </MenuItem>
+    </Menu>
+  );
+}
 
 /** 字段菜单（⋮ 按钮）：专注字段修改——重命名 / 改类型 / 单选选项管理 / 删除（就地确认）。
  *  列级操作（列宽自适应、左右插入字段）走表头右键 `ColumnMenu`。 */

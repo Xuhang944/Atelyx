@@ -98,6 +98,7 @@ export type {
   ImageCellValue,
   TableField,
   TableRow,
+  TableSelection,
   TableFile,
   TablePatch,
   TableCreateResult,

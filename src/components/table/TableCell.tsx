@@ -340,6 +340,8 @@ function TextCell({
         <textarea
           ref={ref}
           data-cell-editor
+          // data-editing 标记编辑态：表格层 Ctrl+C/V 据此放行原生复制/粘贴（选中态才接管结构化复制粘贴）
+          data-editing={editing ? "" : undefined}
           value={editing ? draft : ""}
           onChange={handleChange}
           onBlur={handleBlur}
@@ -347,7 +349,7 @@ function TextCell({
           tabIndex={-1}
           className={
             editing
-              ? "absolute inset-0 w-full h-full resize-none overflow-auto border-none bg-transparent outline-none text-xs px-1.5 py-1 cursor-text"
+              ? "absolute inset-0 w-full h-full resize-none overflow-auto border-none bg-transparent outline-none text-xs px-1.5 py-1 cursor-text select-text"
               : "absolute inset-0 w-full h-full resize-none border-none bg-transparent outline-none text-xs px-1.5 py-1 opacity-0 pointer-events-none cursor-default"
           }
           style={{ color: "var(--text-primary)" }}
@@ -466,6 +468,8 @@ function NumberCell({
         <input
           ref={ref}
           data-cell-editor
+          // data-editing 标记编辑态：表格层 Ctrl+C/V 据此放行原生复制/粘贴（选中态才接管结构化复制粘贴）
+          data-editing={editing ? "" : undefined}
           type="number"
           step={field.type === "duration" ? 0.1 : 1}
           value={editing ? draft : ""}
@@ -475,7 +479,7 @@ function NumberCell({
           tabIndex={-1}
           className={
             editing
-              ? "absolute inset-0 w-full h-full bg-transparent outline-none border-none text-xs px-1.5 cursor-text"
+              ? "absolute inset-0 w-full h-full bg-transparent outline-none border-none text-xs px-1.5 cursor-text select-text"
               : "absolute inset-0 w-full h-full bg-transparent outline-none border-none text-xs px-1.5 opacity-0 pointer-events-none cursor-default"
           }
           style={{ color: "var(--text-primary)" }}

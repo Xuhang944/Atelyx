@@ -1,14 +1,20 @@
 /**
  * 表格工具纯函数测试（utils/table）。
  *
- * 本轮覆盖历史版本可读化：`diffTableVersions`（字段增删/改名 + 行增删 + 单元格修改 + 顺序）
- * 与 `summarizeTableSnapshot`（人话摘要，列表展示）。
+ * 覆盖历史版本可读化（`diffTableVersions`/`summarizeTableSnapshot`）、图片值归一化与双形态
+ * 比对、磁盘/内存内容比对（`tablesEqual`）、选中区域归约与复制粘贴
+ * （`selectionRegion`/`parseTsv`/`buildRegionTsv`/`applyPasteGrid`）。
  */
 import { describe, it, expect } from "vitest";
 import {
+  applyPasteGrid,
+  buildRegionTsv,
+  cellToClipboardText,
   cellValueEqual,
   diffTableVersions,
   normalizeTableRow,
+  parseTsv,
+  selectionRegion,
   summarizeTableSnapshot,
   tablesEqual,
 } from "./table";
@@ -205,5 +211,201 @@ describe("图片值归一化与双形态比对", () => {
     } as unknown as { fields: TableField[]; rows: TableRow[] };
     const memory2 = { fields: [imgField], rows: [{ id: "r1", values: { f1: { images: ["img-2.png"] } } }] };
     expect(tablesEqual(disk2, memory2)).toBe(false);
+  });
+});
+
+describe("selectionRegion（选中区域归约）", () => {
+  const fields = [field("f1", "镜号"), field("f2", "景别"), field("f3", "备注")];
+  const rows = [row("r1", { f1: "01" }), row("r2", { f1: "02" }), row("r3", { f1: "03" })];
+
+  it("单格 = 单点", () => {
+    expect(selectionRegion({ kind: "cell", rowId: "r2", fieldId: "f2" }, fields, rows)).toEqual({
+      rowStart: 1,
+      rowEnd: 1,
+      colStart: 1,
+      colEnd: 1,
+    });
+  });
+
+  it("框选 = 两端点行/列 min/max（反向拖拽同样归一）", () => {
+    expect(
+      selectionRegion(
+        { kind: "range", anchorRowId: "r3", anchorFieldId: "f3", rowId: "r1", fieldId: "f1" },
+        fields,
+        rows,
+      ),
+    ).toEqual({ rowStart: 0, rowEnd: 2, colStart: 0, colEnd: 2 });
+  });
+
+  it("整行 = 该行全列 / 整列 = 全行该列 / 整表 = 全表", () => {
+    expect(selectionRegion({ kind: "row", rowId: "r2" }, fields, rows)).toEqual({
+      rowStart: 1,
+      rowEnd: 1,
+      colStart: 0,
+      colEnd: 2,
+    });
+    expect(selectionRegion({ kind: "column", fieldId: "f2" }, fields, rows)).toEqual({
+      rowStart: 0,
+      rowEnd: 2,
+      colStart: 1,
+      colEnd: 1,
+    });
+    expect(selectionRegion({ kind: "all" }, fields, rows)).toEqual({
+      rowStart: 0,
+      rowEnd: 2,
+      colStart: 0,
+      colEnd: 2,
+    });
+  });
+
+  it("null / 画布 node 选中 / 失效 id → null", () => {
+    expect(selectionRegion(null, fields, rows)).toBeNull();
+    expect(selectionRegion({ kind: "node", nodeId: "n1" }, fields, rows)).toBeNull();
+    expect(selectionRegion({ kind: "cell", rowId: "nope", fieldId: "f1" }, fields, rows)).toBeNull();
+    expect(
+      selectionRegion(
+        { kind: "range", anchorRowId: "r1", anchorFieldId: "f1", rowId: "r2", fieldId: "nope" },
+        fields,
+        rows,
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("parseTsv / buildRegionTsv / cellToClipboardText（剪贴板 TSV）", () => {
+  it("parseTsv：\\r\\n 归一 + 去尾空行 + 制表符分列", () => {
+    expect(parseTsv("a\tb\r\nc\td\n")).toEqual([
+      ["a", "b"],
+      ["c", "d"],
+    ]);
+    expect(parseTsv("单格")).toEqual([["单格"]]);
+  });
+
+  it("cellToClipboardText：text/number 原样，image/空 = 空串", () => {
+    expect(cellToClipboardText("hi")).toBe("hi");
+    expect(cellToClipboardText(42)).toBe("42");
+    expect(cellToClipboardText(undefined)).toBe("");
+    expect(cellToClipboardText({ images: ["a.png"] })).toBe("");
+  });
+
+  it("buildRegionTsv：单格原值（多行无损）/ 多格制表换行拼接 / 值内嵌换行压空格", () => {
+    const fields = [field("f1", "A"), field("f2", "B")];
+    const rows = [row("r1", { f1: "x", f2: "y" }), row("r2", { f1: "多\n行", f2: "z" })];
+    expect(buildRegionTsv(fields, rows, { rowStart: 0, rowEnd: 0, colStart: 0, colEnd: 0 })).toBe("x");
+    expect(buildRegionTsv(fields, rows, { rowStart: 0, rowEnd: 1, colStart: 0, colEnd: 1 })).toBe(
+      "x\ty\n多 行\tz",
+    );
+  });
+});
+
+describe("applyPasteGrid（粘贴网格回写）", () => {
+  const numberField: TableField = { id: "f2", name: "数量", type: "number" };
+  const rowsNum: TableRow[] = [{ id: "r1", values: { f1: "旧", f2: 1 } }];
+
+  it("锚点回写 + 越界自动补行/补列（新列 text 字段「字段N」）", () => {
+    const { fields: nf, rows: nr } = applyPasteGrid(
+      [field("f1", "名称")],
+      [row("r1", { f1: "a" })],
+      0,
+      0,
+      [
+        ["b", "c"],
+        ["d", "e"],
+      ],
+    );
+    expect(nf).toHaveLength(2);
+    expect(nf[1]).toMatchObject({ type: "text", name: "字段2" });
+    expect(nr).toHaveLength(2);
+    expect(nr[0].values.f1).toBe("b");
+    expect(nr[0].values[nf[1].id]).toBe("c");
+    expect(nr[1].values.f1).toBe("d");
+    expect(nr[1].values[nf[1].id]).toBe("e");
+  });
+
+  it("数字字段值强转（数字 / 非数字清空 / 空格清空）", () => {
+    const { rows: nr } = applyPasteGrid([numberField], rowsNum, 0, 0, [["42"]]);
+    expect(nr[0].values.f2).toBe(42);
+    const { rows: nr2 } = applyPasteGrid([numberField], rowsNum, 0, 0, [["abc"]]);
+    expect(nr2[0].values.f2).toBeUndefined();
+    const { rows: nr3 } = applyPasteGrid([numberField], rowsNum, 0, 0, [[""]]);
+    expect(nr3[0].values.f2).toBeUndefined();
+  });
+
+  it("无实际变化 → 原引用（不置脏不入栈）", () => {
+    const fields = [field("f1", "名称"), numberField];
+    const { fields: nf, rows: nr } = applyPasteGrid(fields, rowsNum, 0, 0, [["旧"]]);
+    expect(nf).toBe(fields);
+    expect(nr).toBe(rowsNum);
+  });
+
+  it("singleSelect：命中选项写入 / 非选项跳过（不覆盖）/ 空清空", () => {
+    const sel: TableField = { id: "f1", name: "状态", type: "singleSelect", options: ["待拍", "已拍"] };
+    const base: TableRow[] = [{ id: "r1", values: { f1: "待拍" } }];
+    const { rows: hit } = applyPasteGrid([sel], base, 0, 0, [["已拍"]]);
+    expect(hit[0].values.f1).toBe("已拍");
+    const { rows: miss } = applyPasteGrid([sel], base, 0, 0, [["不存在"]]);
+    expect(miss[0].values.f1).toBe("待拍");
+    const { rows: cleared } = applyPasteGrid([sel], base, 0, 0, [[""]]);
+    expect(cleared[0].values.f1).toBeUndefined();
+  });
+
+  it("image 字段跳过（不写入不清空）", () => {
+    const img: TableField = { id: "f1", name: "图", type: "image" };
+    const base: TableRow[] = [{ id: "r1", values: { f1: { images: ["a.png"] } } }];
+    const { rows: nr } = applyPasteGrid([img], base, 0, 0, [["文本"]]);
+    expect(nr[0].values.f1).toEqual({ images: ["a.png"] });
+  });
+
+  it("锚点偏移粘贴（从中间列开始，不碰锚点前的格）", () => {
+    const { rows: nr } = applyPasteGrid(
+      [field("f1", "A"), field("f2", "B")],
+      [
+        { id: "r1", values: { f1: "x", f2: "y" } },
+        { id: "r2", values: {} },
+      ] as TableRow[],
+      0,
+      1,
+      [["z"]],
+    );
+    expect(nr[0].values.f1).toBe("x");
+    expect(nr[0].values.f2).toBe("z");
+    expect(nr[1].values.f2).toBeUndefined();
+  });
+
+  it("非有限数（Infinity/1e999）→ undefined（防落盘变 null 丢值）", () => {
+    const { rows: nr } = applyPasteGrid([numberField], rowsNum, 0, 0, [["1e999"]]);
+    expect(nr[0].values.f2).toBeUndefined();
+    const { rows: nr2 } = applyPasteGrid([numberField], rowsNum, 0, 0, [["Infinity"]]);
+    expect(nr2[0].values.f2).toBeUndefined();
+  });
+
+  it("网格全部被跳过（singleSelect 非选项）不补空行/空列", () => {
+    const sel: TableField = { id: "f1", name: "状态", type: "singleSelect", options: ["待拍", "已拍"] };
+    const base: TableRow[] = [{ id: "r1", values: { f1: "待拍" } }];
+    const { fields, rows } = applyPasteGrid([sel], base, 1, 0, [["X"], ["Y"]]);
+    expect(fields).toHaveLength(1);
+    expect(rows).toHaveLength(1);
+  });
+
+  it("粘贴进空表（0 行 0 列）补行补列", () => {
+    const { fields, rows } = applyPasteGrid([], [], 0, 0, [["a", "b"]]);
+    expect(fields).toHaveLength(2);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].values[fields[0].id]).toBe("a");
+    expect(rows[0].values[fields[1].id]).toBe("b");
+  });
+
+  it("参差网格（短行不越界、不写空位）", () => {
+    const { rows: nr } = applyPasteGrid(
+      [field("f1", "A"), field("f2", "B")],
+      [{ id: "r1", values: { f1: "x", f2: "y" } }] as TableRow[],
+      0,
+      0,
+      [["p"], ["q", "r"]],
+    );
+    expect(nr[0].values.f1).toBe("p");
+    expect(nr[0].values.f2).toBe("y"); // 短行无第 2 列，不写不覆盖
+    expect(nr[1].values.f1).toBe("q");
+    expect(nr[1].values.f2).toBe("r");
   });
 });

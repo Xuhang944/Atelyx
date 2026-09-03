@@ -2,15 +2,13 @@
  * 协作（presence）类型：与 collab-relay 的 JSON 协议对齐（camelCase 透传）。
  * 本端选中状态经节流广播给同仓库在线用户，远端按此渲染高亮。
  */
+import type { TableSelection } from "@/types/table";
 
-/** 远端用户的选中状态（表格单元格 / 画布节点）。 */
-export type CollabSelection =
-  | { kind: "cell"; rowId: string; fieldId: string }
-  | { kind: "row"; rowId: string }
-  | { kind: "column"; fieldId: string }
-  | { kind: "node"; nodeId: string }
-  | { kind: "all" }
-  | null;
+/**
+ * 远端用户的选中状态（表格单元格 / 框选区域 / 整行整列整表 / 画布节点）。
+ * 表格侧复用 `TableSelection`（含 range 拖拽框选，presence 透传），画布侧为 node 变体。
+ */
+export type CollabSelection = TableSelection | { kind: "node"; nodeId: string };
 
 /** 画布对话节点独占编辑锁声明（presence 携带）。
  * 确定性锁主判定 = since 最小；同 since 按 peerId 递增取小（relay 全局递增分配，确定性）。 */

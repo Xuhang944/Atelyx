@@ -7,8 +7,11 @@
  * 交互要点：
  * - 选中体系（互斥）：左上角整格单击全选（角标示意）/ 右键全选并弹菜单；表头单击选整列；
  *   行首单击选整行；单元格按下不动（<5px）松手 = 选中（td 金色内描边，进入隐藏编辑态，
- *   编辑时保持单元格大小），拖动（>5px）= 区域选择/移动手势预留（不进编辑）。
+ *   编辑时保持单元格大小），拖动（>5px）= 拖拽框选多格（范围全体金色内描边）。
  *   选中后打字直达常驻输入框，首个字符/IME 组合覆盖原值；双击 = 取消覆盖（保留原值）。
+ * - 复制/粘贴（选中区域 ↔ 系统剪贴板 TSV）：Ctrl+C 复制 / Ctrl+V 粘贴（编辑态输入框聚焦时
+ *   放行原生行为）；数据单元格右键菜单「复制/粘贴」（点在当前选区内保留选区、否则落单格；
+ *   整表选中时右键仍弹列宽/行高自适应菜单）。粘贴以选区左上角为锚点展开、越界自动补行/补列。
  * - 行拖拽为 pointer 模拟（HTML5 DnD 在 WebView2 不可靠，与文件面板同策略）：
  *   行首手柄按下 → 位移超 5px 激活 → 按行元素中点计算插入位（金色插入线指示）→ 松手 moveRow。
  * - 列宽：列头右缘拖拽（钳制 MIN/MAX）；行高：行首底缘拖拽。表头/行首/整表选中后右键菜单
@@ -28,13 +31,14 @@ import { useCollabStore } from "@/stores/collabStore";
 import type { CollabPeer } from "@/types";
 import {
   AddFieldMenu,
+  CellMenu,
   ColumnMenu,
   FieldMenu,
   RowMenu,
   SelectAllMenu,
   StatMenu,
 } from "@/components/table/TableMenus";
-import { computeColumnCalc, fieldDefaultWidth } from "@/utils/table";
+import { computeColumnCalc, fieldDefaultWidth, selectionRegion } from "@/utils/table";
 import { HistoryModal } from "@/components/history/HistoryModal";
 import { PopupLayer } from "@/components/common/PopupLayer";
 import { usePopupAnchor } from "@/hooks/usePopupAnchor";
@@ -87,6 +91,7 @@ export function TableEditor({ panelId }: { panelId: string }) {
   const [addFieldMenu, setAddFieldMenu] = useState<{ x: number; y: number } | null>(null);
   const [statMenu, setStatMenu] = useState<{ fieldId: string; x: number; y: number } | null>(null);
   const [allMenu, setAllMenu] = useState<{ x: number; y: number } | null>(null);
+  const [cellMenu, setCellMenu] = useState<{ x: number; y: number } | null>(null);
 
   // ===== 视图缩放（Ctrl+滚轮，CSS zoom；纯视图状态，不持久化、不入撤销栈，切文件随重挂复位）=====
   const [zoom, setZoom] = useState(1);
@@ -167,7 +172,8 @@ export function TableEditor({ panelId }: { panelId: string }) {
     dragRef.current = { rowId, startX: e.clientX, startY: e.clientY, active: false };
   }, []);
 
-  // ===== Ctrl+Z/Y 撤销/重做 + 选中态焦点兜底导航（全局键盘监听；选中单元格的覆盖输入由常驻输入框承接，不经此监听）=====
+  // ===== Ctrl+Z/Y 撤销/重做 + Ctrl+C/V 复制/粘贴 + 选中态焦点兜底导航（全局键盘监听；
+  // 选中单元格的覆盖输入由常驻输入框承接，不经此监听）=====
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       // 仅表格面板聚焦时生效（同画布快捷键门控惯例）；编辑框聚焦同样接管
@@ -175,6 +181,19 @@ export function TableEditor({ panelId }: { panelId: string }) {
       const ctrl = e.ctrlKey || e.metaKey;
       if (ctrl && !e.altKey && focusedPanelId === panelId) {
         const key = e.key.toLowerCase();
+        const active = document.activeElement as HTMLElement | null;
+        const isCellEditor = !!active?.hasAttribute("data-cell-editor");
+        // 焦点在弹层菜单/面板内其它输入框（字段重命名/单选选项/插入字段等非单元格编辑器）→
+        // 放行原生 Ctrl+Z/Y/C/V；表格级接管只作用于单元格编辑器与空白选中态
+        if (
+          !isCellEditor &&
+          (active instanceof HTMLInputElement ||
+            active instanceof HTMLTextAreaElement ||
+            active instanceof HTMLSelectElement ||
+            !!active?.isContentEditable)
+        ) {
+          return;
+        }
         if (key === "z" && !e.shiftKey) {
           e.preventDefault();
           useTableStore.getState().undo();
@@ -183,6 +202,18 @@ export function TableEditor({ panelId }: { panelId: string }) {
         if (key === "y" || (key === "z" && e.shiftKey)) {
           e.preventDefault();
           useTableStore.getState().redo();
+          return;
+        }
+        // 复制/粘贴：放大预览打开时归预览（Esc/方向键）；编辑态单元格输入框（data-editing）
+        // 放行原生（复制草稿/贴入输入框）；选中态才接管为「选中区域 ↔ 剪贴板 TSV」结构化复制粘贴
+        if (key === "c" || key === "v") {
+          if (document.querySelector("[data-lightbox]")) return;
+          if (active?.hasAttribute("data-editing")) return;
+          const st = useTableStore.getState();
+          if (!st.selection || st.view !== "table") return;
+          e.preventDefault();
+          if (key === "c") st.copySelection();
+          else void st.pasteFromClipboard();
           return;
         }
       }
@@ -195,7 +226,7 @@ export function TableEditor({ panelId }: { panelId: string }) {
       const st = useTableStore.getState();
       if (st.view !== "table") return;
       const sel = st.selection;
-      if (sel?.kind !== "cell") return;
+      if (sel?.kind !== "cell" && sel?.kind !== "range") return;
       const el = document.activeElement;
       if (el && el !== document.body && el !== document.documentElement) return;
       if (document.querySelector("[data-lightbox]")) return;
@@ -206,13 +237,18 @@ export function TableEditor({ panelId }: { panelId: string }) {
       }
       if (e.key === "Backspace" || e.key === "Delete") {
         e.preventDefault(); // 防浏览器默认（滚动/后退）
-        // 输入框失焦时（点了表格空白）清空语义照常：文本类字段清空，其余无操作
-        const field = st.fields.find((f) => f.id === sel.fieldId);
-        if (field && (field.type === "text" || field.type === "number" || field.type === "duration")) {
-          clearCell(sel.rowId, sel.fieldId);
+        // 框选 = 整块清空；单格 = 文本类字段清空（输入框失焦时语义照常），其余无操作
+        if (sel.kind === "range") {
+          st.clearSelectionCells();
+        } else {
+          const field = st.fields.find((f) => f.id === sel.fieldId);
+          if (field && (field.type === "text" || field.type === "number" || field.type === "duration")) {
+            clearCell(sel.rowId, sel.fieldId);
+          }
         }
         return;
       }
+      if (sel.kind !== "cell") return; // 框选无方向键导航/打字语义
       const dir = navDirection(e.key);
       if (dir) {
         e.preventDefault();
@@ -234,18 +270,47 @@ export function TableEditor({ panelId }: { panelId: string }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [focusedPanelId, panelId]);
 
-  // ===== 单元格按下手势：<5px 松手 = 选中（进入隐藏编辑态）；>5px 拖动 = 区域选择/移动手势预留（不进编辑）=====
-  const cellPressRef = useRef<{ x: number; y: number; active: boolean } | null>(null);
+  // ===== 单元格按下手势：<5px 松手 = 选中（进入隐藏编辑态）；>5px 拖动 = 拖拽框选多格（selectRange）=====
+  const cellPressRef = useRef<{
+    x: number;
+    y: number;
+    active: boolean;
+    rowId: string;
+    fieldId: string;
+    /** 图片字段格：自身滑动/排序手势，不参与框选。 */
+    noRange: boolean;
+  } | null>(null);
+  /** 框选拖拽最近一次落到的目标格（同格不重复 setState，防逐像素重渲染）。 */
+  const rangeDragCellRef = useRef<string | null>(null);
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
       const p = cellPressRef.current;
       if (!p) return;
-      if (!p.active && Math.hypot(e.clientX - p.x, e.clientY - p.y) > 5) {
+      if (!p.active) {
+        if (Math.hypot(e.clientX - p.x, e.clientY - p.y) <= 5) return;
         cellPressRef.current = { ...p, active: true };
+        rangeDragCellRef.current = null;
       }
+      // 图片格自身手势（轮播滑动/长按排序）：拖拽不参与框选（active 已置位，释放不落单格选择）
+      if (p.noRange) return;
+      // 框选拖拽：定位指针下的数据格并更新范围（拖出表格/落在空白则保持上次目标格）
+      const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+      const cellEl = el?.closest<HTMLElement>("[data-field-id]");
+      const fieldId = cellEl?.dataset.fieldId;
+      const rowId = cellEl?.closest<HTMLElement>("[data-row-id]")?.dataset.rowId;
+      if (!rowId || !fieldId) return;
+      // 同窗口多表格面板：只认本实例容器内的格（防跨面板混入对端行列 id）
+      if (!rowsElRef.current?.contains(cellEl)) return;
+      const key = `${rowId}:${fieldId}`;
+      if (key === rangeDragCellRef.current) return;
+      // 指针首次离开锚点格前不建 range（防格内微拖产生 1×1 range 使打字/方向键失效）
+      if (rangeDragCellRef.current === null && key === `${p.rowId}:${p.fieldId}`) return;
+      rangeDragCellRef.current = key;
+      useTableStore.getState().selectRange(p.rowId, p.fieldId, rowId, fieldId);
     };
     const onUp = () => {
       cellPressRef.current = null;
+      rangeDragCellRef.current = null;
     };
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onUp);
@@ -255,9 +320,18 @@ export function TableEditor({ panelId }: { panelId: string }) {
     };
   }, []);
 
-  const startCellPress = useCallback((e: React.PointerEvent) => {
+  const startCellPress = useCallback((e: React.PointerEvent, rowId: string, fieldId: string) => {
     if (e.button !== 0) return;
-    cellPressRef.current = { x: e.clientX, y: e.clientY, active: false };
+    // noRange：图片字段格有自身滑动/排序手势，按下即排除其参与框选（click 选择不受影响）
+    const field = useTableStore.getState().fields.find((f) => f.id === fieldId);
+    cellPressRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      active: false,
+      rowId,
+      fieldId,
+      noRange: field?.type === "image",
+    };
   }, []);
 
   /** 单元格松手（未拖动）→ 选中 + 标记面板聚焦（点 td 不冒泡到面板层，快捷键门控需显式标记）+
@@ -373,13 +447,15 @@ export function TableEditor({ panelId }: { panelId: string }) {
     () => (tableFile ? collabPeers.filter((p) => p.presence?.file === tableFile) : []),
     [tableFile, collabPeers],
   );
-  /** 定位到远端用户选中位置（行滚动到视口中央；timeline 卡片同样带 data-row-id，
+  /** 定位到远端用户选中位置（区域首行滚动到视口中央；timeline 卡片同样带 data-row-id，
    *  document 查询命中当前渲染的视图——任一布局内表格视图唯一，无歧义）。 */
   const focusPeer = (p: CollabPeer) => {
     const sel = p.presence?.selection;
     if (!sel || sel.kind === "all") return;
-    const rowId = sel.kind === "cell" || sel.kind === "row" ? sel.rowId : null;
-    if (!rowId) return;
+    const region = selectionRegion(sel, fields, rows);
+    // 空表 + 列/全选选区：rowStart=0 而 rows 为空，须兜底防 rows[0] 越界
+    if (!region || region.rowStart >= rows.length) return;
+    const rowId = rows[region.rowStart].id;
     const el =
       view === "table"
         ? rowsElRef.current?.querySelector<HTMLElement>(`[data-row-id="${rowId}"]`)
@@ -387,28 +463,46 @@ export function TableEditor({ panelId }: { panelId: string }) {
     el?.scrollIntoView({ block: "center", inline: "nearest" });
   };
 
-  // ===== 选中高亮（互斥：单元格 = td 内描边；行/列/整表 = 淡金背景）=====
+  // ===== 选中高亮（互斥：单元格/框选 = td 内描边；行/列/整表 = 淡金背景）=====
   const rowHighlighted = (rowId: string): boolean =>
     selection?.kind === "row" ? selection.rowId === rowId : selection?.kind === "all";
   const colHighlighted = (fieldId: string): boolean =>
     selection?.kind === "column" ? selection.fieldId === fieldId : selection?.kind === "all";
   const cellSelected = (rowId: string, fieldId: string): boolean =>
     selection?.kind === "cell" && selection.rowId === rowId && selection.fieldId === fieldId;
+  /** 本端框选区域格键集（每渲染构建一次，cellShadow 逐格 O(1) 查询——防大表逐格重算区域）。 */
+  const localRangeCellKeys = useMemo(() => {
+    if (selection?.kind !== "range") return null;
+    const region = selectionRegion(selection, fields, rows);
+    if (!region) return null;
+    const set = new Set<string>();
+    for (let r = region.rowStart; r <= region.rowEnd; r++) {
+      for (let c = region.colStart; c <= region.colEnd; c++) {
+        set.add(`${rows[r].id}:${fields[c].id}`);
+      }
+    }
+    return set;
+  }, [selection, fields, rows]);
+  const rangeSelected = (rowId: string, fieldId: string): boolean =>
+    localRangeCellKeys?.has(`${rowId}:${fieldId}`) ?? false;
   /** 行/列/整表的淡金背景（列选中作用于表头与数据单元格）。 */
   const highlightBg = (highlighted: boolean) => (highlighted ? "color-mix(in srgb, var(--accent) 8%, transparent)" : undefined);
-  /** 远端选中覆盖映射：按单元格展开一次构建（cell 精确 / row 整行 / column 整列；all 全表不渲染——满屏描边干扰协作），
-   * 逐格查表 O(1)——替代每格 peersAtCell 的 filter 分配（大表 + 多用户时每渲染 O(N·P) → O(N)）。 */
+  /** 远端选中覆盖映射：按区域展开一次构建（cell/range/row/column 统一经 selectionRegion；
+   *  all 全表不渲染——满屏描边干扰协作），逐格查表 O(1)——替代每格 peersAtCell 的 filter
+   * 分配（大表 + 多用户时每渲染 O(N·P) → O(N)）。 */
   const peerShadowByCell = useMemo(() => {
     const map = new Map<string, CollabPeer[]>();
     if (tablePeers.length === 0) return map;
     for (const p of tablePeers) {
       const sel = p.presence?.selection;
       if (!sel || sel.kind === "all") continue;
-      for (const row of rows) {
-        if ((sel.kind === "cell" || sel.kind === "row") && sel.rowId !== row.id) continue;
-        for (const field of fields) {
-          if ((sel.kind === "cell" || sel.kind === "column") && sel.fieldId !== field.id) continue;
-          const k = `${row.id}:${field.id}`;
+      const region = selectionRegion(sel, fields, rows);
+      if (!region) continue;
+      // 下标恒合法：region 产自 selectionRegion，退化区间（空表）循环不执行
+      for (let r = region.rowStart; r <= region.rowEnd; r++) {
+        const row = rows[r];
+        for (let c = region.colStart; c <= region.colEnd; c++) {
+          const k = `${row.id}:${fields[c].id}`;
           const arr = map.get(k) ?? [];
           arr.push(p);
           map.set(k, arr);
@@ -417,9 +511,9 @@ export function TableEditor({ panelId }: { panelId: string }) {
     }
     return map;
   }, [tablePeers, rows, fields]);
-  /** 单元格描边：本端选中 = 金色 2px；远端覆盖 = 用户色 1px 同心叠加（多用户自动分层）。 */
+  /** 单元格描边：本端选中（单格/框选）= 金色 2px；远端覆盖 = 用户色 1px 同心叠加（多用户自动分层）。 */
   const cellShadow = (rowId: string, fieldId: string): string | undefined => {
-    if (cellSelected(rowId, fieldId)) return "inset 0 0 0 2px var(--accent)";
+    if (cellSelected(rowId, fieldId) || rangeSelected(rowId, fieldId)) return "inset 0 0 0 2px var(--accent)";
     const ps = peerShadowByCell.get(`${rowId}:${fieldId}`);
     if (!ps || ps.length === 0) return undefined;
     return ps.map((p, i) => `inset 0 0 0 ${i + 1}px ${p.color}`).join(", ");
@@ -591,7 +685,7 @@ export function TableEditor({ panelId }: { panelId: string }) {
           setAllMenu({ x: e.clientX, y: e.clientY });
         }}
       >
-        <table className="border-collapse table-fixed" style={{ width: totalWidth }}>
+        <table className="border-collapse table-fixed select-none" style={{ width: totalWidth }}>
           <colgroup>
             <col style={{ width: ROW_NUM_COL_WIDTH }} />
             {fields.map((f) => (
@@ -732,6 +826,8 @@ export function TableEditor({ panelId }: { panelId: string }) {
                   {fields.map((f) => (
                     <td
                       key={f.id}
+                      // data-field-id：框选拖拽 elementFromPoint 定位目标格用（配合 tr 的 data-row-id）
+                      data-field-id={f.id}
                       // relative：编辑态 textarea absolute inset-0 以此为定位上下文撑满单元格
                       className="border-b border-r relative"
                       style={{
@@ -739,8 +835,29 @@ export function TableEditor({ panelId }: { panelId: string }) {
                         background: highlightBg(colHighlighted(f.id)),
                         boxShadow: cellShadow(row.id, f.id),
                       }}
-                      onPointerDown={startCellPress}
+                      onPointerDown={(e) => startCellPress(e, row.id, f.id)}
                       onPointerUp={() => releaseCellPress(row.id, f.id)}
+                      onContextMenu={(e) => {
+                        // 整表选中时容器层接管（列宽/行高自适应菜单）；其余弹出单元格复制/粘贴菜单
+                        const st = useTableStore.getState();
+                        if (st.selection?.kind === "all") return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        // 右键点在当前选中区域内 → 保留选区（复制整个区域）；否则落单格
+                        const region = selectionRegion(st.selection, st.fields, st.rows);
+                        const rIdx = st.rows.findIndex((x) => x.id === row.id);
+                        const cIdx = st.fields.findIndex((x) => x.id === f.id);
+                        if (
+                          !region ||
+                          rIdx < region.rowStart ||
+                          rIdx > region.rowEnd ||
+                          cIdx < region.colStart ||
+                          cIdx > region.colEnd
+                        ) {
+                          st.selectCell(row.id, f.id);
+                        }
+                        setCellMenu({ x: e.clientX, y: e.clientY });
+                      }}
                       onClick={(e) => e.stopPropagation()}
                     >
                       <TableCell field={f} row={row} />
@@ -867,6 +984,8 @@ export function TableEditor({ panelId }: { panelId: string }) {
       )}
       {/* 整表选中右键菜单：全部列宽 / 行高自适应 */}
       {allMenu && <SelectAllMenu x={allMenu.x} y={allMenu.y} onClose={() => setAllMenu(null)} />}
+      {/* 数据单元格右键菜单：复制 / 粘贴 */}
+      {cellMenu && <CellMenu x={cellMenu.x} y={cellMenu.y} onClose={() => setCellMenu(null)} />}
 
       {/* 表格历史面板（工具条「···」→ 历史记录） */}
       <HistoryModal

@@ -1,6 +1,6 @@
 /**
  * 表格工具纯函数：列宽自适应、内容快照注入、状态栏列自动计算、增量补丁计算、磁盘/内存内容比对、
- * 图片值归一化（磁盘/远端旧形态 → ImageCellValue，内存恒新形态）。
+ * 图片值归一化（磁盘/远端旧形态 → ImageCellValue，内存恒新形态）、选中区域归约与复制粘贴（TSV）。
  *
  * - `fieldDefaultWidth`：列宽按字段名自适应（CJK 双宽，钳制 [MIN_COL_WIDTH, MAX_COL_WIDTH]）。
  * - `tableToSnapshotText`：表格 → 注入文本快照（行限 `MAX_TABLE_INJECT_ROWS`；image → `[图 N 张]`；
@@ -8,9 +8,19 @@
  * - `computeColumnCalc`：按字段 calcType 统计全列，返回显示文本（数字统计 / 非空计数）。
  * - `computeTablePatch`：增量补丁计算（保存写盘与协作实时广播共用）。
  * - `tablesEqual`：磁盘表格与内存内容比对（watcher 回放判别）。
+ * - `selectionRegion`：选中范围 → 矩形区域（复制/粘贴/清空/协作高亮/右键命中统一复用）。
+ * - `buildRegionTsv`/`parseTsv`/`applyPasteGrid`：选中区域 ↔ 剪贴板 TSV ↔ 网格回写。
  */
 import { MAX_TABLE_INJECT_ROWS, MAX_COL_WIDTH, MIN_COL_WIDTH } from "@/constants/table";
-import type { CellValue, ImageCellValue, TableField, TableFile, TablePatch, TableRow } from "@/types";
+import type {
+  CellValue,
+  CollabSelection,
+  ImageCellValue,
+  TableField,
+  TableFile,
+  TablePatch,
+  TableRow,
+} from "@/types";
 
 // ===== 图片单元格值归一化（磁盘/远端旧形态 string[] → ImageCellValue；内存恒为新形态）=====
 
@@ -463,4 +473,178 @@ export function summarizeTableSnapshot(prevRaw: string, nextRaw: string): string
   if (diff.fieldOrderChanged) parts.push("调整列顺序");
   if (diff.rowOrderChanged) parts.push("调整行顺序");
   return parts.length ? parts.join(" · ") : "未改动";
+}
+
+// ===== 选中区域归约 / 复制粘贴（剪贴板 TSV）=====
+
+/** 区域（行/列下标区间）。 */
+export interface TableRegion {
+  rowStart: number;
+  rowEnd: number;
+  colStart: number;
+  colEnd: number;
+}
+
+/**
+ * 选中范围 → 矩形区域（行/列下标区间）：单格 = 单点；拖拽框选 = 两端点行/列 min/max；
+ * 整行 = 该行全列；整列 = 全行该列；整表 = 全表；null / 画布 node 选中 = null（无表格区域）。
+ * 复制/粘贴/清空/协作高亮/右键命中判定统一复用。入参兼容本端选中与远端 presence 选中。
+ */
+export function selectionRegion(
+  sel: CollabSelection,
+  fields: TableField[],
+  rows: TableRow[],
+): TableRegion | null {
+  if (!sel) return null;
+  const rowIndex = (id: string) => rows.findIndex((r) => r.id === id);
+  const colIndex = (id: string) => fields.findIndex((f) => f.id === id);
+  switch (sel.kind) {
+    case "cell": {
+      const r = rowIndex(sel.rowId);
+      const c = colIndex(sel.fieldId);
+      if (r < 0 || c < 0) return null;
+      return { rowStart: r, rowEnd: r, colStart: c, colEnd: c };
+    }
+    case "range": {
+      const r1 = rowIndex(sel.anchorRowId);
+      const r2 = rowIndex(sel.rowId);
+      const c1 = colIndex(sel.anchorFieldId);
+      const c2 = colIndex(sel.fieldId);
+      if (r1 < 0 || r2 < 0 || c1 < 0 || c2 < 0) return null;
+      return {
+        rowStart: Math.min(r1, r2),
+        rowEnd: Math.max(r1, r2),
+        colStart: Math.min(c1, c2),
+        colEnd: Math.max(c1, c2),
+      };
+    }
+    case "row": {
+      const r = rowIndex(sel.rowId);
+      if (r < 0) return null;
+      return { rowStart: r, rowEnd: r, colStart: 0, colEnd: fields.length - 1 };
+    }
+    case "column": {
+      const c = colIndex(sel.fieldId);
+      if (c < 0) return null;
+      return { rowStart: 0, rowEnd: rows.length - 1, colStart: c, colEnd: c };
+    }
+    case "all":
+      return { rowStart: 0, rowEnd: rows.length - 1, colStart: 0, colEnd: fields.length - 1 };
+    default:
+      return null; // node / 未知
+  }
+}
+
+/** 单元格值 → 剪贴板文本（image = 空；number/duration = 数值字符串；text/singleSelect = 原串）。 */
+export function cellToClipboardText(v: CellValue | undefined): string {
+  if (typeof v === "string") return v;
+  if (typeof v === "number") return String(v);
+  return ""; // undefined / image
+}
+
+/**
+ * 区域 → TSV 文本（行 = \n、列 = \t）：单格 = 原值（多行文本原样，1×1 无损）；
+ * 多格 = 值内嵌 \t/\n 压成空格保 TSV 结构完整。空区域 → 空串。
+ */
+export function buildRegionTsv(
+  fields: TableField[],
+  rows: TableRow[],
+  region: TableRegion,
+): string {
+  const multi = region.rowStart !== region.rowEnd || region.colStart !== region.colEnd;
+  // 下标恒合法：region 一律产自 selectionRegion（区间内保证有效，退化区间循环不执行）
+  const cellText = (r: number, c: number): string => {
+    const t = cellToClipboardText(rows[r].values[fields[c].id]);
+    return multi ? t.replace(/[\t\n]/g, " ") : t;
+  };
+  const lines: string[] = [];
+  for (let r = region.rowStart; r <= region.rowEnd; r++) {
+    const cells: string[] = [];
+    for (let c = region.colStart; c <= region.colEnd; c++) cells.push(cellText(r, c));
+    lines.push(cells.join("\t"));
+  }
+  return lines.join("\n");
+}
+
+/**
+ * 剪贴板 TSV 文本 → 值网格（string[][]）：\r\n 归一、制表符分列，末尾换行的空尾行剔除。
+ * 纯 TSV 不处理引号/内嵌换行（外部 Excel 带内嵌换行的格会拆行，已知限制）。
+ */
+export function parseTsv(text: string): string[][] {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  return lines.map((line) => line.split("\t"));
+}
+
+/** 粘贴值强转（text/number/duration；singleSelect/image 由调用方分派）：text = 原串（空 → undefined）；
+ *  number/duration = 数值化（非有限数/空 → undefined——非有限数含 NaN 与 Infinity，落盘会变 null 丢值）。 */
+function coercePasteValue(raw: string, field: TableField): CellValue | undefined {
+  if (field.type === "text") return raw === "" ? undefined : raw;
+  const t = raw.trim();
+  if (t === "") return undefined;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * 把粘贴网格应用到锚点（anchorRow, anchorCol）右下展开：越界自动补行（空行）/补列
+ * （text 字段「字段N」）；按目标字段类型强转（text 原样/空清空、number/duration 数值化、
+ * singleSelect 命中选项才写否则跳过、image 跳过）；空格清空目标格。
+ * 用 `cellValueEqual` 判定实际变化：无变化且无补行/补列返回原引用（调用方不置脏不入栈）。
+ */
+export function applyPasteGrid(
+  fields: TableField[],
+  rows: TableRow[],
+  anchorRow: number,
+  anchorCol: number,
+  grid: string[][],
+): { fields: TableField[]; rows: TableRow[] } {
+  const needRows = anchorRow + grid.length;
+  const needCols = anchorCol + grid.reduce((max, line) => Math.max(max, line.length), 0);
+  let newFields = fields;
+  if (needCols > fields.length) {
+    newFields = [...fields];
+    for (let i = fields.length; i < needCols; i++) {
+      newFields.push({ id: crypto.randomUUID(), name: `字段${i + 1}`, type: "text" });
+    }
+  }
+  let newRows = rows;
+  if (needRows > rows.length) {
+    newRows = [...rows];
+    for (let i = rows.length; i < needRows; i++) newRows.push({ id: crypto.randomUUID(), values: {} });
+  }
+  let anyChanged = false;
+  const outRows = newRows.map((row, r) => {
+    const g = r - anchorRow;
+    if (g < 0 || g >= grid.length) return row;
+    const line = grid[g];
+    if (line.length === 0) return row;
+    let rowChanged = false;
+    const values = { ...row.values };
+    for (let c = 0; c < line.length; c++) {
+      // newFields 已按 needCols 补足，anchorCol + c 恒有字段
+      const field = newFields[anchorCol + c];
+      const raw = line[c];
+      let next: CellValue | undefined;
+      if (field.type === "singleSelect") {
+        if (raw === "") next = undefined;
+        else if (field.options?.includes(raw)) next = raw;
+        else continue; // 非选项值：不覆盖不清空
+      } else if (field.type === "image") {
+        continue; // 图片格不支持贴文本，跳过
+      } else {
+        next = coercePasteValue(raw, field);
+      }
+      if (!cellValueEqual(values[field.id], next)) {
+        values[field.id] = next;
+        rowChanged = true;
+      }
+    }
+    if (!rowChanged) return row;
+    anyChanged = true;
+    return { ...row, values };
+  });
+  // 无实际写入（全跳过/全空）：丢弃补出的空行/空列，返回原引用（调用方不置脏不入栈）
+  if (!anyChanged) return { fields, rows };
+  return { fields: newFields, rows: outRows };
 }

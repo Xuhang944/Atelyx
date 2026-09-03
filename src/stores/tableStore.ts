@@ -17,7 +17,7 @@ import {
   saveImageToDownloads,
   writeTableVault,
 } from "@/services/table";
-import { copyImageToClipboard as copyImageSvc } from "@/services/clipboard";
+import { copyImageToClipboard as copyImageSvc, readClipboardText, writeClipboardText } from "@/services/clipboard";
 import { pickFile, saveFile } from "@/services/dialog";
 import {
   loadHistory as loadTableHistory,
@@ -30,19 +30,31 @@ import { clearTableImageCache } from "@/services/tableImageCache";
 import { useCollabStore } from "@/stores/collabStore";
 import { createPersistController } from "@/utils/persist";
 import { createUndoManager } from "@/utils/undoStack";
-import { computeTablePatch, normalizeTableRow, reorderByRank, sameIdSequence, summarizeTableSnapshot } from "@/utils/table";
-import type { CalcType, CellValue, FieldType, TableField, TableFile, TablePatch, TableRow } from "@/types";
+import {
+  applyPasteGrid,
+  buildRegionTsv,
+  cellValueEqual,
+  computeTablePatch,
+  normalizeTableRow,
+  parseTsv,
+  reorderByRank,
+  sameIdSequence,
+  selectionRegion,
+  summarizeTableSnapshot,
+} from "@/utils/table";
+import type {
+  CalcType,
+  CellValue,
+  FieldType,
+  TableField,
+  TableFile,
+  TablePatch,
+  TableRow,
+  TableSelection,
+} from "@/types";
 
 /** 编辑器视图：表格 / 时间线（内存态不持久化）。 */
 type TableView = "table" | "timeline";
-
-/** 表格选中范围（互斥）：单元格 / 整行 / 整列 / 整表；null = 无选中。 */
-type TableSelection =
-  | { kind: "cell"; rowId: string; fieldId: string }
-  | { kind: "row"; rowId: string }
-  | { kind: "column"; fieldId: string }
-  | { kind: "all" }
-  | null;
 
 interface TableStoreState {
   /** 当前打开的 .atb 相对仓库根路径（null = 未打开）。 */
@@ -60,7 +72,7 @@ interface TableStoreState {
   error: string | null;
   /** 选中行（表格/时间线视图联动；null = 无选中）。 */
   selectedRowId: string | null;
-  /** 当前选中范围（单元格/行/列/整表互斥；表格视图高亮用，时间线只读 selectedRowId）。 */
+  /** 当前选中范围（单元格/框选区域/行/列/整表互斥；表格视图高亮用，时间线只读 selectedRowId）。 */
   selection: TableSelection;
   view: TableView;
   /** 最近一次撤销回退的编辑会话单元格（undo 弹掉会话入口时置位；TableCell 按布尔 selector 订阅回退草稿，无关撤销为 null）。 */
@@ -123,6 +135,14 @@ interface TableStoreState {
   selectField: (fieldId: string) => void;
   /** 选中整个表格（左上角点击）。 */
   selectAll: () => void;
+  /** 拖拽框选多格（锚点 = 按下起点，终点 = 当前指针格；矩形范围由二者行/列推导）。 */
+  selectRange: (anchorRowId: string, anchorFieldId: string, rowId: string, fieldId: string) => void;
+  /** 复制当前选中区域为 TSV 到系统剪贴板（无选区/空区域 no-op；失败静默）。 */
+  copySelection: () => void;
+  /** 从系统剪贴板读 TSV 并粘贴到当前选中锚点（空/无选区 no-op；一步撤销）。 */
+  pasteFromClipboard: () => Promise<void>;
+  /** 清空当前选中区域全部单元格（框选 Backspace/Delete 用；一步撤销，图片格跳过）。 */
+  clearSelectionCells: () => void;
   setView: (view: TableView) => void;
   /** 保存当前快照到 undo 栈（清空 redo 栈）。结构变更方法内置；拖拽/编辑会话入口由调用方触发。 */
   pushUndo: () => void;
@@ -166,10 +186,7 @@ const undoMgr = createUndoManager<TableSnapshot>({
       const fieldIds = new Set(entry.fields.map((f) => f.id));
       const rowIds = new Set(entry.rows.map((r) => r.id));
       const sel = s.selection;
-      const stale =
-        sel &&
-        (((sel.kind === "cell" || sel.kind === "column") && !fieldIds.has(sel.fieldId)) ||
-          ((sel.kind === "cell" || sel.kind === "row") && !rowIds.has(sel.rowId)));
+      const stale = selectionStaleForSets(sel, fieldIds, rowIds);
       return {
         fields: entry.fields,
         rows: entry.rows,
@@ -203,6 +220,48 @@ function abortEditSession(): void {
   if (sessionUndoDepth >= 0 && undoMgr.size === sessionUndoDepth) undoMgr.dropTop();
   sessionUndoDepth = -1;
   sessionCell = null;
+}
+
+/** 选区是否引用指定字段（失效清理共用：单格/整列看 fieldId；框选看两端任一 fieldId）。 */
+function selUsesField(sel: TableSelection, fieldId: string): boolean {
+  if (!sel) return false;
+  if (sel.kind === "cell" || sel.kind === "column") return sel.fieldId === fieldId;
+  if (sel.kind === "range") return sel.fieldId === fieldId || sel.anchorFieldId === fieldId;
+  return false;
+}
+
+/** 选区是否引用指定行（同 selUsesField，行侧）。 */
+function selUsesRow(sel: TableSelection, rowId: string): boolean {
+  if (!sel) return false;
+  if (sel.kind === "cell" || sel.kind === "row") return sel.rowId === rowId;
+  if (sel.kind === "range") return sel.rowId === rowId || sel.anchorRowId === rowId;
+  return false;
+}
+
+/** 选区是否因目标集合缺失而失效（撤销/合并应用到快照后，两端任一 id 消失即清空）。 */
+function selectionStaleForSets(
+  sel: TableSelection,
+  fieldIds: Set<string>,
+  rowIds: Set<string>,
+): boolean {
+  if (!sel) return false;
+  switch (sel.kind) {
+    case "cell":
+      return !fieldIds.has(sel.fieldId) || !rowIds.has(sel.rowId);
+    case "column":
+      return !fieldIds.has(sel.fieldId);
+    case "row":
+      return !rowIds.has(sel.rowId);
+    case "range":
+      return (
+        !fieldIds.has(sel.fieldId) ||
+        !fieldIds.has(sel.anchorFieldId) ||
+        !rowIds.has(sel.rowId) ||
+        !rowIds.has(sel.anchorRowId)
+      );
+    default:
+      return false; // all / null
+  }
 }
 
 /**
@@ -858,9 +917,8 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   removeField: (fieldId) => {
     undoMgr.push();
     set((s) => {
-      // 选中范围指向被删列（单元格/整列）时清空，防高亮残留失效引用
-      const sel = s.selection;
-      const stale = sel && (sel.kind === "cell" || sel.kind === "column") && sel.fieldId === fieldId;
+      // 选中范围指向被删列（单元格/整列/框选两端）时清空，防高亮残留失效引用
+      const stale = selUsesField(s.selection, fieldId);
       return {
         fields: s.fields.filter((f) => f.id !== fieldId),
         // 删除列同时清掉所有行的该列值（防 values 残留孤儿键）
@@ -897,9 +955,8 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   removeRow: (rowId) => {
     undoMgr.push();
     set((s) => {
-      // 选中范围指向被删行（单元格/整行）时清空，防高亮残留失效引用
-      const sel = s.selection;
-      const stale = sel && (sel.kind === "cell" || sel.kind === "row") && sel.rowId === rowId;
+      // 选中范围指向被删行（单元格/整行/框选两端）时清空，防高亮残留失效引用
+      const stale = selUsesRow(s.selection, rowId);
       return {
         rows: s.rows.filter((r) => r.id !== rowId),
         selectedRowId: s.selectedRowId === rowId ? null : s.selectedRowId,
@@ -940,6 +997,74 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
   selectField: (fieldId) => set({ selection: { kind: "column", fieldId }, selectedRowId: null }),
 
   selectAll: () => set({ selection: { kind: "all" }, selectedRowId: null }),
+
+  selectRange: (anchorRowId, anchorFieldId, rowId, fieldId) =>
+    set({
+      selection: { kind: "range", anchorRowId, anchorFieldId, rowId, fieldId },
+      selectedRowId: anchorRowId,
+    }),
+
+  copySelection: () => {
+    const s = get();
+    const region = selectionRegion(s.selection, s.fields, s.rows);
+    if (!region) return;
+    const text = buildRegionTsv(s.fields, s.rows, region);
+    if (text === "") return;
+    // 剪贴板被占用等写失败：置面板错误提示（与复制图片失败同口径），不静默
+    void writeClipboardText(text).catch((e) => {
+      console.warn("复制单元格到剪贴板失败", e);
+      set({ error: "复制失败，请重试" });
+    });
+  },
+
+  pasteFromClipboard: async () => {
+    let text: string;
+    try {
+      text = await readClipboardText();
+    } catch {
+      return; // 剪贴板无文本（如图片）→ 非错误态，忽略
+    }
+    const grid = parseTsv(text);
+    // 全空串网格：无内容可贴（不得补行补列制造空结构）
+    if (grid.every((line) => line.every((c) => c === ""))) return;
+    // await 期间可能改选中/切表：以最新 state 为准（防贴进旧锚点/旧表）
+    const s = get();
+    const region = selectionRegion(s.selection, s.fields, s.rows);
+    if (!region) return;
+    const { fields, rows } = applyPasteGrid(s.fields, s.rows, region.rowStart, region.colStart, grid);
+    if (fields === s.fields && rows === s.rows) return; // 无实际变化：不置脏不入栈
+    undoMgr.push();
+    set({ fields, rows });
+    schedulePersist();
+  },
+
+  clearSelectionCells: () => {
+    const s = get();
+    const region = selectionRegion(s.selection, s.fields, s.rows);
+    if (!region) return;
+    // 清空区域全部单元格（一步撤销；图片格跳过——单格 Delete 同口径不清图片）
+    let anyChange = false;
+    const outRows = s.rows.map((row, r) => {
+      if (r < region.rowStart || r > region.rowEnd) return row;
+      let changed = false;
+      const values = { ...row.values };
+      for (let c = region.colStart; c <= region.colEnd; c++) {
+        // 图片格不清空（与单格 Delete 不清图片同口径）
+        if (s.fields[c].type === "image") continue;
+        const cur = values[s.fields[c].id];
+        if (cellValueEqual(cur, undefined)) continue;
+        values[s.fields[c].id] = undefined;
+        changed = true;
+      }
+      if (!changed) return row;
+      anyChange = true;
+      return { ...row, values };
+    });
+    if (!anyChange) return;
+    undoMgr.push();
+    set({ rows: outRows });
+    schedulePersist();
+  },
 
   setView: (view) => set({ view }),
 
@@ -996,12 +1121,12 @@ export const useTableStore = create<TableStoreState>((set, get) => ({
         else rows.push(r);
       }
       if (patch.rowOrder) rows = reorderByIds(rows, patch.rowOrder);
-      // 远端删除使本端选中失效：清理（与 removeRow/removeField 同策略，防高亮残留）
+      // 远端删除使本端选中失效（含框选两端任一 id）：清理（与 removeRow/removeField 同谓词）
       const sel = st.selection;
       const staleSel =
         sel &&
-        (((sel.kind === "cell" || sel.kind === "column") && removedFieldIds.has(sel.fieldId)) ||
-          ((sel.kind === "cell" || sel.kind === "row") && removedRowIds.has(sel.rowId)));
+        (patch.removedFieldIds.some((id) => selUsesField(sel, id)) ||
+          patch.removedRowIds.some((id) => selUsesRow(sel, id)));
       return {
         fields,
         rows,

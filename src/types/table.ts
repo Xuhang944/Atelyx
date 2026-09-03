@@ -3,6 +3,9 @@
  *
  * 泛用多维表格：字段完全用户自定义，无内置模板。
  * 分镜板等用法 = 用户自建字段（镜号/景别/时长/分镜图…）+ 时间线/预演视图。
+ *
+ * 除磁盘 schema 外，还承载运行时 UI/presence 类型（`TableSelection` 选中范围，
+ * 供表格视图高亮与协作 presence 复用）。
  */
 import type { TABLE_SCHEMA } from "@/constants/table";
 
@@ -47,6 +50,19 @@ export interface TableRow {
   /** 用户拖拽调整后的行高（px）；缺省 = 内容自然撑开（行高自适应清除）。 */
   height?: number;
 }
+
+/**
+ * 表格选中范围（互斥）：单元格 / 拖拽框选区域（锚点 + 当前端点，矩形范围 = 二者
+ * 行/列下标 min/max）/ 整行 / 整列 / 整表；null = 无选中。
+ * 存 id 而非下标：与撤销/协作按 id 合并的语义一致，行/字段增删后选区不悬空。
+ */
+export type TableSelection =
+  | { kind: "cell"; rowId: string; fieldId: string }
+  | { kind: "range"; anchorRowId: string; anchorFieldId: string; rowId: string; fieldId: string }
+  | { kind: "row"; rowId: string }
+  | { kind: "column"; fieldId: string }
+  | { kind: "all" }
+  | null;
 
 /** `.atb` 文件根结构。 */
 export interface TableFile {

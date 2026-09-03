@@ -22,6 +22,7 @@ import {
 import { useTableStore } from "@/stores/tableStore";
 import { useCollabStore } from "@/stores/collabStore";
 import { useTableImageSrc } from "@/hooks/useTableImageSrc";
+import { selectionRegion } from "@/utils/table";
 import type { TableField, TableRow } from "@/types";
 
 /** 时间线卡片缩略图：条目路径经 useTableImageSrc 解析（加载中/失败显示文字摘要兜底）。 */
@@ -224,23 +225,26 @@ export function TableTimeline() {
   // 协作：同看本表格的在线用户（远端选中行 → 卡片边框用户色）
   const tableFile = useTableStore((s) => s.tableFile);
   const collabPeers = useCollabStore((s) => s.peers);
-  // 协作远端选中行 → 用户色（按 rowId 预建 Map：播放每帧 O(1) 查询，不再每帧 collabPeers × rows 全量扫描；保留「首个匹配 peer 优先」语义）
+  // 协作远端选中行 → 用户色（cell/range/row 统一经区域归约，覆盖框选多行；column 不染——
+  // 整列无高亮意义；按 rowId 预建 Map：播放每帧 O(1) 查询，不再每帧 collabPeers × rows 全量
+  // 扫描；保留「首个匹配 peer 优先」语义）
   const peerColorByRowId = useMemo(() => {
     const map = new Map<string, string>();
     if (!tableFile) return map;
     for (const p of collabPeers) {
       const sel = p.presence?.selection;
-      if (
-        p.presence?.file === tableFile &&
-        sel &&
-        (sel.kind === "cell" || sel.kind === "row") &&
-        !map.has(sel.rowId)
-      ) {
-        map.set(sel.rowId, p.color);
+      if (p.presence?.file !== tableFile || !sel || sel.kind === "all" || sel.kind === "column") {
+        continue;
+      }
+      const region = selectionRegion(sel, fields, rows);
+      if (!region) continue;
+      // 下标恒合法：region 产自 selectionRegion，退化区间（空表）循环不执行
+      for (let r = region.rowStart; r <= region.rowEnd; r++) {
+        if (!map.has(rows[r].id)) map.set(rows[r].id, p.color);
       }
     }
     return map;
-  }, [collabPeers, tableFile]);
+  }, [collabPeers, tableFile, fields, rows]);
 
   const durationField = fields.find((f) => f.type === "duration");
   const imageField = fields.find((f) => f.type === "image");
