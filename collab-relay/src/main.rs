@@ -5,6 +5,11 @@
 //! 纯转发不持久化——断线即消失，30s 无消息心跳超时踢出。无鉴权（局域网信任）：同一局域网内
 //! 任何客户端可加入房间；单端口，部署 = 服务器 `git clone && docker compose up -d`。
 //!
+//! 日志：tracing 结构化输出（stderr / `docker logs`）。级别由 `RUST_LOG` 控制（默认 info；
+//! `RUST_LOG=debug` 看逐消息转发明细），`LOG_FORMAT=json` 切 JSON 行输出便于采集。
+//! 隐私红线：转发内容（patch / Yjs payload / selection）一律只记字节数不记内容；
+//! 身份元数据（昵称/设备名/仓库 id/文件相对路径）在局域网信任语境下可入日志。
+//!
 //! 协议（JSON over WS，字段 camelCase）：
 //! - C→S `hello`：`{ type, vaultId, nickname, color, deviceName }`（首条必发）
 //! - C→S `presence`：`{ type, file?, selection?, view?, openFiles?, lockedNodes?, streamingNodeIds? }`
@@ -23,18 +28,22 @@
 //! - S→C `error`：`{ type, message }`
 
 use std::collections::HashMap;
+use std::io::IsTerminal;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
+use tracing::{debug, info, trace, warn};
+use tracing_subscriber::EnvFilter;
 
 /// 心跳超时：期间无任何消息（含 ping）即断开。
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -51,6 +60,15 @@ struct PeerEntry {
     device_name: String,
     presence: Option<Presence>,
     tx: broadcast::Sender<Arc<String>>,
+}
+
+/// 单连接收发计数（离场随总结日志输出，用于定位流量异常/刷屏客户端）。
+#[derive(Default)]
+struct ConnStats {
+    received_msgs: u64,
+    received_bytes: u64,
+    forwarded_msgs: u64,
+    forwarded_bytes: u64,
 }
 
 /// 全局房间表（vaultId → 房间）；hub 为 axum State。
@@ -201,40 +219,78 @@ fn forward_to_room(rooms: &mut Rooms, vault_id: &str, sender_id: u64, payload: A
     }
 }
 
+/// 日志初始化：RUST_LOG 控制级别（默认 info），非 TTY（Docker）自动去 ANSI 颜色，
+/// `LOG_FORMAT=json` 切 JSON 行输出便于采集。
+fn init_logging() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    if std::env::var("LOG_FORMAT").as_deref() == Ok("json") {
+        tracing_subscriber::fmt().json().with_env_filter(filter).init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_ansi(std::io::stderr().is_terminal())
+            .with_env_filter(filter)
+            .init();
+    }
+}
+
 #[tokio::main]
 async fn main() {
+    init_logging();
     let port = std::env::var("PORT").unwrap_or_else(|_| "17701".to_string());
     let addr = format!("0.0.0.0:{port}");
     let app = Router::new().route("/ws", get(ws_handler)).with_state(Hub::default());
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .unwrap_or_else(|e| panic!("bind {addr} 失败：{e}"));
-    eprintln!("collab-relay 已启动，监听 {addr}（/ws）");
-    axum::serve(listener, app).await.expect("服务器错误");
+    info!(addr = %addr, "collab-relay 已启动，监听 /ws");
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .await
+        .expect("服务器错误");
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, State(hub): State<Hub>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, hub))
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(hub): State<Hub>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    debug!(%remote, "ws 连接建立");
+    ws.on_upgrade(move |socket| handle_socket(socket, hub, remote))
 }
 
-async fn handle_socket(socket: WebSocket, hub: Hub) {
+async fn handle_socket(socket: WebSocket, hub: Hub, remote: SocketAddr) {
     let (mut sink, mut stream) = socket.split();
+    let started_at = std::time::Instant::now();
 
     // 首条消息必须是 hello（带超时保护，防半开连接占位）
     let hello = match tokio::time::timeout(HEARTBEAT_TIMEOUT, stream.next()).await {
-        Ok(Some(Ok(Message::Text(text)))) => {
-            match serde_json::from_str::<ClientMsg>(&text) {
-                Ok(m) if m.kind == "hello" => m,
-                _ => {
-                    let _ = sink.send(Message::Text(peer_error("首条消息须为 hello").into())).await;
-                    return;
-                }
+        Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str::<ClientMsg>(&text) {
+            Ok(m) if m.kind == "hello" => m,
+            _ => {
+                warn!(%remote, "首条消息非 hello，拒绝连接");
+                let _ = sink.send(Message::Text(peer_error("首条消息须为 hello").into())).await;
+                return;
             }
+        },
+        Ok(Some(Ok(_))) => {
+            warn!(%remote, "首条消息非文本帧，拒绝连接");
+            return;
         }
-        _ => return,
+        Ok(Some(Err(_))) => {
+            warn!(%remote, "首条消息协议错误，断开");
+            return;
+        }
+        Ok(None) => {
+            debug!(%remote, "hello 前连接关闭");
+            return;
+        }
+        Err(_) => {
+            warn!(%remote, "hello 超时（30s 内无首条消息），断开");
+            return;
+        }
     };
 
     let peer_id = NEXT_PEER_ID.fetch_add(1, Ordering::Relaxed);
+    let mut stats = ConnStats::default();
     let (btx, _) = broadcast::channel::<Arc<String>>(256);
     // 后台转发必须先就位（订阅 receiver），再入房广播——否则本连接的首次 peers 帧
     // （含自己）在 send_task 启动前被 send 丢弃（broadcast 无 receiver 时 send 直接 Err）
@@ -244,11 +300,15 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
             match btx_rx.recv().await {
                 Ok(payload) => {
                     if sink.send(Message::Text((*payload).clone().into())).await.is_err() {
+                        debug!(peer_id, "发送失败，客户端断开");
                         break;
                     }
                 }
                 // 消费过慢被广播层裁剪（lagged）：跳过该帧继续，防发送任务误退出
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    debug!(peer_id, "发送队列过慢，跳过被裁剪帧");
+                    continue;
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
@@ -256,9 +316,12 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
     // 先告知本连接自己的 peerId（客户端据此把自己过滤出 peers），再广播全量快照——
     // 顺序颠倒会让客户端收到含自己的 peers 帧时还无法识别自己（一帧闪现）
     let _ = btx.send(server_msg("hello-ack", Some(peer_id), None, None, None, None, None));
+    let vault_id = hello.vault_id.clone();
+    let nickname = hello.nickname.clone();
+    let device_name = hello.device_name.clone();
     {
         let mut rooms = hub.0.lock().unwrap();
-        let room = rooms.entry(hello.vault_id.clone()).or_default();
+        let room = rooms.entry(vault_id.clone()).or_default();
         room.insert(
             peer_id,
             PeerEntry {
@@ -269,17 +332,40 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
                 tx: btx.clone(),
             },
         );
-        broadcast_peers(&rooms, &hello.vault_id);
+        info!(
+            peer_id,
+            vault_id = %vault_id,
+            nickname = %nickname,
+            device_name = %device_name,
+            %remote,
+            room_size = room.len(),
+            "协作者加入房间",
+        );
+        broadcast_peers(&rooms, &vault_id);
     }
 
     // 消息循环：30s 无消息（心跳超时）断开
     loop {
         let recv = tokio::time::timeout(HEARTBEAT_TIMEOUT, stream.next()).await;
         match recv {
-            Err(_) => break,                       // 心跳超时
-            Ok(None) | Ok(Some(Err(_))) => break,  // 断开/协议错误
+            Err(_) => {
+                warn!(peer_id, vault_id = %vault_id, "心跳超时（30s 无消息），断开");
+                break;
+            }
+            Ok(None) => {
+                debug!(peer_id, vault_id = %vault_id, "连接关闭（对端断开）");
+                break;
+            }
+            Ok(Some(Err(_))) => {
+                warn!(peer_id, vault_id = %vault_id, "WebSocket 协议错误，断开");
+                break;
+            }
             Ok(Some(Ok(Message::Text(text)))) => {
+                stats.received_msgs += 1;
+                stats.received_bytes += text.len() as u64;
                 let Ok(msg) = serde_json::from_str::<ClientMsg>(&text) else {
+                    // 只记字节数不记原文——原文可能含用户文本
+                    warn!(peer_id, bytes = text.len(), "消息解析失败，忽略");
                     continue;
                 };
                 match msg.kind.as_str() {
@@ -292,14 +378,40 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
                             locked_nodes: msg.locked_nodes,
                             streaming_node_ids: msg.streaming_node_ids,
                         };
+                        // presence 高频（选中节流后仍密集）：debug 只记文件/视图与清单数量，
+                        // 不记 selection 内容（内容可能含用户文本/图片选区）
+                        debug!(
+                            peer_id,
+                            vault_id = %vault_id,
+                            file = presence.file.as_deref().unwrap_or(""),
+                            view = presence.view.as_deref().unwrap_or(""),
+                            open_files = presence
+                                .open_files
+                                .as_ref()
+                                .and_then(|v| v.as_array())
+                                .map_or(0, |a| a.len()),
+                            locked_nodes = presence
+                                .locked_nodes
+                                .as_ref()
+                                .and_then(|v| v.as_array())
+                                .map_or(0, |a| a.len()),
+                            streaming_nodes = presence
+                                .streaming_node_ids
+                                .as_ref()
+                                .and_then(|v| v.as_array())
+                                .map_or(0, |a| a.len()),
+                            "presence 转发",
+                        );
                         let mut rooms = hub.0.lock().unwrap();
-                        if let Some(room) = rooms.get_mut(&hello.vault_id) {
+                        if let Some(room) = rooms.get_mut(&vault_id) {
                             if let Some(peer) = room.get_mut(&peer_id) {
                                 peer.presence = Some(presence.clone());
                             }
                             let payload =
                                 server_msg("presence", Some(peer_id), None, Some(presence), None, None, None);
-                            forward_to_room(&mut rooms, &hello.vault_id, peer_id, payload);
+                            stats.forwarded_msgs += 1;
+                            stats.forwarded_bytes += payload.len() as u64;
+                            forward_to_room(&mut rooms, &vault_id, peer_id, payload);
                         }
                     }
                     // 表格/画布内容补丁：同构透传（不存储、不解析内容，原样转发房间内其他成员，
@@ -311,6 +423,7 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
                             } else {
                                 "canvas-patch"
                             };
+                            debug!(peer_id, vault_id = %vault_id, kind, file = %file, "内容补丁转发");
                             let mut rooms = hub.0.lock().unwrap();
                             let payload = server_msg(
                                 kind,
@@ -321,7 +434,9 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
                                 Some(patch),
                                 None,
                             );
-                            forward_to_room(&mut rooms, &hello.vault_id, peer_id, payload);
+                            stats.forwarded_msgs += 1;
+                            stats.forwarded_bytes += payload.len() as u64;
+                            forward_to_room(&mut rooms, &vault_id, peer_id, payload);
                         }
                     }
                     // 笔记协作同步 / awareness：不透明透传（base64 载荷），原样转发房间内其他成员
@@ -330,6 +445,14 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
                         if let (Some(file), Some(payload)) = (msg.file, msg.payload) {
                             let kind: &'static str =
                                 if msg.kind.as_str() == "note-sync" { "note-sync" } else { "note-aware" };
+                            debug!(
+                                peer_id,
+                                vault_id = %vault_id,
+                                kind,
+                                file = %file,
+                                bytes = payload.len(),
+                                "笔记同步转发",
+                            );
                             let mut rooms = hub.0.lock().unwrap();
                             let relayed = server_msg(
                                 kind,
@@ -340,33 +463,55 @@ async fn handle_socket(socket: WebSocket, hub: Hub) {
                                 None,
                                 Some(payload),
                             );
-                            forward_to_room(&mut rooms, &hello.vault_id, peer_id, relayed);
+                            stats.forwarded_msgs += 1;
+                            stats.forwarded_bytes += relayed.len() as u64;
+                            forward_to_room(&mut rooms, &vault_id, peer_id, relayed);
                         }
                     }
-                    "bye" => break,
+                    "bye" => {
+                        info!(peer_id, vault_id = %vault_id, "协作者离开（bye）");
+                        break;
+                    }
                     // 心跳回执：回 pong 广播（健康连接每 ≤25s 有人 ping，全员 lastMessageAt 刷新，
                     // 前端据此 75s 静默即判半开假死主动重连；单人房间亦收到自己的 pong，无空转误判）
                     "ping" => {
+                        trace!(peer_id, "ping → pong");
                         let _ = btx.send(server_msg("pong", None, None, None, None, None, None));
                     }
-                    _ => continue,
+                    other => {
+                        debug!(peer_id, kind = %other, "未知消息类型，忽略");
+                        continue;
+                    }
                 }
             }
-            Ok(Some(Ok(_))) => continue, // 二进制帧/关闭帧忽略
+            Ok(Some(Ok(_))) => {
+                debug!(peer_id, "忽略二进制/关闭帧");
+                continue;
+            }
         }
     }
 
     // 离开：移出房间 + 广播更新后的 peers（房间空则整体移除）
     {
         let mut rooms = hub.0.lock().unwrap();
-        if let Some(room) = rooms.get_mut(&hello.vault_id) {
+        if let Some(room) = rooms.get_mut(&vault_id) {
             room.remove(&peer_id);
             if room.is_empty() {
-                rooms.remove(&hello.vault_id);
+                rooms.remove(&vault_id);
             } else {
-                broadcast_peers(&rooms, &hello.vault_id);
+                broadcast_peers(&rooms, &vault_id);
             }
         }
     }
+    info!(
+        peer_id,
+        vault_id = %vault_id,
+        duration_ms = started_at.elapsed().as_millis() as u64,
+        received_msgs = stats.received_msgs,
+        received_bytes = stats.received_bytes,
+        forwarded_msgs = stats.forwarded_msgs,
+        forwarded_bytes = stats.forwarded_bytes,
+        "协作者连接结束",
+    );
     send_task.abort();
 }
