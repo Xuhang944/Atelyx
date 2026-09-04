@@ -1,21 +1,52 @@
 /**
- * 右侧边栏属性面板。
+ * 右侧边栏属性面板：不只画布专属，也显示笔记属性。
  *
- * 单击画布节点 → 显示其属性：
- * - 对话节点：Agent 选择（与 ConversationNode header 同源）+ 被消费/产出的资产列表
- * - 文本/媒体节点：基本信息 + 来源/消费方列表
+ * 上下文（焦点优先，其次选中）：
+ * - 焦点在笔记编辑器面板 → 显示当前笔记的 frontmatter 属性（NotePropertiesView 复用，增删改/切类型，编辑即写盘）
+ * - 选中笔记节点（text + file）→ 显示该笔记的属性
+ * - 焦点在画布/选中其他节点 → 节点属性（对话：Agent + 来源/资产列表；文本/媒体：基本信息 + 来源/消费方）
+ * - 其余（无选中、非笔记焦点）→ 空面板（无占位提示）
  * 资产列表项点击 → setCenter 定位到对应节点（与 @chip 点击定位一致）。
- * 分层：走 canvasStore / settingsStore，不直调 service。
+ * 分层：走 canvasStore / appStore / uiStateStore / panelStore / vaultStore / settingsStore，不直调 service。
  */
-import { Bot, FileText, GitBranch, Image, Info, LayoutDashboard, Link2, MessageSquare, Network, Table as TableIcon } from "lucide-react";
+import {
+  Bot,
+  FileText,
+  GitBranch,
+  Image,
+  LayoutDashboard,
+  Link2,
+  MessageSquare,
+  Network,
+  Table as TableIcon,
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useReactFlow, type Node as FlowNode } from "@xyflow/react";
 import { useShallow } from "zustand/react/shallow";
+import { useAppStore } from "@/stores/appStore";
 import { useCanvasStore } from "@/stores/canvasStore";
+import { usePanelStore } from "@/stores/panelStore";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useUiStateStore } from "@/stores/uiStateStore";
+import { useVaultStore } from "@/stores/vaultStore";
 import { BUILTIN_AGENT_CHAT_ID } from "@/constants/agents";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
+import { NotePropertiesView } from "@/components/editor/NotePropertiesView";
+import { useVaultTagCandidates } from "@/hooks/useVaultTagCandidates";
+import { parseFrontmatter, stringifyFrontmatter } from "@/utils/frontmatter";
+import { noteTitleFromFile } from "@/utils/filename";
+import { activeTabOf, findPanel } from "@/utils/workspaceLayout";
 import { mentionTextOf, prefix } from "@/utils/text";
-import type { ConversationData, MediaData, Message, TableData, TextData } from "@/types";
+import type {
+  ConversationData,
+  DetachedWindow,
+  LayoutNode,
+  MediaData,
+  Message,
+  TableData,
+  TextData,
+  ViewKind,
+} from "@/types";
 
 const NODE_TYPE_LABEL: Record<string, string> = {
   conversation: "对话",
@@ -29,6 +60,46 @@ const NODE_TYPE_LABEL: Record<string, string> = {
 
 /** 无入边/出边时的空派生（模块级常量，useShallow 数组比较依赖元素引用稳定）。 */
 const EMPTY_NODES: FlowNode[] = [];
+
+/** 属性面板展示上下文：笔记（file）/ 节点（nodeId）/ 空。 */
+type InspectorContext = { kind: "note"; file: string } | { kind: "node"; nodeId: string } | null;
+
+/** 焦点宿主 → 当前激活标签视图（主窗口面板或撕裂窗口；null = 无焦点/无法解析）。
+ *  先查撕裂窗口再查面板树：撕裂窗口 activeTree 是 id 恰等于窗口 id 的空根面板（panelStore
+ *  applyPanelInit），先查树会命中空面板导致窗口内聚焦判定失效（直到下一次布局广播）。 */
+function focusedHostViewOf(
+  focusedPanelId: string | null,
+  mirror: { activeTree: LayoutNode; detachedWindows: DetachedWindow[] } | null,
+): ViewKind | null {
+  if (!focusedPanelId || !mirror) return null;
+  const win = mirror.detachedWindows.find((w) => w.id === focusedPanelId);
+  if (win) {
+    return (
+      win.tabs.find((t) => t.id === win.activeTabId)?.view ?? win.tabs[0]?.view ?? null
+    );
+  }
+  const panel = findPanel(mirror.activeTree, focusedPanelId);
+  if (panel) return activeTabOf(panel)?.view ?? null;
+  return null;
+}
+
+/**
+ * 上下文解析：焦点在笔记编辑器 → 当前笔记；焦点在画布等 → 跟随选中；
+ * 焦点在属性面板自身 → 返回 null（由调用方保留既有上下文，面板内操作不闪走）。
+ */
+function resolveContext(
+  focusedHostView: ViewKind | null,
+  currentNoteFile: string | null,
+  selectedNodeId: string | null,
+): InspectorContext {
+  if (focusedHostView === "note") {
+    return currentNoteFile ? { kind: "note", file: currentNoteFile } : null;
+  }
+  if (focusedHostView !== "inspector") {
+    return selectedNodeId ? { kind: "node", nodeId: selectedNodeId } : null;
+  }
+  return null;
+}
 
 /**
  * 对话节点显示名：优先 LLM 自动命名的话题标题（data.title，首轮对话完成后自动命名），
@@ -99,6 +170,25 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** 面板标题栏：左「属性」+ 右类型徽章（笔记模式与节点模式共用）。 */
+function InspectorHeader({ badge }: { badge: string }) {
+  return (
+    <div
+      className="px-3 py-2 border-b flex items-center gap-2 flex-shrink-0"
+      style={{ borderColor: "var(--border)" }}
+      data-tauri-drag-region
+    >
+      <span className="font-medium text-xs">属性</span>
+      <span
+        className="ml-auto text-xs px-1.5 py-0.5 rounded flex-shrink-0"
+        style={{ background: "var(--bg-tertiary)", color: "var(--text-secondary)" }}
+      >
+        {badge}
+      </span>
+    </div>
+  );
+}
+
 /**
  * 相邻节点订阅：入向来源（in）/ 出向消费方（out）/ 无向关联端点（assoc）。
  * find 节点 → 过滤邻边 → 映射回节点 → filter(Boolean)；assoc 双向匹配并按对端 id 去重
@@ -142,8 +232,33 @@ function useAdjacentNodes(nodeId: string | null, dir: "in" | "out" | "assoc"): F
 }
 
 export function InspectorPanel() {
+  // 焦点宿主视图（笔记/画布/属性/其他）：决定笔记模式 vs 跟随选中。
+  // selector 返回原始值（string|null）：layoutMirror 每次布局变更都是新对象，派生值未变不重渲染
+  // （resize 拖拽/展开目录等无关变更不再拖着重面板重渲染）
+  const focusedPanelId = useUiStateStore((s) => s.focusedPanelId);
+  const focusedHostView = usePanelStore((s) => focusedHostViewOf(focusedPanelId, s.layoutMirror));
+  const currentNoteFile = useAppStore((s) => s.currentNoteFile);
+  const selectedNodeId = useCanvasStore((s) => s.selectedNodeId);
+  /** 面板展示上下文：笔记（file）/ 节点（nodeId）/ 空；焦点在属性面板自身时保留既有上下文。 */
+  const [context, setContext] = useState<InspectorContext>(() =>
+    resolveContext(
+      focusedHostViewOf(
+        useUiStateStore.getState().focusedPanelId,
+        usePanelStore.getState().layoutMirror,
+      ),
+      useAppStore.getState().currentNoteFile,
+      useCanvasStore.getState().selectedNodeId,
+    ),
+  );
+  useEffect(() => {
+    if (focusedHostView !== "inspector") {
+      setContext(resolveContext(focusedHostView, currentNoteFile, selectedNodeId));
+    }
+    // focusedHostView === "inspector"：焦点在本面板，保留既有上下文（面板内操作不闪走）
+  }, [focusedHostView, currentNoteFile, selectedNodeId]);
+
   // 窄化订阅：节点引用（未变时稳定）+ 相邻节点数组（useAdjacentNodes 内 useShallow 比较）
-  const nodeId = useCanvasStore((s) => s.selectedNodeId);
+  const nodeId = context?.kind === "node" ? context.nodeId : null;
   const node = useCanvasStore((s) => (nodeId ? s.nodes.find((x) => x.id === nodeId) : undefined));
   const sources = useAdjacentNodes(nodeId, "in");
   const targets = useAdjacentNodes(nodeId, "out");
@@ -160,6 +275,30 @@ export function InspectorPanel() {
   const parentMsgs = useCanvasStore((s) => (parentConv ? s.messagesByConv[parentConv.id] : undefined));
   const { setCenter } = useReactFlow();
 
+  // 笔记模式数据：焦点当前笔记（优先级）或选中笔记节点（text + file）
+  const selectedNoteFile =
+    node && node.type === "text" ? (node.data as unknown as TextData).file ?? null : null;
+  const targetNoteFile = context?.kind === "note" ? context.file : selectedNoteFile;
+  const noteContent = useVaultStore((s) =>
+    targetNoteFile ? s.noteContents[targetNoteFile] : undefined,
+  );
+  const parsed = useMemo(
+    () => (noteContent !== undefined ? parseFrontmatter(noteContent) : null),
+    [noteContent],
+  );
+  // 目标笔记未缓存（首次展示 / 外部修改作废缓存）→ 补读；读失败保持 undefined（不渲染属性编辑区）
+  useEffect(() => {
+    if (targetNoteFile && noteContent === undefined) {
+      void useVaultStore.getState().readNoteContent(targetNoteFile).catch(() => {
+        // 读失败静默：属性编辑区不渲染，防在已删除文件上误建（写盘复活文件）
+      });
+    }
+  }, [targetNoteFile, noteContent]);
+  const { tagCandidates, requestTagCandidates } = useVaultTagCandidates();
+  // 直写路径保存失败：内联错误提示 + 重试（编辑器挂载时路由到编辑器，失败由其保存状态展示）
+  const [saveError, setSaveError] = useState(false);
+  const lastFailedDataRef = useRef<Record<string, unknown> | null>(null);
+
   const locateNode = (id: string) => {
     // 点击定位时读最新位置（不订阅，避免位置变化触发面板重渲染）
     const n = useCanvasStore.getState().nodes.find((x) => x.id === id);
@@ -169,18 +308,95 @@ export function InspectorPanel() {
     setCenter(n.position.x + w / 2, n.position.y + h / 2, { zoom: 1, duration: 300 });
   };
 
-  if (!node) {
+  // 笔记模式：frontmatter 属性（与编辑器属性区同一组件，增删改即时写盘，
+  // 经 vaultStore 缓存/保存链与编辑器双向同步）
+  if (targetNoteFile) {
+    const title = noteTitleFromFile(targetNoteFile);
+    /** 笔记属性提交：编辑器挂载时路由到编辑器合并实时正文走保存链（防未落盘正文被整文件覆盖、
+     * 撤销/挂起输入/历史全复用）；未挂载才直写。 */
+    const handleNotePropsUpdate = (next: Record<string, unknown>) => {
+      if (!parsed) return;
+      lastFailedDataRef.current = next;
+      // 编辑器是否挂载 = noteSaveStates 是否有该文件条目（编辑器加载即登记、卸载清除）
+      const editorMounted =
+        useVaultStore.getState().noteSaveStates[targetNoteFile] !== undefined;
+      if (editorMounted) {
+        useVaultStore.getState().requestNotePropsEdit(targetNoteFile, next);
+        setSaveError(false);
+        return;
+      }
+      try {
+        const full = stringifyFrontmatter(next, parsed.body);
+        void useVaultStore
+          .getState()
+          .saveNoteContent(targetNoteFile, full)
+          .then(() => {
+            setSaveError(false);
+            // 记编辑存档点（与编辑器 debounce 保存同源；60s 连续编辑合并）
+            void useVaultStore.getState().noteHistoryRecord(targetNoteFile, full, "edit");
+          })
+          .catch((e) => {
+            console.error("笔记属性保存失败", e);
+            setSaveError(true);
+          });
+      } catch (e) {
+        // stringify 异常（不应发生）：不污染内容，记录日志便于排查（与 NoteEditor 同策略）
+        console.error("[frontmatter] stringify error:", e, next);
+        setSaveError(true);
+      }
+    };
     return (
       <div
-        className="h-full flex items-center justify-center"
-        style={{ background: "var(--bg-secondary)", color: "var(--text-muted)" }}
+        className="h-full flex flex-col overflow-hidden"
+        style={{ background: "var(--bg-secondary)", color: "var(--text-primary)" }}
       >
-        <div className="flex flex-col items-center gap-2 text-xs px-4 text-center select-none">
-          <Info size={22} strokeWidth={1.5} />
-          点击画布中的节点查看属性
+        <InspectorHeader badge="笔记" />
+
+        <div className="flex-1 overflow-auto px-3 py-2 flex flex-col gap-3">
+          <div>
+            <div className="text-sm font-medium truncate">{title}</div>
+            <div
+              className="text-[11px] truncate"
+              style={{ color: "var(--text-muted)" }}
+              title={targetNoteFile}
+            >
+              {targetNoteFile}
+            </div>
+          </div>
+          {parsed && (
+            <NotePropertiesView
+              key={targetNoteFile}
+              data={parsed.data}
+              parseError={!parsed.ok}
+              onUpdate={handleNotePropsUpdate}
+              onOpenSource={() => useAppStore.getState().openNote(targetNoteFile, title)}
+              tagCandidates={tagCandidates}
+              onRequestTagCandidates={requestTagCandidates}
+            />
+          )}
+          {saveError && (
+            <div className="text-xs flex items-center gap-2" style={{ color: "#f87171" }}>
+              <span>属性保存失败</span>
+              <button
+                className="px-1.5 py-0.5 rounded border hover:opacity-80 flex-shrink-0"
+                style={{ borderColor: "#f87171" }}
+                onClick={() => {
+                  const last = lastFailedDataRef.current;
+                  if (last) handleNotePropsUpdate(last);
+                }}
+              >
+                重试
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );
+  }
+
+  // 无上下文（无选中节点、焦点非笔记编辑器）：空面板，无占位提示
+  if (!node) {
+    return <div className="h-full" style={{ background: "var(--bg-secondary)" }} />;
   }
 
   const isConv = node.type === "conversation";
@@ -224,19 +440,7 @@ export function InspectorPanel() {
       className="h-full flex flex-col overflow-hidden"
       style={{ background: "var(--bg-secondary)", color: "var(--text-primary)" }}
     >
-      <div
-        className="px-3 py-2 border-b flex items-center gap-2 flex-shrink-0"
-        style={{ borderColor: "var(--border)" }}
-        data-tauri-drag-region
-      >
-        <span className="font-medium text-xs">属性</span>
-        <span
-          className="ml-auto text-xs px-1.5 py-0.5 rounded flex-shrink-0"
-          style={{ background: "var(--bg-tertiary)", color: "var(--text-secondary)" }}
-        >
-          {NODE_TYPE_LABEL[node.type ?? ""] ?? node.type ?? "节点"}
-        </span>
-      </div>
+      <InspectorHeader badge={NODE_TYPE_LABEL[node.type ?? ""] ?? node.type ?? "节点"} />
 
       <div className="flex-1 overflow-auto px-3 py-2 flex flex-col gap-3">
         <div>

@@ -373,11 +373,13 @@ export const CanvasView = memo(function CanvasView({
       event.preventDefault();
       // 只读白板（外部白板格式）：节点不可编辑/删除，不提供右键菜单
       if (useCanvasStore.getState().readOnly) return;
-      // 右键节点同步选中到属性面板（右键菜单操作对象 = 面板展示对象）
+      // 右键节点同步选中到属性面板（右键菜单操作对象 = 面板展示对象）；与左键对称聚焦画布面板——
+      // 否则焦点停留在属性面板时其「焦点优先」上下文不会跟随本次选中
       selectNode(node.id);
+      useUiStateStore.getState().setFocusedPanel(panelId);
       setNodeMenu({ nodeId: node.id, x: event.clientX, y: event.clientY });
     },
-    [selectNode],
+    [selectNode, panelId],
   );
 
   // 属性面板选中：左键单击节点选中、单击空白清空（与右键行为对称）

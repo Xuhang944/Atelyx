@@ -591,6 +591,12 @@ interface VaultFileState {
   resolveNoteConflict: (file: string, keepLocal: boolean) => void;
   /** 清除笔记冲突解决请求（编辑器卸载时调用，防残留）。 */
   clearNoteConflictResolveReq: (file: string) => void;
+  /** 仅更新单文件笔记内容缓存（不经磁盘/基线；属性面板经编辑器合并后预写，面板即时刷新）。 */
+  stageNoteContent: (file: string, content: string) => void;
+  /** 笔记属性编辑请求（file → 递增序号 + 新 data；属性面板发请求，NoteEditor 订阅合并到实时正文走保存链）。 */
+  notePropsEditReq: Record<string, { seq: number; data: Record<string, unknown> }>;
+  /** 请求编辑笔记属性（属性面板调用；编辑器未挂载时请求无人消费，面板走直写路径）。 */
+  requestNotePropsEdit: (file: string, data: Record<string, unknown>) => void;
   /**
    * 仓库文件监听启停（幂等）：订阅 Rust watcher 事件并按 kind 分发到各 store。
    * 工作区挂载时 enable（App.tsx 调），回启动页 disable。分层：订阅副作用归 store，组件不直连 service。
@@ -994,7 +1000,7 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
     // 缓存先行（先于异步写盘）：重挂载/跨编辑面读取立即拿到最新内容，消灭「卸载 flush
     // 写盘在途 → 重挂载读陈旧缓存」的闪回/回退窗口（跨布局回退根因之一）。写盘失败时
     // 缓存与编辑器显示一致（均为最新内容），失败由调用方置 error 状态，下次保存重试。
-    set((s) => ({ noteContents: cacheNoteContent(s.noteContents, file, content) }));
+    get().stageNoteContent(file, content);
     await withNoteWriteQueue(file, async () => {
       await writeNote(file, content);
       // 登记磁盘基线（同 applyNoteEdits/saveTextNodeAsNote）：应用自写须被外部修改感知识别
@@ -1125,6 +1131,19 @@ export const useVaultStore = create<VaultFileState>((set, get) => ({
       delete next[file];
       return { noteConflictResolveReq: next };
     }),
+
+  stageNoteContent: (file, content) =>
+    set((s) => ({ noteContents: cacheNoteContent(s.noteContents, file, content) })),
+
+  notePropsEditReq: {},
+
+  requestNotePropsEdit: (file, data) =>
+    set((s) => ({
+      notePropsEditReq: {
+        ...s.notePropsEditReq,
+        [file]: { seq: (s.notePropsEditReq[file]?.seq ?? 0) + 1, data },
+      },
+    })),
 
   startFileWatcher: (enabled) => {
     // 幂等：同一状态重复调用不动作（App 的 view effect 可能多次触发相同值）

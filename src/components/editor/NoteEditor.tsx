@@ -33,6 +33,7 @@ import { HistoryModal } from "@/components/history/HistoryModal";
 import { useMarkdownComponents } from "@/hooks/useMarkdownComponents";
 import { useVaultLinkHandlers } from "@/hooks/useVaultLinkHandlers";
 import { usePopupAnchor } from "@/hooks/usePopupAnchor";
+import { useVaultTagCandidates } from "@/hooks/useVaultTagCandidates";
 import { PopupLayer } from "@/components/common/PopupLayer";
 
 type SaveState = NoteSaveStatus["state"];
@@ -576,6 +577,9 @@ export function NoteEditor({ file }: { file: string }) {
         });
     }, 500);
   };
+  /** 最新 handleChange（属性面板请求 effect 用）：effect 依赖不追每次渲染重建的函数（与 applyUndoRef 同模式）。 */
+  const handleChangeRef = useRef(handleChange);
+  handleChangeRef.current = handleChange;
 
   /**
    * 撤销/重做应用：从当前文件撤销栈取目标全文 → 走 handleChange（复用保存/协作/冲突门控 +
@@ -758,6 +762,35 @@ export function NoteEditor({ file }: { file: string }) {
   /** Frontmatter 解析：content 变（输入/外部刷新）→ 面板数据即时重解析，形成「编辑/外部修改即刷新」闭环。 */
   const parsed = useMemo(() => parseFrontmatter(content), [content]);
 
+  /** 属性面板属性编辑请求（序号制，同 resolveReq）→ 合并新 frontmatter 到编辑器实时正文，走
+   * handleChange 全保存链（防抖/冲突/撤销/挂起输入/历史/协作全复用）——面板不直写，防未落盘
+   * 正文被整文件覆盖、改动被挂起保存静默回滚。编辑器未挂载时请求无人消费（面板以
+   * noteSaveStates 判定改走直写路径）。首帧以当前序号为基线，只响应本实例挂载后的请求。 */
+  const propsEditReq = useVaultStore((s) => (file ? s.notePropsEditReq[file] : undefined));
+  const processedPropsSeqRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (processedPropsSeqRef.current === undefined) {
+      processedPropsSeqRef.current = propsEditReq?.seq ?? 0;
+      return;
+    }
+    const cur = propsEditReq?.seq ?? 0;
+    if (cur <= processedPropsSeqRef.current) return;
+    processedPropsSeqRef.current = cur;
+    if (!propsEditReq) return;
+    // 正文不可信（加载失败 / 源模式手写坏 YAML）时拒绝合并：防覆盖正文或产生双重 frontmatter
+    if (loadError || !parsed.ok) return;
+    let merged: string;
+    try {
+      merged = stringifyFrontmatter(propsEditReq.data, parsed.body);
+    } catch (e) {
+      console.error("[frontmatter] stringify error:", e, propsEditReq.data);
+      return;
+    }
+    handleChangeRef.current(merged);
+    // 预写缓存：属性面板经 noteContents 订阅即时刷新（落盘由 handleChange 的 debounce 保存负责）
+    useVaultStore.getState().stageNoteContent(file, merged);
+  }, [propsEditReq, parsed, loadError, file]);
+
   /** 协作文档绑定：进入协作态且内容已加载时，以正文（body，LF）为基线绑定 Y.Doc；
    * 绑定幂等——已绑定（collabBinding 非空）不重复建 doc，多面板共享同一实例。
    * 身份（昵称/用户色）随设置变化可重设（bind 内部幂等更新 awareness）。 */
@@ -817,15 +850,7 @@ export function NoteEditor({ file }: { file: string }) {
     }
   };
 
-  /** 全仓库标签词汇表（属性区 tags 输入候选）：懒加载一次，失败静默降级空数组（仍可手输标签）。 */
-  const vaultTags = useVaultStore((s) => s.vaultTags);
-  const tagCandidates = useMemo(() => (vaultTags ?? []).map((t) => t.tag), [vaultTags]);
-  const tagCandidatesRequestedRef = useRef(false);
-  const requestTagCandidates = useCallback(() => {
-    if (tagCandidatesRequestedRef.current) return;
-    tagCandidatesRequestedRef.current = true;
-    void useVaultStore.getState().loadVaultTags();
-  }, []);
+  const { tagCandidates, requestTagCandidates } = useVaultTagCandidates();
 
   /** 笔记链接打开/新建（公共接线簇，见 hooks/useVaultLinkHandlers；本编辑器不做画布定位）。 */
   const { handleOpenWikiNote, isVaultPathNote, handleOpenVaultPathNote, handleCreateNote } =
