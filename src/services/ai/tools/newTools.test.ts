@@ -19,7 +19,7 @@ import { DELETE_DIR_TOOL } from "./deleteDir";
 import { APPEND_FILE_TOOL } from "./appendFile";
 import { TODO_WRITE_TOOL } from "./todoWrite";
 import { READ_HISTORY_TOOL, renderHistoryResult } from "./readHistory";
-import { assembleAgentSystemPrompt } from "./index";
+import { assembleAgentSystemPrompt, buildAgentTools } from "./index";
 import { currentTodosBlock } from "@/services/vault/agentTodos";
 
 const ctx = (capabilities: ToolExecContext["capabilities"]): ToolExecContext => ({
@@ -252,6 +252,41 @@ describe("append_file", () => {
 
   it("空 content 拒绝", () => {
     expect(() => APPEND_FILE_TOOL.validate({ path: "a.md", content: "" })).toThrow(/content/);
+  });
+});
+
+describe("buildAgentTools 勾选生效（全量按勾选并入）", () => {
+  it("空勾选 → 空名册（纯对话）", () => {
+    const { tools, skippedWebSearch } = buildAgentTools([], true);
+    expect(tools).toEqual([]);
+    expect(skippedWebSearch).toBe(false);
+  });
+
+  it("只读工具仅当勾选时并入", () => {
+    expect(buildAgentTools([], true).tools.map((t) => t.name)).not.toContain("read_file");
+    const names = buildAgentTools(["read_file"], true).tools.map((t) => t.name);
+    expect(names).toContain("read_file");
+  });
+
+  it("写入类工具按勾选门控", () => {
+    const names = buildAgentTools(["write_file"], true).tools.map((t) => t.name);
+    expect(names).toEqual(["write_file"]);
+  });
+
+  it("web_search 勾选但搜索源未配置 → 剔除并标记", () => {
+    const out = buildAgentTools(["web_search"], false);
+    expect(out.tools.map((t) => t.name)).not.toContain("web_search");
+    expect(out.skippedWebSearch).toBe(true);
+  });
+
+  it("web_search 勾选且搜索源已配置 → 并入", () => {
+    const out = buildAgentTools(["web_search"], true);
+    expect(out.tools.map((t) => t.name)).toContain("web_search");
+    expect(out.skippedWebSearch).toBe(false);
+  });
+
+  it("未知 id 静默忽略", () => {
+    expect(buildAgentTools(["no_such_tool"], true).tools).toEqual([]);
   });
 });
 

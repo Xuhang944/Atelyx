@@ -559,7 +559,7 @@ function resolveProviderModel(): {
 
 /**
  * 当前打开笔记的尾部上下文块：随请求折叠进末条 user 消息线文（ephemeral，不入会话存储）。
- * 引导模型视相关性用 read_file 读取（只读基础工具恒在名册，引导无条件安全）。
+ * 引导模型视相关性用 read_file 读取（read_file 随 Agent 勾选在名册内时生效；关闭后模型无读取能力）。
  */
 function currentNoteContextBlock(file: string, title: string): string {
   const label = title ? `（${title}）` : "";
@@ -642,11 +642,12 @@ async function runExchange(
     ...(systemText ? [{ role: "system" as const, text: systemText }] : []),
     ...toLlmMessages(apiHistory),
   ];
-  // 当前打开笔记以尾部上下文块折叠进末条 user 消息线文：模型始终知情、按相关性自主 read_file；
-  // 块不落历史（ephemeral），历史逐字节稳定复现 → 前缀缓存命中至该消息原文，仅块本身 token 不命中；
-  // regenerate 同经此处 → 每次请求按当下打开的笔记注入（无笔记则不注入）。
+  // 当前打开笔记以尾部上下文块折叠进末条 user 消息线文：仅当名册含 read_file 时才注入
+  // （模型才有能力读取，避免教唆用不存在的工具）；块不落历史（ephemeral），历史逐字节稳定
+  // 复现 → 前缀缓存命中至该消息原文，仅块本身 token 不命中；regenerate 同经此处 → 每次请求按当下打开
+  // 的笔记注入（无笔记则按条件不注入）。
   const { currentNoteFile, currentNoteTitle } = useAppStore.getState();
-  if (currentNoteFile) {
+  if (currentNoteFile && tools.some((t) => t.name === "read_file")) {
     const last = apiMessages[apiMessages.length - 1];
     last.text += `\n\n${currentNoteContextBlock(currentNoteFile, currentNoteTitle)}`;
   }

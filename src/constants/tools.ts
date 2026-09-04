@@ -7,12 +7,17 @@
  *
  * 工具为基础文件/网络能力（对仓库内任意文本文件与网页生效），命名通用规范。
  */
+/** 工具分类键（Agent 设置页折叠分组；顺序见 AGENT_TOOL_CATEGORIES）。 */
+export type AgentToolCategory = "web" | "file" | "task";
+
 export interface AgentToolMeta {
   id: string;
   label: string;
+  /** 分类（设置页折叠分组依据）。 */
+  category: AgentToolCategory;
   /** 依赖搜索源配置（未配置时自动剔除并提示）。 */
   needsSearch?: boolean;
-  /** 只读基础工具：默认恒可用，不依赖 Agent 勾选（设置页不显示开关）。 */
+  /** 只读工具：默认开启、可取消勾选（取消后模型不再拥有该工具）。 */
   readOnly?: boolean;
 }
 
@@ -47,30 +52,38 @@ export const HIDDEN_PATH_ERROR = "路径位于隐藏目录/文件（. 开头段�
 /** web_fetch 结果标题预览长度上限（气泡摘要/空正文提示里截断标题用）。 */
 export const WEB_FETCH_TITLE_PREVIEW = 80;
 
-/** UI 展示与默认勾选的工具名单（执行层同名集合见 services/ai/tools）。 */
+/** UI 展示与默认勾选的工具名单（执行层同名集合见 services/ai/tools）。
+ * 分类 = 设置页折叠分组；只读工具默认开启、可取消，取消后从模型名册移除。 */
 export const AGENT_TOOLS_META: AgentToolMeta[] = [
-  { id: "web_search", label: "联网搜索", needsSearch: true },
-  { id: "web_fetch", label: "抓取网页" },
-  { id: "read_file", label: "读取文件", readOnly: true },
-  { id: "glob", label: "查找文件", readOnly: true },
-  { id: "grep", label: "搜索内容", readOnly: true },
-  { id: "list_dir", label: "列出目录", readOnly: true },
-  { id: "read_history", label: "读取历史", readOnly: true },
-  { id: "edit_file", label: "编辑文件" },
-  { id: "append_file", label: "追加内容" },
-  { id: "write_file", label: "写入文件" },
-  { id: "rename_file", label: "重命名文件" },
-  { id: "move_file", label: "移动文件" },
-  { id: "delete_file", label: "删除文件" },
-  { id: "delete_dir", label: "删除目录" },
-  { id: "todo_write", label: "任务清单" },
+  { id: "web_search", label: "联网搜索", category: "web", needsSearch: true },
+  { id: "web_fetch", label: "抓取网页", category: "web" },
+  { id: "read_file", label: "读取文件", category: "file", readOnly: true },
+  { id: "glob", label: "查找文件", category: "file", readOnly: true },
+  { id: "grep", label: "搜索内容", category: "file", readOnly: true },
+  { id: "list_dir", label: "列出目录", category: "file", readOnly: true },
+  { id: "read_history", label: "读取历史", category: "file", readOnly: true },
+  { id: "edit_file", label: "编辑文件", category: "file" },
+  { id: "append_file", label: "追加内容", category: "file" },
+  { id: "write_file", label: "写入文件", category: "file" },
+  { id: "rename_file", label: "重命名文件", category: "file" },
+  { id: "move_file", label: "移动文件", category: "file" },
+  { id: "delete_file", label: "删除文件", category: "file" },
+  { id: "delete_dir", label: "删除目录", category: "file" },
+  { id: "todo_write", label: "任务清单", category: "task" },
 ];
 
-/** 只读基础工具 id 集合：组装工具名册时无条件并入（不依赖 Agent 勾选）。 */
+/** 工具分类展示顺序（Agent 设置页折叠分组标题）。 */
+export const AGENT_TOOL_CATEGORIES: { key: AgentToolCategory; label: string }[] = [
+  { key: "web", label: "联网" },
+  { key: "file", label: "文件" },
+  { key: "task", label: "任务清单" },
+];
+
+/** 只读工具 id 集合：预置「对话」Agent 默认补全。 */
 export const READONLY_TOOL_IDS = AGENT_TOOLS_META.filter((t) => t.readOnly).map((t) => t.id);
 
-/** Agent 模式默认启用的可配置工具 id（只读基础工具恒可用，不在此列）。 */
-export const DEFAULT_AGENT_TOOLS = AGENT_TOOLS_META.filter((t) => !t.readOnly).map((t) => t.id);
+/** Agent 默认启用的工具 id（全部工具，新建 Agent 与预置「Agent」默认全开）。 */
+export const DEFAULT_AGENT_TOOLS = AGENT_TOOLS_META.map((t) => t.id);
 
 /**
  * 系统提示词引导（工具含 read_file 时追加，随每条请求进 system 消息）：

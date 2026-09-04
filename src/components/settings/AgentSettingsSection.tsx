@@ -4,23 +4,123 @@
  * Agent = 可复用的对话预设（名称 + 系统提示词 + 工具），对话节点 / AI 对话面板
  * 按 id 引用、发送时实时解析（改 Agent 即改行为，无需改引用处）。
  * 系统提示词 = 引用已注册提示词笔记（右键笔记「注册为提示词」，发送时实时读正文、
- * 外部编辑即时生效）；可配置工具勾选决定 Agent 可自主调用的能力，
- * 只读基础工具恒可用、不占用开关。
+ * 外部编辑即时生效）；工具 = 全部工具按分类折叠分组勾选，勾选即赋予能力、取消即移除（默认全开）。
  *
  * 预置 Agent（builtin 标记）默认随仓库出现、
  * 可编辑但不可删除（列表不显示删除按钮，store 侧另有兜底）；副本为普通 Agent 可删除。
  *
- * 表单为本地草稿 + 显式「保存」提交（避免每键一次 agents.json 原子写）；
- * 切换选中 Agent 未保存改动丢弃。删除走 ConfirmDialog（同设置页惯例）。
+ * 编辑即时生效（同设置页其他面板）：下拉/工具勾选即改即存；名称用本地草稿 + blur 提交
+ * （避免每键一次 agents.json 原子写，空名回退）。删除走 ConfirmDialog（同设置页惯例）。
  */
-import { Copy, Plus, Sparkles, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ChevronDown, ChevronRight, Copy, Plus, Sparkles, Trash2 } from "lucide-react";
+import { useLayoutEffect, useEffect, useRef, useState } from "react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
-import { AGENT_TOOLS_META } from "@/constants/tools";
+import {
+  AGENT_TOOLS_META,
+  AGENT_TOOL_CATEGORIES,
+  type AgentToolCategory,
+  type AgentToolMeta,
+} from "@/constants/tools";
 import { noteTitleFromFile } from "@/utils/filename";
 import type { AgentConfig } from "@/types";
+
+/** 单个工具分类的折叠分组：头部 = 折叠箭头 + 分类名 + 三态复选框（全选/部分/全不选）；展开后逐项勾选。 */
+function ToolCategoryGroup({
+  cat,
+  tools,
+  enabled,
+  searchReady,
+  collapsed,
+  onToggle,
+  onToggleAll,
+  onToggleCollapsed,
+}: {
+  cat: { key: AgentToolCategory; label: string };
+  tools: AgentToolMeta[];
+  enabled: Set<string>;
+  searchReady: boolean;
+  collapsed: boolean;
+  onToggle: (id: string) => void;
+  onToggleAll: () => void;
+  onToggleCollapsed: () => void;
+}) {
+  const allOn = tools.every((t) => enabled.has(t.id));
+  const noneOn = tools.every((t) => !enabled.has(t.id));
+  const partial = !allOn && !noneOn;
+  const checkboxRef = useRef<HTMLInputElement>(null);
+  // indeterminate 是 DOM 属性（无 JSX 声明式写法）：部分勾选时呈短横态；
+  // 用 useLayoutEffect 同步置位，避免部分勾选态渲染到 paint 之间闪一帧未勾选
+  useLayoutEffect(() => {
+    if (checkboxRef.current) checkboxRef.current.indeterminate = partial;
+  }, [partial]);
+  return (
+    <div
+      className="rounded border overflow-hidden"
+      style={{ borderColor: "var(--border)", background: "var(--bg-primary)" }}
+    >
+      <div
+        className="flex items-center gap-1.5 px-2 py-1.5 cursor-pointer select-none"
+        onClick={onToggleCollapsed}
+      >
+        {collapsed ? (
+          <ChevronRight size={12} style={{ color: "var(--text-muted)" }} />
+        ) : (
+          <ChevronDown size={12} style={{ color: "var(--text-muted)" }} />
+        )}
+        <span className="text-xs font-medium" style={{ color: "var(--text-primary)" }}>
+          {cat.label}
+        </span>
+        <input
+          type="checkbox"
+          ref={checkboxRef}
+          checked={allOn}
+          onChange={onToggleAll}
+          // 点击复选框只切换该类全选/全不选，不触发头部折叠（stopPropagation）
+          onClick={(e) => e.stopPropagation()}
+          className="ml-auto w-3.5 h-3.5 flex-shrink-0 accent-[var(--accent)] cursor-pointer"
+          title="全选/全不选"
+        />
+      </div>
+      {!collapsed && (
+        <div
+          className="px-2 pb-2 pt-1 flex flex-col gap-1 border-t"
+          style={{ borderColor: "var(--border)" }}
+        >
+          {tools.map((t) => {
+            const on = enabled.has(t.id);
+            return (
+              // 行用 label 承载点击（整行命中切换单一 onChange；原生 checkbox 内嵌 button 会双触发）
+              <label
+                key={t.id}
+                className="flex items-center gap-2 px-1 py-0.5 text-xs rounded hover:bg-[var(--hover)]"
+                style={{
+                  color: on ? "var(--text-primary)" : "var(--text-secondary)",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={on}
+                  onChange={() => onToggle(t.id)}
+                  className="w-3.5 h-3.5 flex-shrink-0 accent-[var(--accent)]"
+                />
+                <span className="flex items-center gap-1.5">
+                  {t.label}
+                  {t.needsSearch && !searchReady && (
+                    <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                      （未配置搜索源，发送时自动降级）
+                    </span>
+                  )}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function AgentSettingsSection() {
   const agents = useSettingsStore((s) => s.agents);
@@ -38,41 +138,65 @@ export function AgentSettingsSection() {
       : !!searchConfig.searxngUrl;
   // 当前选中 Agent id（null = 未选；列表为空时自动清空）
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [draft, setDraft] = useState<AgentConfig | null>(null);
-  const [dirty, setDirty] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // 名称草稿：即时生效但名称走 blur 提交（避免每键一次 agents.json 原子写，同设置页其他面板）
+  const [nameDraft, setNameDraft] = useState("");
+  // 工具分类折叠状态（默认全折叠；不持久化，每次打开设置重置）
+  const [collapsedCats, setCollapsedCats] = useState<Record<AgentToolCategory, boolean>>(() =>
+    Object.fromEntries(AGENT_TOOL_CATEGORIES.map((c) => [c.key, true])) as Record<
+      AgentToolCategory,
+      boolean
+    >,
+  );
 
   const selected = agents.find((a) => a.id === selectedId) ?? null;
 
-  // 选中变化/外部删除 → 载入草稿（未保存改动丢弃）
+  // 选中变化/外部删除 → 同步名称草稿；选中项已被删除/不存在时清空选择
   useEffect(() => {
     if (selected) {
-      setDraft({ ...selected });
-      setDirty(false);
+      setNameDraft(selected.name);
     } else if (selectedId !== null) {
-      // 选中项已被删除/不存在：清空选择
       setSelectedId(null);
-      setDraft(null);
-      setDirty(false);
     }
   }, [selected?.id, selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const patchDraft = (patch: Partial<AgentConfig>) => {
-    if (!draft) return;
-    setDraft({ ...draft, ...patch });
-    setDirty(true);
+  const commitName = () => {
+    if (!selected) return;
+    const trimmed = nameDraft.trim();
+    if (trimmed) {
+      if (trimmed !== selected.name) void updateAgent(selected.id, { name: trimmed });
+    } else {
+      // 空名不落盘、回退显示原名
+      setNameDraft(selected.name);
+    }
   };
 
-  const handleSave = () => {
-    if (!draft || !dirty) return;
-    const trimmedName = draft.name.trim();
-    if (!trimmedName) return;
-    void updateAgent(draft.id, {
-      name: trimmedName,
-      systemPromptFile: draft.systemPromptFile,
-      tools: draft.tools,
-    });
-    setDirty(false);
+  // 切换选中前先提交未 blur 的名称草稿（即时生效语义下防改名静默丢失），再切换
+  const handleSelect = (id: string) => {
+    commitName();
+    setSelectedId(id);
+  };
+
+  // 勾选/全选从 store 最新态读 tools 计算整表替换（避免渲染闭包过期导致连续切换丢勾选）
+  const currentAgentTools = () =>
+    useSettingsStore.getState().agents.find((a) => a.id === selectedId)?.tools ?? [];
+
+  const toggleTool = (id: string) => {
+    const cur = currentAgentTools();
+    const on = cur.includes(id);
+    if (selectedId) {
+      void updateAgent(selectedId, { tools: on ? cur.filter((x) => x !== id) : [...cur, id] });
+    }
+  };
+
+  const toggleCategoryAll = (cat: AgentToolCategory) => {
+    const ids = AGENT_TOOLS_META.filter((t) => t.category === cat).map((t) => t.id);
+    const cur = new Set(currentAgentTools());
+    const allOn = ids.every((id) => cur.has(id));
+    const next = allOn
+      ? [...cur].filter((id) => !ids.includes(id))
+      : Array.from(new Set([...cur, ...ids]));
+    if (selectedId) void updateAgent(selectedId, { tools: next });
   };
 
   const handleAdd = async () => {
@@ -128,7 +252,7 @@ export function AgentSettingsSection() {
                   selectedId === a.id ? "var(--bg-tertiary)" : undefined,
                 borderColor: "var(--border)",
               }}
-              onClick={() => setSelectedId(a.id)}
+              onClick={() => handleSelect(a.id)}
             >
               <div className="flex-1 min-w-0">
                 <div
@@ -175,7 +299,7 @@ export function AgentSettingsSection() {
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    setSelectedId(a.id);
+                    handleSelect(a.id);
                     setConfirmDelete(true);
                   }}
                   title="删除 Agent"
@@ -189,8 +313,8 @@ export function AgentSettingsSection() {
           ))}
         </div>
 
-        {/* 右侧：编辑器（本地草稿 + 显式保存） */}
-        {draft && (
+        {/* 右侧：编辑器（即时生效；名称 blur 提交） */}
+        {selected && (
           <div
             className="flex-1 min-w-0 rounded-lg border p-4 overflow-auto"
             style={{
@@ -207,8 +331,9 @@ export function AgentSettingsSection() {
                 名称
               </div>
               <input
-                value={draft.name}
-                onChange={(e) => patchDraft({ name: e.target.value })}
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                onBlur={commitName}
                 placeholder="如：写作助手"
                 className="w-full max-w-[280px] text-sm rounded px-2 py-1 outline-none"
                 style={{
@@ -228,10 +353,10 @@ export function AgentSettingsSection() {
                 系统提示词
               </div>
               <DropdownSelect
-                value={draft?.systemPromptFile ?? ""}
-                onChange={(v) =>
-                  patchDraft({ systemPromptFile: v || undefined })
-                }
+                value={selected?.systemPromptFile ?? ""}
+                onChange={(v) => {
+                  if (selected) void updateAgent(selected.id, { systemPromptFile: v || undefined });
+                }}
                 options={[
                   { value: "", label: "不使用" },
                   ...promptNotes.map((f) => ({
@@ -252,11 +377,11 @@ export function AgentSettingsSection() {
                 className="text-[11px] mt-1"
                 style={{ color: "var(--text-muted)" }}
               >
-                实时读正文注入；文件面板右键 .md 可注册为提示词
+                文件面板右键 .md 可注册为系统提示词
               </p>
             </div>
 
-            {/* 工具：可配置能力勾选（只读基础工具恒可用，不显示开关） */}
+            {/* 工具：全部工具按分类折叠分组、可勾选生效；分类头部三态复选框（全选/部分/全不选） */}
             <div className="mb-4">
               <div
                 className="text-xs mb-1.5"
@@ -264,71 +389,26 @@ export function AgentSettingsSection() {
               >
                 工具
               </div>
-              <div className="flex flex-col gap-1">
-                {AGENT_TOOLS_META.filter((t) => !t.readOnly).map((t) => {
-                  const on = (draft?.tools ?? []).includes(t.id);
-                  return (
-                    // 行用 label 承载点击（整行命中切换单一 onChange；原生 checkbox 内嵌 button 会双触发）
-                    <label
-                      key={t.id}
-                      className="flex items-center gap-2 px-1 py-0.5 text-xs rounded hover:bg-[var(--hover)]"
-                      style={{
-                        color: on
-                          ? "var(--text-primary)"
-                          : "var(--text-secondary)",
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={on}
-                        onChange={() => {
-                          const cur = draft?.tools ?? [];
-                          patchDraft({
-                            tools: on
-                              ? cur.filter((x) => x !== t.id)
-                              : [...cur, t.id],
-                          });
-                        }}
-                        className="w-3.5 h-3.5 flex-shrink-0 accent-[var(--accent)]"
-                      />
-                      <span className="flex items-center gap-1.5">
-                        {t.label}
-                        {t.needsSearch && !searchReady && (
-                          <span
-                            className="text-[10px]"
-                            style={{ color: "var(--text-muted)" }}
-                          >
-                            （未配置搜索源，发送时自动降级）
-                          </span>
-                        )}
-                      </span>
-                    </label>
-                  );
-                })}
+              <div className="flex flex-col gap-2">
+                {AGENT_TOOL_CATEGORIES.map((cat) => (
+                  <ToolCategoryGroup
+                    key={cat.key}
+                    cat={cat}
+                    tools={AGENT_TOOLS_META.filter((t) => t.category === cat.key)}
+                    enabled={new Set(selected.tools)}
+                    searchReady={searchReady}
+                    collapsed={collapsedCats[cat.key]}
+                    onToggle={toggleTool}
+                    onToggleAll={() => toggleCategoryAll(cat.key)}
+                    onToggleCollapsed={() =>
+                      setCollapsedCats((prev) => ({
+                        ...prev,
+                        [cat.key]: !prev[cat.key],
+                      }))
+                    }
+                  />
+                ))}
               </div>
-            </div>
-
-            {/* 保存 */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleSave}
-                disabled={!dirty || !draft.name.trim()}
-                className="px-3 py-1.5 text-xs rounded disabled:opacity-40"
-                style={{
-                  background: "var(--accent)",
-                  color: "var(--accent-fg)",
-                }}
-              >
-                保存
-              </button>
-              {dirty && (
-                <span
-                  className="text-[11px]"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  有未保存的修改
-                </span>
-              )}
             </div>
           </div>
         )}

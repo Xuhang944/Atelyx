@@ -31,7 +31,7 @@ import { DELETE_FILE_TOOL } from "./deleteFile";
 import { DELETE_DIR_TOOL } from "./deleteDir";
 import { TODO_WRITE_TOOL } from "./todoWrite";
 import { createToolRegistry } from "./registry";
-import { FILE_REFERENCE_PROMPT, READONLY_TOOL_IDS, AGENT_TOOLS_META } from "@/constants/tools";
+import { FILE_REFERENCE_PROMPT, AGENT_TOOLS_META } from "@/constants/tools";
 
 /** Agent 模式全部工具（注册顺序 = 名册/浮层展示顺序，与 AGENT_TOOLS_META 一致）。各工具参数类型各异，注册为通用定义。 */
 const AGENT_TOOLS = [
@@ -84,8 +84,8 @@ export interface AgentToolAssembly {
 }
 
 /** 按勾选 id + 搜索配置组装工具名册；未知 id 静默忽略（不在名册即不并入）。
- * 只读基础工具（READONLY_TOOL_IDS）恒并入，不依赖勾选——它们是 Agent 的基础能力；
- * 可勾选工具（AGENT_TOOLS_META 非只读项）按 enabledIds 并入，web_search 未配置搜索源时剔除。 */
+ * 全部工具均以 enabledIds 为准——勾选即赋予、取消即移除；
+ * web_search 未配置搜索源时剔除（勾选状态下 skippedWebSearch 置 true 供调用方提示）。 */
 export function buildAgentTools(
   enabledIds: string[],
   searchReady: boolean,
@@ -93,12 +93,11 @@ export function buildAgentTools(
   const tools: ToolSchema[] = [];
   let skippedWebSearch = false;
   for (const def of AGENT_TOOLS) {
+    if (!enabledIds.includes(def.name)) continue;
     if (def.name === "web_search" && !searchReady) {
       skippedWebSearch = true;
       continue;
     }
-    // 只读基础工具恒并入（enabledIds 里残留的只读 id 也无需过滤，并入语义不变）
-    if (!READONLY_TOOL_IDS.includes(def.name) && !enabledIds.includes(def.name)) continue;
     tools.push({ name: def.name, description: def.description, parameters: def.parameters });
   }
   return { tools, skippedWebSearch };
@@ -106,7 +105,7 @@ export function buildAgentTools(
 
 /**
  * 组装发送给模型的 system 消息文本：Agent 系统提示词 + 引用文件读取引导。
- * 工具含 read_file 时追加引导（只读基础工具恒可用后即恒注入）——让模型知道 @引用 的笔记
+ * 工具含 read_file 时追加引导（read_file 是否在名册由 Agent 勾选决定，勾选时才注入）——让模型知道 @引用 的笔记
  * 应经 read_file 按路径读取正文，而不是假装看过内容。两 store（画布/面板）共用防行为分叉。
  * 注意：易变上下文（当前任务清单/当前笔记）一律走**尾部 user 消息块**注入（见
  * agentTodos.currentTodosBlock / chatPanelStore.currentNoteContextBlock），不进系统提示词——

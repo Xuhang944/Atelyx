@@ -172,7 +172,7 @@ interface SettingsState {
   duplicateAgent: (id: string) => Promise<void>;
   /**
    * 解析 Agent 发送请求（画布/面板共用）：系统提示词（引用已注册提示词笔记实时读正文）+ 工具组装。
-   * Agent 不存在返回 null；笔记缺失降级为不带系统提示词；tools 空 = 仅只读基础工具（恒并入，不占勾选）。
+   * Agent 不存在返回 null；笔记缺失降级为不带系统提示词；tools 空 = 纯对话（无任何工具）。
    */
   resolveAgentRequest: (
     agentId: string | undefined,
@@ -802,8 +802,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         // 笔记缺失：跳过注入
       }
     }
-    // 工具组装：只读基础工具恒并入，无需勾选；
-    // 可勾选工具按 agent.tools 并入，
+    // 工具组装：全部工具按 agent.tools 勾选生效——勾选即赋予、取消即移除，
     // web_search 勾选但未配置搜索源时剔除并提示（预置「对话」除外：其 web_search 缺省自带，
     // 未配置源时静默剔除不弹横幅，设置页工具区仍显示「未配置搜索源」角标；用户显式勾选搜索的 Agent 保持提示）
     const s = get();
