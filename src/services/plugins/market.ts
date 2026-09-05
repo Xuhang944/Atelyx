@@ -4,22 +4,19 @@
  * - `index.json`：插件清单（id/name/repo/stars/type…）
  * - `blocklist.json`：封禁表 `{ id: 原因 }`（命中 = 不可安装/启用）
  * - `endorsed.json`：官方认可表 `{ id: 理由 }`（授予认可徽标）
- * - `suites.json`：套件清单（把多插件 + 装配配置打包成一种软件形态）
  *
  * 消费策略：内存 + localStorage 缓存（6h 过期），离线/失败时回落缓存快照并带时间戳提示；
  * 徽标 = 官方账号（repo owner 命中官方名单）自动 official + 认可表 endorsed。
  * 分发/安装仍走 GitHub Release（见 commands/plugin.rs）。
  */
-import type { PluginBadge, PluginIndex, PluginIndexEntry, SuiteManifest } from "@/types";
+import type { PluginBadge, PluginIndex, PluginIndexEntry } from "@/types";
 import {
   OFFICIAL_PLUGIN_ORGS,
   PLUGIN_BLOCKLIST_URL,
   PLUGIN_ENDORSED_URL,
   PLUGIN_INDEX_CACHE_MS,
   PLUGIN_INDEX_URL,
-  PLUGIN_SUITES_URL,
 } from "@/constants/plugins";
-import { validateSuiteManifest } from "@/utils/pluginManifest";
 
 /** 市场快照（内存/缓存形态）。 */
 export interface MarketSnapshot {
@@ -30,7 +27,6 @@ export interface MarketSnapshot {
 }
 
 const INDEX_CACHE_KEY = "atelyx:plugin-market:v1";
-const SUITES_CACHE_KEY = "atelyx:plugin-suites:v1";
 
 /** 缓存是否过期（无缓存 = 过期）。 */
 export function isMarketStale(fetchedAt: number): boolean {
@@ -107,21 +103,4 @@ export async function fetchMarketIndex(): Promise<MarketSnapshot> {
   };
   writeCache(INDEX_CACHE_KEY, snapshot);
   return snapshot;
-}
-
-/** 拉取套件清单（校验失败的条目跳过，坏数据不阻塞市场）。 */
-export async function fetchSuites(): Promise<SuiteManifest[]> {
-  const raw = await fetchJson<unknown[]>(PLUGIN_SUITES_URL).catch(() => []);
-  const suites: SuiteManifest[] = [];
-  for (const item of raw ?? []) {
-    const result = validateSuiteManifest(item);
-    if (result.ok) suites.push(result.suite);
-  }
-  writeCache(SUITES_CACHE_KEY, suites);
-  return suites;
-}
-
-/** 读取套件缓存（离线降级用）。 */
-export function readSuitesCache(): SuiteManifest[] {
-  return readCache<SuiteManifest[]>(SUITES_CACHE_KEY) ?? [];
 }

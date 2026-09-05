@@ -12,7 +12,6 @@ import {
   type PluginScope,
   type PluginTheme,
   type PluginType,
-  type SuiteManifest,
 } from "@/types";
 
 export type ManifestValidateResult =
@@ -303,52 +302,3 @@ function normalizeScope(rawScope: unknown): PluginScope {
   return rawScope === "vault" ? "vault" : "app";
 }
 
-// ===== 套件 =====
-
-export type SuiteValidateResult =
-  | { ok: true; suite: SuiteManifest }
-  | { ok: false; errors: string[] };
-
-/** 校验并归一化套件清单（成员为插件 id 列表；themeId 可选）。 */
-export function validateSuiteManifest(raw: unknown): SuiteValidateResult {
-  if (typeof raw !== "object" || raw === null) return { ok: false, errors: ["套件必须是对象"] };
-  const data = raw as Record<string, unknown>;
-  const errors: string[] = [];
-
-  const schemaVersion = data.schemaVersion;
-  if (typeof schemaVersion !== "number" || !Number.isInteger(schemaVersion) || schemaVersion <= 0) {
-    errors.push("schemaVersion 必须是正整数");
-  } else if (schemaVersion > PLUGIN_SCHEMA_VERSION) {
-    errors.push(`套件格式版本过新（${schemaVersion}），需要更新 Atelyx`);
-  }
-  const id = data.id;
-  if (typeof id !== "string" || !pluginIdValid(id)) errors.push("id 必须是合法的反向域名标识");
-  const name = data.name;
-  if (typeof name !== "string" || name.trim().length === 0) errors.push("name 不能为空");
-  const version = data.version;
-  if (typeof version !== "string" || version.trim().length === 0) errors.push("version 不能为空");
-
-  const pluginsRaw = data.plugins;
-  const plugins: SuiteManifest["plugins"] = [];
-  if (!Array.isArray(pluginsRaw) || pluginsRaw.length === 0) {
-    errors.push("plugins 必须是非空数组");
-  } else {
-    for (const item of pluginsRaw) {
-      if (typeof item === "string" && pluginIdValid(item)) plugins.push(item);
-      else errors.push("plugins 元素必须是合法插件 id");
-    }
-  }
-
-  const themeId = typeof data.themeId === "string" ? data.themeId : undefined;
-
-  if (errors.length > 0) return { ok: false, errors };
-  const suite: SuiteManifest = {
-    schemaVersion: schemaVersion as number,
-    id: id as string,
-    name: name as string,
-    version: version as string,
-    plugins,
-    ...(themeId ? { themeId } : {}),
-  };
-  return { ok: true, suite };
-}

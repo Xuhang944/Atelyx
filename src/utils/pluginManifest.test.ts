@@ -14,7 +14,6 @@ import {
   pluginIdValid,
   pluginTypeList,
   validatePluginManifest,
-  validateSuiteManifest,
 } from "./pluginManifest";
 import type { PluginManifest } from "@/types";
 
@@ -169,35 +168,6 @@ describe("pluginTypeList", () => {
   it("含主分类去重", () => {
     expect(pluginTypeList({ type: "tool", types: ["tool", "panel"] })).toEqual(["tool", "panel"]);
     expect(pluginTypeList({ type: "theme", types: undefined })).toEqual(["theme"]);
-  });
-});
-
-describe("validateSuiteManifest", () => {
-  const validSuite = (): Record<string, unknown> => ({
-    schemaVersion: 1,
-    id: "com.example.starter",
-    name: "入门套件",
-    version: "1.0.0",
-    plugins: ["com.example.todo"],
-  });
-  it("接受合法套件并保留 themeId", () => {
-    const r = validateSuiteManifest({
-      ...validSuite(),
-      themeId: "com.example.dark",
-      plugins: ["com.example.todo", "com.example.cal"],
-    });
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.suite.plugins).toEqual(["com.example.todo", "com.example.cal"]);
-    expect(r.suite.themeId).toBe("com.example.dark");
-  });
-  it("拒绝结构错误", () => {
-    expect(validateSuiteManifest(null).ok).toBe(false);
-    expect(validateSuiteManifest(validSuite()).ok).toBe(true);
-    expect(validateSuiteManifest({ ...validSuite(), plugins: [] }).ok).toBe(false);
-    expect(validateSuiteManifest({ ...validSuite(), plugins: ["bad"] }).ok).toBe(false);
-    expect(validateSuiteManifest({ ...validSuite(), plugins: [{ id: "com.x" }] }).ok).toBe(false);
-    expect(validateSuiteManifest({ ...validSuite(), schemaVersion: 2 }).ok).toBe(false);
   });
 });
 

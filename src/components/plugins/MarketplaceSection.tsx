@@ -1,11 +1,10 @@
 /**
- * 插件市场浏览：官方索引（CDN）搜索/筛选/安装 + 套件一键装配。
+ * 插件市场浏览：官方索引（CDN）搜索/筛选/安装。
  *
  * - 搜索：名称/id/描述/仓库全文匹配；类型筛选（全部/各类型）；徽标展示（官方出品/官方认可）
  * - 封禁条目灰显不可安装（官方下架）
  * - 安装 = 按 repo 走 GitHub Release（下载 → sha256 → 解压 → 校验 → 原子落位），默认未启用，
  *   由「已安装」tab 确认启用；scope 由本区顶部的安装作用域选择决定
- * - 套件：把多插件 + 装配配置一键安装（成员按市场索引解析 repo）
  * 分层：只经 pluginStore 触达插件能力。
  */
 import { useEffect, useMemo, useState } from "react";
@@ -37,12 +36,7 @@ export function MarketplaceSection() {
   const marketLoading = usePluginStore((s) => s.marketLoading);
   const marketError = usePluginStore((s) => s.marketError);
   const loadMarket = usePluginStore((s) => s.loadMarket);
-  const suites = usePluginStore((s) => s.suites);
-  const suitesLoading = usePluginStore((s) => s.suitesLoading);
-  const suitesError = usePluginStore((s) => s.suitesError);
-  const loadSuites = usePluginStore((s) => s.loadSuites);
   const install = usePluginStore((s) => s.install);
-  const assembleSuite = usePluginStore((s) => s.assembleSuite);
   const plugins = usePluginStore((s) => s.plugins);
 
   const [query, setQuery] = useState("");
@@ -50,11 +44,9 @@ export function MarketplaceSection() {
   const [scope, setScope] = useState<PluginScope>("app");
   const [installingRepo, setInstallingRepo] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
-  const [assembling, setAssembling] = useState<string | null>(null);
 
   useEffect(() => {
     if (!marketLoaded) void loadMarket();
-    void loadSuites();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅挂载时加载一次（store 内幂等）
   }, []);
 
@@ -81,24 +73,6 @@ export function MarketplaceSection() {
       setNotice({ kind: "error", text: `安装失败：${e instanceof Error ? e.message : String(e)}` });
     } finally {
       setInstallingRepo(null);
-    }
-  };
-
-  const doAssemble = async (suiteId: string): Promise<void> => {
-    const suite = suites.find((s) => s.id === suiteId);
-    if (!suite || assembling) return;
-    setAssembling(suiteId);
-    setNotice(null);
-    try {
-      const { installed, skipped } = await assembleSuite(suite, scope);
-      setNotice({
-        kind: "ok",
-        text: `套件装配完成：安装 ${installed.length} 个${skipped.length > 0 ? `，跳过 ${skipped.length} 个（未收录或已封禁）` : ""}`,
-      });
-    } catch (e) {
-      setNotice({ kind: "error", text: `套件装配失败：${e instanceof Error ? e.message : String(e)}` });
-    } finally {
-      setAssembling(null);
     }
   };
 
@@ -240,44 +214,6 @@ export function MarketplaceSection() {
           );
         })}
       </div>
-
-      {/* 套件 */}
-      {(suites.length > 0 || suitesLoading || suitesError) && (
-        <div className="border-t pt-3" style={{ borderColor: "var(--border)" }}>
-          <div className="text-xs font-medium mb-2" style={{ color: "var(--text-primary)" }}>
-            套件（一键装配成一种软件形态）
-          </div>
-          {suitesError && <div className="text-xs mb-2" style={{ color: "#f59e0b" }}>{suitesError}</div>}
-          <div className="space-y-2">
-            {suites.map((s) => (
-              <div key={s.id} className="rounded border p-3" style={{ borderColor: "var(--border)", background: "var(--bg-primary)" }}>
-                <div className="flex items-center gap-2">
-                  <div className="flex-1 min-w-0">
-                    <span className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
-                      {s.name}
-                    </span>
-                    <span className="text-[11px] ml-2" style={{ color: "var(--text-muted)" }}>
-                      {s.plugins.length} 个插件 · v{s.version}
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => void doAssemble(s.id)}
-                    disabled={assembling !== null}
-                    className="flex items-center gap-1 px-2.5 py-1.5 rounded text-xs disabled:opacity-50"
-                    style={{ background: "var(--accent)", color: "var(--accent-fg)" }}
-                  >
-                    <Download size={13} />
-                    {assembling === s.id ? "装配中…" : "一键装配"}
-                  </button>
-                </div>
-                <div className="mt-1 text-[11px] break-words" style={{ color: "var(--text-muted)" }}>
-                  {s.plugins.join("、")}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -26,8 +26,6 @@ export const PLUGIN_BLOCKLIST_URL =
   "https://cdn.jsdelivr.net/gh/Xuhang944/Atelyx-plugin-index@main/blocklist.json";
 export const PLUGIN_ENDORSED_URL =
   "https://cdn.jsdelivr.net/gh/Xuhang944/Atelyx-plugin-index@main/endorsed.json";
-export const PLUGIN_SUITES_URL =
-  "https://cdn.jsdelivr.net/gh/Xuhang944/Atelyx-plugin-index@main/suites.json";
 
 /** 市场索引本地缓存时长（毫秒）。 */
 export const PLUGIN_INDEX_CACHE_MS = 6 * 60 * 60 * 1000;

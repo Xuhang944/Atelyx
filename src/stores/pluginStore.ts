@@ -7,7 +7,7 @@
  */
 import { create } from "zustand";
 import type { ComponentType } from "react";
-import type { InstalledPlugin, PluginIndexEntry, PluginScope, SuiteManifest, ToolDefinition } from "@/types";
+import type { InstalledPlugin, PluginIndexEntry, PluginScope, ToolDefinition } from "@/types";
 import { errText } from "@/types";
 import {
   contributedPluginTools,
@@ -45,10 +45,8 @@ import { pluginToolMetas as pluginToolMetasSvc } from "@/services/ai/tools";
 import type { AgentToolMeta } from "@/constants/tools";
 import {
   fetchMarketIndex,
-  fetchSuites,
   isMarketStale,
   readMarketCache,
-  readSuitesCache,
 } from "@/services/plugins/market";
 import { getAppVersion } from "@/services/app";
 import {
@@ -75,15 +73,10 @@ interface PluginStoreState {
   marketError: string;
   /** 市场是否已加载过（UI 据此显示加载/空态）。 */
   marketLoaded: boolean;
-  /** 套件清单（一键装配）。 */
-  suites: SuiteManifest[];
-  suitesLoading: boolean;
-  suitesError: string;
   /** 加载已装插件并按启用状态拉起运行时。 */
   load(): Promise<void>;
-  /** 从 GitHub 仓库安装（scope 由前端/清单决定；安装后默认未启用，由管理 UI 确认后启用；
-   * skipReload 供套件批量安装时跳过逐成员全量重载，由装配末尾统一 load）。 */
-  install(repo: string, scope: PluginScope, skipReload?: boolean): Promise<void>;
+  /** 从 GitHub 仓库安装（scope 由前端/清单决定；安装后默认未启用，由管理 UI 确认后启用）。 */
+  install(repo: string, scope: PluginScope): Promise<void>;
   /** 卸载（删除目录 + 终止运行时 + 清理状态）。 */
   uninstall(id: string): Promise<void>;
   /** 启用/停用（启用 = 拉起运行时；停用 = 终止运行时）。 */
@@ -112,10 +105,6 @@ interface PluginStoreState {
   pluginViewLabel(view: string): string;
   /** 加载市场索引（缓存未过期直接回缓存；失败回落缓存快照并带时间戳提示）。 */
   loadMarket(force?: boolean): Promise<void>;
-  /** 加载套件清单。 */
-  loadSuites(force?: boolean): Promise<void>;
-  /** 一键装配套件：安装成员插件（按市场索引解析 repo；封禁/缺失跳过）→ 刷新 → 启用套件声明的皮肤。 */
-  assembleSuite(suite: SuiteManifest, scope: PluginScope): Promise<{ installed: string[]; skipped: string[] }>;
 }
 
 /** 磁盘行 → store 条目（清单经前端校验归一化；Rust 侧 plugin_list 已滤除损坏清单，
@@ -234,9 +223,6 @@ export const usePluginStore = create<PluginStoreState>()((set, get) => {
     marketLoading: false,
     marketError: "",
     marketLoaded: false,
-    suites: [],
-    suitesLoading: false,
-    suitesError: "",
 
     /**
      * 全量重载：先卸载全部运行时与 UI 贡献（仓库切换/重装后旧贡献不残留），再按当前上下文
@@ -267,7 +253,7 @@ export const usePluginStore = create<PluginStoreState>()((set, get) => {
       if (get().marketLoaded) applyBlocklist();
     },
 
-    install: async (repo, scope, skipReload = false) => {
+    install: async (repo, scope) => {
       const row = await pluginInstall(repo, scope);
       try {
         // 封禁检查（市场已加载时）：命中即回滚——已下架插件不可安装。
@@ -283,7 +269,7 @@ export const usePluginStore = create<PluginStoreState>()((set, get) => {
         await pluginUninstall(row.id, row.scope).catch(() => {});
         throw e;
       }
-      if (!skipReload) await get().load();
+      await get().load();
     },
 
     uninstall: async (id) => {
@@ -387,51 +373,6 @@ export const usePluginStore = create<PluginStoreState>()((set, get) => {
           set({ marketLoading: false, marketError: `市场加载失败：${errText(e)}` });
         }
       }
-    },
-
-    loadSuites: async (force = false) => {
-      const cached = readSuitesCache();
-      if (!force && cached.length > 0) {
-        set({ suites: cached, suitesLoading: false, suitesError: "" });
-        return;
-      }
-      set({ suitesLoading: true, suitesError: "" });
-      try {
-        const suites = await fetchSuites();
-        set({ suites, suitesLoading: false });
-      } catch (e) {
-        if (cached.length > 0) {
-          set({ suites: cached, suitesLoading: false, suitesError: "套件刷新失败，使用缓存快照" });
-        } else {
-          set({ suitesLoading: false, suitesError: `套件加载失败：${errText(e)}` });
-        }
-      }
-    },
-
-    assembleSuite: async (suite, scope) => {
-      const index = new Map(get().marketItems.map((it) => [it.id, it]));
-      const installed: string[] = [];
-      const skipped: string[] = [];
-      for (const memberId of suite.plugins) {
-        const entry = index.get(memberId);
-        if (!entry || entry.blockedReason) {
-          skipped.push(memberId);
-          continue;
-        }
-        try {
-          // 批量安装：skipReload=true 避免 N 成员 N 次全量重载，末尾统一 load 一次。
-          await get().install(entry.repo, scope, true);
-          installed.push(memberId);
-        } catch {
-          skipped.push(memberId);
-        }
-      }
-      await get().load();
-      // 套件声明的皮肤：装配完成后启用（用户主动装配即视为确认）。
-      if (suite.themeId && get().plugins[suite.themeId]) {
-        await get().setEnabled(suite.themeId, true);
-      }
-      return { installed, skipped };
     },
   };
 });

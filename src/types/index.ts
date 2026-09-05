@@ -164,5 +164,4 @@ export {
   type PluginEndorseEntry,
   type PluginFiberPhase,
   type InstalledPlugin,
-  type SuiteManifest,
 } from "./plugin";

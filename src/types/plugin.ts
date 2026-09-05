@@ -1,5 +1,5 @@
 /**
- * 插件平台契约：清单 / 市场索引 / 贡献 / 套件 / 运行状态。
+ * 插件平台契约：清单 / 市场索引 / 能力 / 皮肤 / 运行状态。
  *
  * 这是分布式插件（任何来源、任何作者）与 App 之间的唯一数据契约。契约带格式版本号：
  * 未知的字段、类型、能力名一律跳过而不报错，保证「更新的插件、更老的 App」也能安全共处；
@@ -175,16 +175,4 @@ export interface InstalledPlugin {
   error?: string;
   /** 命中市场封禁名单的原因（已装插件被下架标记；管理 UI 据此禁启提示）。 */
   blocked?: string;
-}
-
-/** 套件清单：把多插件 + 装配配置打包成一种软件形态，一键装配。 */
-export interface SuiteManifest {
-  schemaVersion: number;
-  id: string;
-  name: string;
-  version: string;
-  /** 成员插件 id（装配 = 按市场索引解析 repo 装最新版）。 */
-  plugins: string[];
-  /** 装配后的默认皮肤（可选）。 */
-  themeId?: string;
 }
