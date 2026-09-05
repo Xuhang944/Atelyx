@@ -5,10 +5,12 @@
  * - 封禁条目灰显不可安装（官方下架）
  * - 安装 = 按 repo 走 GitHub Release（下载 → sha256 → 解压 → 校验 → 原子落位），默认未启用，
  *   由「已安装」tab 确认启用；scope 由本区顶部的安装作用域选择决定
+ * - 顶部下拉（类型筛选/安装作用域）用统一 DropdownSelect 组件（自绘弹层，非原生 select）
  * 分层：只经 pluginStore 触达插件能力。
  */
 import { useEffect, useMemo, useState } from "react";
 import { Download, RefreshCw } from "lucide-react";
+import { DropdownSelect } from "@/components/common/DropdownSelect";
 import { usePluginStore } from "@/stores/pluginStore";
 import { PLUGIN_BADGE_LABELS, PLUGIN_TYPE_LABELS } from "@/constants/plugins";
 import type { PluginScope, PluginType } from "@/types";
@@ -87,30 +89,30 @@ export function MarketplaceSection() {
           className="flex-1 min-w-[180px] px-2.5 py-1.5 rounded text-xs border outline-none"
           style={{ background: "var(--bg-primary)", borderColor: "var(--border)", color: "var(--text-primary)" }}
         />
-        <select
+        <DropdownSelect
           value={typeFilter}
-          onChange={(e) => setTypeFilter(e.target.value as PluginType | "all")}
-          className="px-2 py-1.5 rounded text-xs border outline-none"
-          style={{ background: "var(--bg-primary)", borderColor: "var(--border)", color: "var(--text-primary)" }}
-        >
-          {TYPE_FILTERS.map((f) => (
-            <option key={f.value} value={f.value}>
-              {f.label}
-            </option>
-          ))}
-        </select>
-        <select
+          onChange={(v) => setTypeFilter(v as PluginType | "all")}
+          options={TYPE_FILTERS.map((f) => ({ value: f.value, label: f.label }))}
+          title="类型筛选"
+          className="text-xs rounded px-2 py-1.5"
+          style={{
+            color: "var(--text-primary)",
+            background: "var(--input-bg)",
+            border: "1px solid var(--input-border)",
+          }}
+        />
+        <DropdownSelect
           value={scope}
-          onChange={(e) => setScope(e.target.value as PluginScope)}
-          className="px-2 py-1.5 rounded text-xs border outline-none"
-          style={{ background: "var(--bg-primary)", borderColor: "var(--border)", color: "var(--text-primary)" }}
-        >
-          {SCOPE_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
+          onChange={(v) => setScope(v as PluginScope)}
+          options={SCOPE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+          title="安装作用域"
+          className="text-xs rounded px-2 py-1.5"
+          style={{
+            color: "var(--text-primary)",
+            background: "var(--input-bg)",
+            border: "1px solid var(--input-border)",
+          }}
+        />
         <button
           onClick={() => void loadMarket(true)}
           title="刷新市场索引"
