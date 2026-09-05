@@ -53,7 +53,9 @@ async function fetchJson<T>(url: string, timeoutMs = 15000): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const resp = await fetch(url, { signal: controller.signal });
+    // cache: "no-store"：jsdelivr 对 @main 下发 7 天 max-age，WebView2 HTTP 缓存会命中旧索引——
+    // 市场/封禁/认可必须每次走网络，否则新插件最长 7 天、下架条目最长 7 天不可见。
+    const resp = await fetch(url, { signal: controller.signal, cache: "no-store" });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     return (await resp.json()) as T;
   } finally {
