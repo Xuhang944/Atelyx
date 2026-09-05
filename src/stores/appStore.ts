@@ -36,6 +36,8 @@ import { readClipboardText as readClipboardTextSvc, writeClipboardText as writeC
 import { pickDirectory as pickDirectorySvc } from "@/services/dialog";
 import { applyStartupWindow as applyStartupWindowSvc, applyWorkspaceWindow as applyWorkspaceWindowSvc, closeWindow as closeWindowSvc, minimizeWindow as minimizeWindowSvc, onCloseRequested as onCloseRequestedSvc, toggleFullscreen as toggleFullscreenSvc, toggleMaximizeWindow as toggleMaximizeWindowSvc } from "@/services/window";
 import { checkAndAutoUpdate as checkAndAutoUpdateSvc, checkForUpdate as checkForUpdateSvc, installUpdate as installUpdateSvc } from "@/services/updater";
+import { emitPluginEvent } from "@/services/plugins";
+import { usePluginStore } from "@/stores/pluginStore";
 import type { CanvasFileRow, RecentVault } from "@/types";
 
 /** 手动检查更新状态（设置页「关于」tab 用）。 */
@@ -66,6 +68,8 @@ type View = "vaultSelect" | "workspace";
 
 interface AppState {
   view: View;
+  /** 插件应用页面 id（非空 = 插件全页接管，渲染注册的插件页面替代工作区；app 页面/模式）。 */
+  pluginPage: string | null;
   /** 当前仓库根路径（workspace 期间有效） */
   vaultRoot: string | null;
   /** 当前仓库名（显示用） */
@@ -113,6 +117,10 @@ interface AppState {
   removeRecentVault: (root: string) => Promise<void>;
   /** 返回仓库选择页（VaultSwitcher「管理仓库」入口）。 */
   backToVaultSelect: () => void;
+  /** 打开插件应用页面（全页接管；仅工作区视图生效）。 */
+  openPluginPage: (id: string) => void;
+  /** 退出插件应用页面（回到工作区）。 */
+  closePluginPage: () => void;
   /** 立即落盘全部 store 的 pending 改动（画布/表格/面板会话/UI 状态/配置；关窗与更新重启前调用）。
    *  不含协作连接收尾（本函数也会被启动自动更新检查调用，dispose 会误杀会话内协作连接）；
    *  协作 dispose 只在关窗守卫（真退出）调用，见 installCloseGuard。 */
@@ -216,6 +224,7 @@ function canvasesInDir(dir: string, excludeFile?: string): CanvasFileRow[] {
 
 export const useAppStore = create<AppState>((set, get) => ({
   view: "vaultSelect",
+  pluginPage: null,
   vaultRoot: null,
   vaultName: "",
   switchingVault: false,
@@ -387,6 +396,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       } catch (e) {
         console.error("加载 AI 对话会话失败", e);
       }
+      // 插件平台：切仓库后全量重载（load 内部先卸载旧贡献，再按新仓库上下文重建 app+vault 插件）；
+      // 加载完成后再广播 vault:switch，保证订阅方是已就绪的后台插件。
+      try {
+        await usePluginStore.getState().load();
+      } catch (e) {
+        console.error("加载插件失败", e);
+      }
+      emitPluginEvent("vault:switch", { root: info.root, id: info.id });
       return true;
     } catch (e) {
       console.error("打开仓库失败", e);
@@ -427,8 +444,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       currentNoteTitle: "",
       currentTableFile: null,
       currentTableTitle: "",
+      pluginPage: null,
     });
+    // 插件事件先发（存活插件先收到「清上下文」通知），再卸载重载——
+    // 否则 load 开头会同步卸载全部 runtime，vault:clear 发出时已无订阅者。
+    emitPluginEvent("vault:clear", {});
+    // 插件平台：回启动页后卸载 vault 级插件、保留 app 级插件（load 全量重载，root 已空则只扫 app 目录）。
+    void usePluginStore.getState().load().catch(() => {});
   },
+
+  openPluginPage: (id) => set({ pluginPage: id }),
+
+  closePluginPage: () => set({ pluginPage: null }),
 
   flushAllPending: async () => {
     await useCanvasStore.getState().flush();

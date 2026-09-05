@@ -5,6 +5,7 @@ import {
   FolderTree,
   Info,
   PenLine,
+  Puzzle,
   Search,
   Server,
   Settings,
@@ -23,6 +24,9 @@ import { ModelServicesSettingsTab } from "@/components/settings/tabs/ModelServic
 import { FilesSettingsTab } from "@/components/settings/tabs/FilesSettingsTab";
 import { EditorSettingsTab } from "@/components/settings/tabs/EditorSettingsTab";
 import { SearchSettingsTab } from "@/components/settings/tabs/SearchSettingsTab";
+import { PluginsSettingsTab } from "@/components/plugins/PluginsSettingsTab";
+import { ErrorBoundary } from "@/components/common/ErrorBoundary";
+import { usePluginStore } from "@/stores/pluginStore";
 
 type Tab =
   | "general"
@@ -33,6 +37,7 @@ type Tab =
   | "search"
   | "files"
   | "editor"
+  | "plugins"
   | "about";
 
 /** 左侧 tab 栏配置（图标 + 标签；折叠后仅显示图标）。 */
@@ -45,15 +50,42 @@ const TAB_ITEMS: { key: Tab; label: string; icon: LucideIcon }[] = [
   { key: "search", label: "联网搜索", icon: Search },
   { key: "files", label: "文件与路径", icon: FolderTree },
   { key: "editor", label: "编辑器", icon: PenLine },
+  { key: "plugins", label: "插件", icon: Puzzle },
   { key: "about", label: "关于", icon: Info },
 ];
 
-/** 设置页壳：左侧可折叠标签栏 + tab 条件分派 + 全局弹窗；各 tab 草稿与状态自持（直接订阅 store）。 */
-export function SettingsModal({ onClose, initialTab }: { onClose: () => void; initialTab?: string }) {
-  // 设置内容（左侧九 tab）：应用级（通用 / 多人协作 / 关于）+ 仓库级（模型供应商 / 模型服务 / Agent / 联网搜索 / 文件与路径 / 编辑器）
-  const [tab, setTab] = useState<Tab>(() =>
-    initialTab && TAB_ITEMS.some((t) => t.key === (initialTab as Tab)) ? (initialTab as Tab) : "general",
+/** 插件设置项承载（按全局 key 渲染注册的组件；插件停用/卸载后显示占位）。 */
+function PluginSettingMount({ settingKey }: { settingKey: string }) {
+  usePluginStore((s) => s.uiRevision);
+  const reg = usePluginStore.getState().pluginSetting(settingKey);
+  if (!reg) {
+    return (
+      <div className="p-5 text-sm" style={{ color: "var(--text-muted)" }}>
+        该插件设置已停用或卸载
+      </div>
+    );
+  }
+  const Comp = reg.component;
+  return (
+    <ErrorBoundary>
+      <Comp />
+    </ErrorBoundary>
   );
+}
+
+/** 设置页壳：左侧可折叠标签栏 + tab 条件分派 + 全局弹窗；各 tab 草稿与状态自持（直接订阅 store）。
+ * 插件设置项以 `plugin:<pluginId>:<key>` 形式的 tab 并入左侧栏（注册变化经 uiRevision 刷新）。 */
+export function SettingsModal({ onClose, initialTab }: { onClose: () => void; initialTab?: string }) {
+  // 设置内容：应用级（通用 / 多人协作 / 关于）+ 仓库级（模型供应商 / 模型服务 / Agent / 联网搜索 / 文件与路径 / 编辑器）+ 插件设置项
+  usePluginStore((s) => s.uiRevision);
+  const pluginTabs = usePluginStore.getState().pluginSettings();
+  const [tab, setTab] = useState<string>(() => {
+    const builtinKeys: string[] = TAB_ITEMS.map((t) => t.key);
+    if (initialTab && (builtinKeys.includes(initialTab) || pluginTabs.some((t) => t.key === initialTab))) {
+      return initialTab;
+    }
+    return "general";
+  });
   /** 左侧 tab 栏折叠状态（折叠后仅显示图标）。 */
   const [tabsCollapsed, setTabsCollapsed] = useState(false);
 
@@ -96,7 +128,10 @@ export function SettingsModal({ onClose, initialTab }: { onClose: () => void; in
             style={{ borderColor: "var(--border)" }}
           >
             <div className="flex-1 overflow-auto p-2 space-y-1">
-              {TAB_ITEMS.map((item) => (
+              {[
+                ...TAB_ITEMS,
+                ...pluginTabs.map((t) => ({ key: t.key, label: t.label, icon: Puzzle as LucideIcon })),
+              ].map((item) => (
                 <button
                   key={item.key}
                   onClick={() => setTab(item.key)}
@@ -156,6 +191,12 @@ export function SettingsModal({ onClose, initialTab }: { onClose: () => void; in
             ) : tab === "about" ? (
               /* ===== 关于面板：Logo + 版本号 + 检查更新 ===== */
               <AboutSection />
+            ) : tab === "plugins" ? (
+              /* ===== 插件面板：已装插件管理 + 市场浏览 ===== */
+              <PluginsSettingsTab />
+            ) : pluginTabs.some((t) => t.key === tab) ? (
+              /* ===== 插件设置项（主线程平面注册） ===== */
+              <PluginSettingMount settingKey={tab} />
             ) : (
               /* ===== 编辑器面板（仓库级） ===== */
               <EditorSettingsTab />

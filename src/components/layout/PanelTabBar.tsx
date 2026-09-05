@@ -11,12 +11,13 @@ import { ChevronLeft, ChevronRight, Lock, LockOpen, Menu, X } from "lucide-react
 import { memo, useRef, useState, type ReactNode } from "react";
 import { useAppStore } from "@/stores/appStore";
 import { usePanelStore } from "@/stores/panelStore";
+import { usePluginStore } from "@/stores/pluginStore";
 import { usePopupAnchor } from "@/hooks/usePopupAnchor";
 import { PopupLayer } from "@/components/common/PopupLayer";
 import { Menu as MenuShell, MenuDivider, MenuItem } from "@/components/common/Menu";
-import { VIEW_META } from "@/components/layout/ViewHost";
+import { VIEW_META, viewMetaFor } from "@/components/layout/ViewHost";
 import { noteTitleFromFile, tableTitleFromFile } from "@/utils/filename";
-import { VIEW_KINDS, type SplitDirection, type TabItem, type ViewKind } from "@/types";
+import { type SplitDirection, type TabItem, type ViewKind } from "@/types";
 
 export interface PanelTabBarProps {
   /** 宿主标识：面板 id（主窗口）或撕裂窗口 id。 */
@@ -60,6 +61,7 @@ export function ViewPickerMenu({
   onClose,
   tabs,
   usedViews,
+  kinds,
   onPickView,
 }: {
   x: number;
@@ -67,27 +69,29 @@ export function ViewPickerMenu({
   onClose: () => void;
   tabs: TabItem[];
   usedViews: ViewKind[];
+  kinds: string[];
   onPickView: (view: ViewKind) => void;
 }) {
   return (
     <MenuShell x={x} y={y} onClose={onClose} widthClass="w-40">
-      {VIEW_KINDS.map((v) => {
+      {kinds.map((v) => {
         const inGroup = tabs.some((t) => t.view === v);
-        const occupiedElsewhere = usedViews.includes(v) && !inGroup;
+        const occupiedElsewhere = usedViews.includes(v as ViewKind) && !inGroup;
+        const meta = viewMetaFor(v);
         return (
           <MenuItem
             key={v}
             disabled={occupiedElsewhere}
             onClick={() => {
-              onPickView(v);
+              onPickView(v as ViewKind);
               onClose();
             }}
             className="text-xs"
             style={{ color: inGroup ? "var(--accent)" : undefined }}
-            title={occupiedElsewhere ? "该视图已在其他位置（全局唯一）" : VIEW_META[v].label}
+            title={occupiedElsewhere ? "该视图已在其他位置（全局唯一）" : meta.label}
           >
-            {VIEW_META[v].icon}
-            {VIEW_META[v].label}
+            {meta.icon}
+            {meta.label}
             {inGroup && <span className="ml-auto text-[10px]">本组</span>}
             {occupiedElsewhere && <span className="ml-auto text-[10px]">已占用</span>}
           </MenuItem>
@@ -128,6 +132,10 @@ export const PanelTabBar = memo(function PanelTabBar({
   const currentNoteFile = useAppStore((s) => s.currentNoteFile);
   const currentTableFile = useAppStore((s) => s.currentTableFile);
 
+  // 视图候选 = 内建 + 插件面板（订阅插件 UI 注册变化；插件视图 label/icon 走 viewMetaFor 兜底）
+  usePluginStore((s) => s.uiRevision);
+  const viewKinds: string[] = usePluginStore.getState().pluginViewKinds();
+
   /** 标签标题：画布/笔记/表格打开文件时显示文件名，否则视图名。 */
   const tabTitle = (tab: TabItem): string => {
     if (tab.view === "canvas") {
@@ -139,7 +147,7 @@ export const PanelTabBar = memo(function PanelTabBar({
     if (tab.view === "table") {
       return currentTableFile ? tableTitleFromFile(currentTableFile) : VIEW_META.table.label;
     }
-    return VIEW_META[tab.view].label;
+    return viewMetaFor(tab.view).label;
   };
 
   /** 文件视图当前是否打开文件（X 关闭按钮仅打开时显示）。 */
@@ -237,9 +245,9 @@ export const PanelTabBar = memo(function PanelTabBar({
                 color: tab.id === activeTabId ? "var(--accent)" : "var(--text-secondary)",
                 background: tab.id === activeTabId ? "rgba(255,255,255,0.04)" : "transparent",
               }}
-              title={`${VIEW_META[tab.view].label}${tab.locked ? "（已锁定：不可移动/关闭/删除面板）" : ""}`}
+              title={`${viewMetaFor(tab.view).label}${tab.locked ? "（已锁定：不可移动/关闭/删除面板）" : ""}`}
             >
-              {VIEW_META[tab.view].icon}
+              {viewMetaFor(tab.view).icon}
               <span className="max-w-[120px] truncate">{tabTitle(tab)}</span>
               {tab.locked && <Lock size={9} className="flex-shrink-0" />}
               {!tab.locked && hasFile(tab) && (
@@ -280,7 +288,7 @@ export const PanelTabBar = memo(function PanelTabBar({
           }}
           className="flex-shrink-0 px-1.5 py-0.5 rounded hover:opacity-70"
           style={{ color: "var(--text-muted)" }}
-          title={activeTab ? `面板菜单（${VIEW_META[activeTab.view].label}）` : "面板菜单"}
+          title={activeTab ? `面板菜单（${viewMetaFor(activeTab.view).label}）` : "面板菜单"}
           aria-label="面板菜单"
         >
           <Menu size={13} />
@@ -389,23 +397,24 @@ export const PanelTabBar = memo(function PanelTabBar({
                 返回
               </MenuItem>
               <MenuDivider />
-              {VIEW_KINDS.map((v) => {
+              {viewKinds.map((v) => {
                 const isCurrent = v === menuTab.view;
-                const occupiedElsewhere = usedViews.includes(v) && !isCurrent;
+                const occupiedElsewhere = usedViews.includes(v as ViewKind) && !isCurrent;
+                const meta = viewMetaFor(v);
                 return (
                   <MenuItem
                     key={v}
                     disabled={isCurrent || occupiedElsewhere}
                     onClick={() => {
-                      onSetTabView(menuTab.id, v);
+                      onSetTabView(menuTab.id, v as ViewKind);
                       setTabMenu(null);
                     }}
                     className="text-xs"
                     style={{ color: isCurrent ? "var(--accent)" : undefined }}
-                    title={occupiedElsewhere ? "该视图已在其他位置（全局唯一）" : VIEW_META[v].label}
+                    title={occupiedElsewhere ? "该视图已在其他位置（全局唯一）" : meta.label}
                   >
-                    {VIEW_META[v].icon}
-                    {VIEW_META[v].label}
+                    {meta.icon}
+                    {meta.label}
                     {isCurrent && <span className="ml-auto text-[10px]">当前</span>}
                     {occupiedElsewhere && <span className="ml-auto text-[10px]">已占用</span>}
                   </MenuItem>
@@ -424,6 +433,7 @@ export const PanelTabBar = memo(function PanelTabBar({
           onClose={() => setViewMenu(null)}
           tabs={tabs}
           usedViews={usedViews}
+          kinds={viewKinds}
           onPickView={onPickView}
         />
       )}

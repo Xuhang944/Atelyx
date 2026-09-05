@@ -146,3 +146,23 @@ export type {
   LlmFinishReason,
   LlmStreamEvent,
 } from "./llm";
+
+export {
+  PLUGIN_SCHEMA_VERSION,
+  PLUGIN_CAPABILITIES,
+  SENSITIVE_PLUGIN_CAPABILITIES,
+  type PluginType,
+  type PluginScope,
+  type PluginCapability,
+  type SensitivePluginCapability,
+  type PluginManifest,
+  type PluginTheme,
+  type PluginBadge,
+  type PluginIndexEntry,
+  type PluginIndex,
+  type PluginBlockEntry,
+  type PluginEndorseEntry,
+  type PluginFiberPhase,
+  type InstalledPlugin,
+  type SuiteManifest,
+} from "./plugin";

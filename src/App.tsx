@@ -3,6 +3,7 @@ import { ReactFlowProvider } from "@xyflow/react";
 import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useVaultStore } from "@/stores/vaultStore";
+import { usePluginStore } from "@/stores/pluginStore";
 import { PanelWindowRoot } from "@/components/layout/PanelWindowRoot";
 import { ErrorBoundary } from "@/components/common/ErrorBoundary";
 import { LoadingScreen } from "@/components/common/LoadingScreen";
@@ -33,9 +34,49 @@ function applyWindowShape(): Promise<void> {
   return windowShapeQueue;
 }
 
+/** 插件应用页面承载（全页接管；缺注册 = 占位 + 返回按钮；插件崩溃不影响 App）。 */
+function PluginPageMount({ pageId }: { pageId: string }) {
+  const close = useAppStore((s) => s.closePluginPage);
+  usePluginStore((s) => s.uiRevision);
+  const reg = usePluginStore.getState().pluginAppPage(pageId);
+  if (!reg) {
+    return (
+      <div
+        className="h-full w-full flex flex-col items-center justify-center gap-3"
+        style={{ background: "var(--bg-primary)", color: "var(--text-secondary)" }}
+      >
+        <span className="text-sm">插件页面「{pageId}」已停用或卸载</span>
+        <button
+          className="px-3 py-1.5 rounded text-xs"
+          style={{ background: "var(--accent)", color: "var(--accent-fg)" }}
+          onClick={close}
+        >
+          返回工作区
+        </button>
+      </div>
+    );
+  }
+  const Comp = reg.component;
+  return (
+    <ErrorBoundary>
+      <div className="relative h-full w-full">
+        <button
+          className="absolute top-3 right-3 z-50 px-3 py-1.5 rounded text-xs border"
+          style={{ background: "var(--bg-secondary)", borderColor: "var(--border)", color: "var(--text-secondary)" }}
+          onClick={close}
+        >
+          退出插件页面
+        </button>
+        <Comp />
+      </div>
+    </ErrorBoundary>
+  );
+}
+
 /** 主窗口应用主体（启动页 + 工作区 + booting 流程）。 */
 function MainWorkspaceApp() {
   const view = useAppStore((s) => s.view);
+  const pluginPage = useAppStore((s) => s.pluginPage);
   const init = useAppStore((s) => s.init);
   const loadSettings = useSettingsStore((s) => s.load);
   useAppearance();
@@ -81,6 +122,10 @@ function MainWorkspaceApp() {
       await usePanelStore.getState().initMain();
       if (autoEnterRoot) {
         await useAppStore.getState().selectVault(autoEnterRoot);
+      } else {
+        // 首启/无最近仓库（停在启动页）：selectVault 不会执行，这里补一次插件加载——
+        // 否则 app 级插件（如主题）在启动页不生效，且与 backToVaultSelect 路径行为不一致。
+        await usePluginStore.getState().load().catch(() => {});
       }
       // 撕裂窗口恢复：在仓库打开之后重建（面板握手需仓库信息，见 panel-init 协议）
       await usePanelStore.getState().restoreDetachedWindows();
@@ -104,7 +149,11 @@ function MainWorkspaceApp() {
       {booting ? (
         <LoadingScreen />
       ) : view === "workspace" ? (
-        <ProjectWorkspacePage />
+        pluginPage ? (
+          <PluginPageMount pageId={pluginPage} />
+        ) : (
+          <ProjectWorkspacePage />
+        )
       ) : (
         <VaultSelectPage />
       )}

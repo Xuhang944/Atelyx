@@ -15,6 +15,7 @@
 import { ChevronDown, ChevronRight, Copy, Plus, Sparkles, Trash2 } from "lucide-react";
 import { useLayoutEffect, useEffect, useRef, useState } from "react";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { usePluginStore } from "@/stores/pluginStore";
 import { DropdownSelect } from "@/components/common/DropdownSelect";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import {
@@ -129,6 +130,13 @@ export function AgentSettingsSection() {
   const removeAgent = useSettingsStore((s) => s.removeAgent);
   const duplicateAgent = useSettingsStore((s) => s.duplicateAgent);
   const promptNotes = useSettingsStore((s) => s.promptNotes);
+  // 订阅插件运行时：插件启停/卸载变化触发本组件重渲染（插件工具表在服务层，非响应式，
+  // 靠 pluginStore 收敛驱动重算；bridge 在工具注册成功时也会触发运行时变更通知）。
+  usePluginStore((s) => s.plugins);
+  const allToolsMeta: AgentToolMeta[] = [
+    ...AGENT_TOOLS_META,
+    ...usePluginStore.getState().pluginToolMetas(),
+  ];
   // 搜索源就绪状态（订阅字段而非 isSearchConfigured 函数引用，配置变化即时刷新提示）
   const searchConfig = useSettingsStore((s) => s.searchConfig);
   const tavilyKey = useSettingsStore((s) => s.tavilyKey);
@@ -190,7 +198,7 @@ export function AgentSettingsSection() {
   };
 
   const toggleCategoryAll = (cat: AgentToolCategory) => {
-    const ids = AGENT_TOOLS_META.filter((t) => t.category === cat).map((t) => t.id);
+    const ids = allToolsMeta.filter((t) => t.category === cat).map((t) => t.id);
     const cur = new Set(currentAgentTools());
     const allOn = ids.every((id) => cur.has(id));
     const next = allOn
@@ -394,7 +402,7 @@ export function AgentSettingsSection() {
                   <ToolCategoryGroup
                     key={cat.key}
                     cat={cat}
-                    tools={AGENT_TOOLS_META.filter((t) => t.category === cat.key)}
+                    tools={allToolsMeta.filter((t) => t.category === cat.key)}
                     enabled={new Set(selected.tools)}
                     searchReady={searchReady}
                     collapsed={collapsedCats[cat.key]}

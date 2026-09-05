@@ -56,6 +56,7 @@ import { GroupNode } from "@/components/canvas/nodes/GroupNode";
 import { LinkNode } from "@/components/canvas/nodes/LinkNode";
 import { withCollab } from "@/components/canvas/nodes/withCollab";
 import { useCollabStore } from "@/stores/collabStore";
+import { usePluginStore } from "@/stores/pluginStore";
 import {
   OPEN_TABLE_EVENT,
   TableNode,
@@ -72,7 +73,7 @@ import { PopupLayer } from "@/components/common/PopupLayer";
 import { HistoryModal } from "@/components/history/HistoryModal";
 import { usePopupAnchor } from "@/hooks/usePopupAnchor";
 
-const nodeTypes = {
+const builtinNodeTypes = {
   conversation: withCollab(ConversationNode),
   text: withCollab(TextNode),
   media: withCollab(MediaNode),
@@ -137,6 +138,14 @@ export const CanvasView = memo(function CanvasView({
   const openTable = useAppStore((s) => s.openTable);
   const convertWhiteboard = useAppStore((s) => s.convertWhiteboard);
   const focusedPanelId = useUiStateStore((s) => s.focusedPanelId);
+  // 节点组件表 = 内建 + 插件注册（插件节点：注册的组件渲染；插件停用后该类型节点按 React Flow
+  // 未注册类型处理为空节点占位，不崩溃）。
+  const uiRevision = usePluginStore((s) => s.uiRevision);
+  const mergedNodeTypes = useMemo(
+    () => ({ ...builtinNodeTypes, ...usePluginStore.getState().pluginNodeTypes() }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- uiRevision 是插件注册的响应信号（节点表在服务层非响应式），必须作重算依赖
+    [uiRevision],
+  );
   // 协作：同看本画布的在线用户（presence.file 命中 + view=canvas；断开连接自动消失）
   const collabPeers = useCollabStore((s) => s.peers);
   const canvasPeers = useMemo(
@@ -542,7 +551,7 @@ export const CanvasView = memo(function CanvasView({
             }
           }}
           isValidConnection={isValidConnection}
-          nodeTypes={nodeTypes}
+          nodeTypes={mergedNodeTypes}
           edgeTypes={edgeTypes}
           fitView
           minZoom={0.1}

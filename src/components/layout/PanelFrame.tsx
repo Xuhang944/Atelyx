@@ -10,6 +10,7 @@
 import { memo, useState } from "react";
 import { useAppStore } from "@/stores/appStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
+import { usePluginStore } from "@/stores/pluginStore";
 import { PanelTabBar, ViewPickerMenu } from "@/components/layout/PanelTabBar";
 import { ViewHost, ViewStatusIndicator } from "@/components/layout/ViewHost";
 import type { PanelNode, ViewKind } from "@/types";
@@ -41,6 +42,10 @@ export const PanelFrame = memo(function PanelFrame({
 
   const used = new Set(usedKey ? (usedKey.split(",") as ViewKind[]) : []);
   const activeTab = node.tabs.find((t) => t.id === node.activeTabId) ?? node.tabs[0] ?? null;
+
+  // 视图候选 = 内建 + 插件面板（订阅插件 UI 注册变化刷新）。
+  usePluginStore((s) => s.uiRevision);
+  const viewKinds: string[] = usePluginStore.getState().pluginViewKinds();
 
   // 空面板内容区右键视图菜单（与头部空白右键一致）
   const [emptyMenu, setEmptyMenu] = useState<{ x: number; y: number } | null>(null);
@@ -99,6 +104,7 @@ export const PanelFrame = memo(function PanelFrame({
           onClose={() => setEmptyMenu(null)}
           tabs={node.tabs}
           usedViews={[...used]}
+          kinds={viewKinds}
           onPickView={(view) => addViewToPanel(node.id, view)}
         />
       )}

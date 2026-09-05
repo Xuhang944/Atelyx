@@ -31,10 +31,10 @@ import { DELETE_FILE_TOOL } from "./deleteFile";
 import { DELETE_DIR_TOOL } from "./deleteDir";
 import { TODO_WRITE_TOOL } from "./todoWrite";
 import { createToolRegistry } from "./registry";
-import { FILE_REFERENCE_PROMPT, AGENT_TOOLS_META } from "@/constants/tools";
+import { FILE_REFERENCE_PROMPT, AGENT_TOOLS_META, type AgentToolMeta } from "@/constants/tools";
 
 /** Agent 模式全部工具（注册顺序 = 名册/浮层展示顺序，与 AGENT_TOOLS_META 一致）。各工具参数类型各异，注册为通用定义。 */
-const AGENT_TOOLS = [
+let agentTools = [
   WEB_SEARCH_TOOL,
   WEB_FETCH_TOOL,
   READ_FILE_TOOL,
@@ -52,7 +52,34 @@ const AGENT_TOOLS = [
   TODO_WRITE_TOOL,
 ] as unknown as ToolDefinition[];
 
-const registry = createToolRegistry(AGENT_TOOLS);
+let registry = createToolRegistry(agentTools);
+
+/** 插件注册的工具定义（对象同一性用于注销比对；UI 元数据据此派生）。 */
+const pluginToolDefs: ToolDefinition[] = [];
+
+/** 插件贡献工具：追加进注册表并重建分发器（运行时注册；对象同一性用于注销比对）。 */
+export function registerPluginTools(defs: ToolDefinition[]): void {
+  if (defs.length === 0) return;
+  pluginToolDefs.push(...defs);
+  agentTools = [...agentTools, ...defs];
+  registry = createToolRegistry(agentTools);
+}
+
+/** 撤销插件贡献工具（卸载/停用时按对象同一性移除并重建分发器）。 */
+export function unregisterPluginTools(defs: ToolDefinition[]): void {
+  if (defs.length === 0) return;
+  const drop = new Set(defs);
+  const remaining = pluginToolDefs.filter((t) => !drop.has(t));
+  pluginToolDefs.length = 0;
+  pluginToolDefs.push(...remaining);
+  agentTools = agentTools.filter((t) => !drop.has(t));
+  registry = createToolRegistry(agentTools);
+}
+
+/** 插件工具的 UI 元数据（归入「插件」分类；label = 工具名，Agent 设置页据此展示勾选）。 */
+export function pluginToolMetas(): AgentToolMeta[] {
+  return pluginToolDefs.map((t) => ({ id: t.name, label: t.name, category: "plugin" }));
+}
 
 /** 运行前摘要（消息气泡工具块展示，容忍残缺参数）。 */
 export function summarizeAgentTool(name: string, argsJson: string): string {
@@ -92,7 +119,7 @@ export function buildAgentTools(
 ): AgentToolAssembly {
   const tools: ToolSchema[] = [];
   let skippedWebSearch = false;
-  for (const def of AGENT_TOOLS) {
+  for (const def of agentTools) {
     if (!enabledIds.includes(def.name)) continue;
     if (def.name === "web_search" && !searchReady) {
       skippedWebSearch = true;

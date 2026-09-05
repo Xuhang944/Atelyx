@@ -20,12 +20,15 @@ import {
   Users,
   X,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode } from "react";
+import { Puzzle } from "lucide-react";
 import { VIEW_LABELS } from "@/constants/views";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { useAppStore } from "@/stores/appStore";
 import { useTableStore } from "@/stores/tableStore";
 import { useVaultStore } from "@/stores/vaultStore";
+import { usePluginStore } from "@/stores/pluginStore";
+import { ErrorBoundary } from "@/components/common/ErrorBoundary";
 import { CanvasView } from "@/components/layout/views/CanvasView";
 import { NoteView } from "@/components/layout/views/NoteView";
 import { TableView } from "@/components/layout/views/TableView";
@@ -55,7 +58,31 @@ export const VIEW_META: Record<ViewKind, { label: string; icon: ReactNode }> = {
   empty: { label: VIEW_LABELS.empty, icon: <LayoutTemplate size={13} /> },
 };
 
-/** 按视图类型分派渲染（空视图 = 占位引导）。 */
+/**
+ * 视图元信息兜底解析：内建 VIEW_META → 插件面板注册 → 原样兜底。
+ * 插件视图可能出现在持久化布局里（插件停用后仍在），各处索引必须走此函数避免崩溃。
+ */
+export function viewMetaFor(view: string): { label: string; icon: ReactNode } {
+  const builtin = (VIEW_META as Record<string, { label: string; icon: ReactNode }>)[view];
+  if (builtin) return builtin;
+  const panel = usePluginStore.getState().pluginPanel(view);
+  return { label: panel?.label ?? view, icon: <Puzzle size={13} /> };
+}
+
+/** 插件面板承载：按 kind 渲染注册的组件（缺注册/卸载后空渲染；插件崩溃不影响 App）。 */
+function PluginPanelMount({ kind }: { kind: string }) {
+  usePluginStore((s) => s.uiRevision);
+  const panel = usePluginStore.getState().pluginPanel(kind);
+  if (!panel) return null;
+  const Comp = panel.component;
+  return (
+    <ErrorBoundary>
+      <Comp />
+    </ErrorBoundary>
+  );
+}
+
+/** 按视图类型分派渲染（空视图 = 占位引导；插件视图查注册表）。 */
 export function ViewHost({ view, hostId }: { view: ViewKind; hostId: string }) {
   switch (view) {
     case "canvas":
@@ -81,7 +108,11 @@ export function ViewHost({ view, hostId }: { view: ViewKind; hostId: string }) {
     case "recent":
       return <RecentPanel />;
     default:
-      // 空面板：不渲染占位提示（右键头部/内容区可添加视图，≡ 菜单可分割/删除面板）
+      // 插件面板（kind 不在内建联合里）；缺注册 = 空面板占位。
+      if (view !== "empty") {
+        const panel = usePluginStore.getState().pluginPanel(view);
+        if (panel) return <PluginPanelMount kind={view} />;
+      }
       return <div className="h-full w-full" style={{ background: "var(--bg-primary)" }} />;
   }
 }

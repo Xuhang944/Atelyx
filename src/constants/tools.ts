@@ -8,7 +8,7 @@
  * 工具为基础文件/网络能力（对仓库内任意文本文件与网页生效），命名通用规范。
  */
 /** 工具分类键（Agent 设置页折叠分组；顺序见 AGENT_TOOL_CATEGORIES）。 */
-export type AgentToolCategory = "web" | "file" | "task";
+export type AgentToolCategory = "web" | "file" | "task" | "plugin";
 
 export interface AgentToolMeta {
   id: string;
@@ -77,6 +77,7 @@ export const AGENT_TOOL_CATEGORIES: { key: AgentToolCategory; label: string }[] 
   { key: "web", label: "联网" },
   { key: "file", label: "文件" },
   { key: "task", label: "任务清单" },
+  { key: "plugin", label: "插件" },
 ];
 
 /** 只读工具 id 集合：预置「对话」Agent 默认补全。 */

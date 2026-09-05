@@ -14,6 +14,7 @@ import { useEffect, useMemo } from "react";
 import { LayoutTemplate } from "lucide-react";
 import { useAppStore } from "@/stores/appStore";
 import { usePanelStore } from "@/stores/panelStore";
+import { usePluginStore } from "@/stores/pluginStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
 import { useVaultStore } from "@/stores/vaultStore";
@@ -24,7 +25,6 @@ import { TitleBarControls } from "@/components/common/TitleBarControls";
 import { PanelPlaceholder } from "@/components/layout/PanelPlaceholder";
 import { LoadingScreen } from "@/components/common/LoadingScreen";
 import { useAppearance } from "@/hooks/useAppearance";
-import { VIEW_LABELS } from "@/constants/views";
 import { collectAllViews } from "@/utils/workspaceLayout";
 import { onCloseRequested } from "@/services/window";
 import * as bus from "@/services/windowBus";
@@ -74,7 +74,7 @@ export function PanelWindowRoot() {
   }, [activeTabId, windowId]);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0] ?? null;
-  const title = activeTab ? VIEW_LABELS[activeTab.view] : "面板";
+  const title = activeTab ? usePluginStore.getState().pluginViewLabel(activeTab.view) : "面板";
 
   const usedViews = useMemo(() => {
     if (!layoutMirror) return [];

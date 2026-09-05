@@ -63,6 +63,10 @@ regex = "1"
 # 表格导出 xlsx（rust_xlsxwriter 原生生成，样式：表头/边框/列宽/冻结首行/图片嵌入）
 rust_xlsxwriter = "0.80"
 
+# 插件平台：安装 zip 解压（防路径穿越/zip 炸弹）与 sha256 校验（GitHub Release 资产 digest）
+zip = "2"
+sha2 = "0.10"
+
 # 跨窗口拖拽释放检测（Windows 专用）：标签拖出窗口后 webview 收不到窗口外 pointerup，
 # 前端轮询 GetAsyncKeyState(VK_LBUTTON) 物理判定鼠标已松开，终止拖拽会话并清除 drop 指示器
 [target.'cfg(target_os = "windows")'.dependencies]

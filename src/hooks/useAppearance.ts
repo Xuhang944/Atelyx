@@ -1,11 +1,13 @@
 /**
- * 应用外观应用（主题/字号/字体/强调色 + 系统主题跟随）。
+ * 应用外观应用（主题/字号/字体/强调色 + 系统主题跟随 + 插件主题变量）。
  * 主窗口（App）与撕裂窗口（PanelWindowRoot）共用：撕裂窗口是独立 webview，
  * 需要自行应用同一套外观（settingsStore 应用级配置，两窗口各自读盘）。
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { usePluginStore } from "@/stores/pluginStore";
 import { darkenHex, foregroundFor } from "@/utils/color";
+import { pluginThemeVariables } from "@/utils/pluginTheme";
 
 export function useAppearance(): void {
   const theme = useSettingsStore((s) => s.theme);
@@ -51,4 +53,23 @@ export function useAppearance(): void {
       root.style.removeProperty("--accent-fg");
     }
   }, [accentColor]);
+
+  // 插件主题变量（声明式）：启用中的 theme 插件变量叠加到 :root；变更时先移除上一次
+  // 设置的变量再应用（插件卸载/停用后不留残留变量）。
+  const plugins = usePluginStore((s) => s.plugins);
+  const pluginVars = useMemo(
+    () => pluginThemeVariables(Object.values(plugins), effectiveTheme),
+    [plugins, effectiveTheme],
+  );
+  const prevPluginVarKeysRef = useRef<string[]>([]);
+  useEffect(() => {
+    const root = document.documentElement;
+    for (const key of prevPluginVarKeysRef.current) root.style.removeProperty(key);
+    const keys: string[] = [];
+    for (const [key, value] of Object.entries(pluginVars)) {
+      root.style.setProperty(key, value);
+      keys.push(key);
+    }
+    prevPluginVarKeysRef.current = keys;
+  }, [pluginVars]);
 }

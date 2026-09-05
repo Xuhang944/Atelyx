@@ -6,7 +6,7 @@
  * 跨窗口拖动时影子跟随光标所在窗口；拖到桌面（无窗口）时影子不显示（Tauri 无跨窗口层叠能力）。
  */
 import { usePanelStore } from "@/stores/panelStore";
-import { VIEW_META } from "@/components/layout/ViewHost";
+import { viewMetaFor } from "@/components/layout/ViewHost";
 
 export function DragGhost() {
   const ghost = usePanelStore((s) => s.activeDrag);
@@ -16,7 +16,7 @@ export function DragGhost() {
   const y = ghost.screenY - windowPos.y;
   // 超出本窗口视口（光标在别处）→ 本窗口不显示
   if (x < -50 || y < -50 || x > window.innerWidth + 50 || y > window.innerHeight + 50) return null;
-  const meta = VIEW_META[ghost.view];
+  const meta = viewMetaFor(ghost.view);
   return (
     <div
       style={{

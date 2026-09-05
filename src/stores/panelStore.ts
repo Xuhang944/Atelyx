@@ -28,8 +28,8 @@ import { useAppStore } from "@/stores/appStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useCollabStore } from "@/stores/collabStore";
 import { useVaultStore } from "@/stores/vaultStore";
-import { VIEW_LABELS } from "@/constants/views";
 import { collectPanels, collectTabs, findViewHost } from "@/utils/workspaceLayout";
+import { pluginViewLabel } from "@/services/plugins";
 import * as bus from "@/services/windowBus";
 import type { DropTargetInfo, PanelDragStartPayload, WindowRect } from "@/services/windowBus";
 import {
@@ -262,10 +262,10 @@ function layoutSig(mirror: LayoutMirror): string {
   });
 }
 
-/** 面板窗口标签标题（窗口标题 = 激活标签视图名）。 */
+/** 面板窗口标签标题（窗口标题 = 激活标签视图名；插件视图走 pluginViewLabel 兜底）。 */
 function titleOfTabs(tabs: TabItem[], activeTabId: string | null): string {
   const active = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
-  return active ? VIEW_LABELS[active.view] : "面板";
+  return active ? pluginViewLabel(active.view) : "面板";
 }
 
 export const usePanelStore = create<PanelStore>((set, get) => {
