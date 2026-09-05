@@ -5,6 +5,7 @@
  * 未知的字段、类型、能力名一律跳过而不报错，保证「更新的插件、更老的 App」也能安全共处；
  * 反向（更老的插件、更新的 App）由插件自身的宿主兼容范围字段约束。
  */
+import type { TableField, TableRow } from "./table";
 
 /** 清单格式版本：升级清单结构时递增；App 拒绝 schemaVersion 大于当前值的清单。 */
 export const PLUGIN_SCHEMA_VERSION = 1;
@@ -29,6 +30,7 @@ export const PLUGIN_CAPABILITIES = [
   "settings:write", // 写配置
   "state:persist", // 自持数据落盘
   "events:subscribe", // 订阅应用事件
+  "table:read", // 读当前表格数据（行/字段/图片/选中行）
 ] as const satisfies readonly string[];
 
 /** 插件可声明的能力/命令全集。 */
@@ -56,7 +58,8 @@ export type PluginType =
   | "node" // 画布节点
   | "theme" // UI 皮肤（CSS 变量覆盖）
   | "command" // 全局动作/菜单/快捷键
-  | "background"; // 后台常驻服务（无界面）
+  | "background" // 后台常驻服务（无界面）
+  | "tableview"; // 表格编辑器内的多维表格视图（registerTableView）
 
 /** 安装作用域：app=个人工具（本机，默认）；vault=随仓库共享。 */
 export type PluginScope = "app" | "vault";
@@ -175,4 +178,20 @@ export interface InstalledPlugin {
   error?: string;
   /** 命中市场封禁名单的原因（已装插件被下架标记；管理 UI 据此禁启提示）。 */
   blocked?: string;
+}
+
+/**
+ * 插件表格数据快照（主线程 facade `subscribeTableData` 推送；结构即契约）。
+ * 主线程同域直传 store 的不可变数组引用（选中/状态变化不重建 rows/fields，插件可据此 memo 隔离），
+ * worker 平面若复用本契约须自行序列化。
+ */
+export interface PluginTableSnapshot {
+  /** 当前打开的 .atb 相对仓库根路径（null = 未打开表格）。 */
+  tableFile: string | null;
+  fields: TableField[];
+  rows: TableRow[];
+  /** 选中行（表格视图/插件视图联动；null = 无选中）。 */
+  selectedRowId: string | null;
+  /** 协作远端选中行 → 用户色（cell/range/row 区域归约；column/all 不染；首个匹配 peer 优先）。 */
+  peerColorByRowId: Record<string, string>;
 }

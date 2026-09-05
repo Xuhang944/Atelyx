@@ -60,7 +60,7 @@ bridge.on("vault:clear", () => { /* 回到仓库选择页 */ });
 bridge.ready(); // 顶层逻辑跑完时调用（可选；首个任意 bridge 调用即视为已激活）
 ```
 
-## 主线程平面（panel / setting / app / node）
+## 主线程平面（panel / tableview / setting / app / node）
 
 入口在主线程执行，可渲染 React 界面。代码经 `window.__atelyxPlugin__.forPlugin(插件id)`
 取得 facade。**主线程插件与 App 同上下文**——这是「声明 + 提醒」信任模型：请只经 facade
@@ -84,7 +84,31 @@ facade 提供：
 - `registerAppPage({ id, label, component })` — 注册应用级页面（插件命令可经 App 能力打开，全页接管）
 - `registerNode({ type, component })` — 注册画布节点类型
 - `registerCommand({ id, label, run })` — 注册全局命令（直接持有 run 函数）
+- `registerTableView({ kind, label, component })` — 注册**表格编辑器内的表格视图**（出现在表格工具条视图列表；`type` 用 `tableview`）
 - `React` / `h` — 构建组件所用
+
+### 表格数据（表格视图类插件）
+
+```js
+// 订阅当前窗口当前表格的数据快照（立即推一次 + 变更推；返回退订函数）
+const unsub = bridge.subscribeTableData((snap) => {
+  // snap = {
+  //   tableFile: string | null,      // 当前 .atb 相对仓库根路径
+  //   fields: [{ id, name, type, options? }],  // 字段
+  //   rows: [{ id, values, height?, styles? }],// 行（values 按字段 id 存值）
+  //   selectedRowId: string | null,  // 选中行
+  //   peerColorByRowId: Record<string,string>, // 协作远端选中行 → 用户色
+  // }
+});
+
+// 跳选行（与表格视图选中联动；null = 取消）
+bridge.selectTableRow(rowId);
+
+// 表格图片条目 → dataURL（`data:` 内嵌条目原样透传；失败 reject，调用方兜底显示文字摘要）
+const dataUrl = await bridge.resolveTableImage(entry);
+```
+
+声明能力 `uses: ["table:read"]`（读取当前表格数据）。表格视图组件渲染在表格工具条下方，样式建议只用 inline style + CSS 变量（`var(--bg-primary)`/`var(--accent)` 等），不要依赖 Tailwind 类（插件不参与构建）。
 
 ## 事件一览
 

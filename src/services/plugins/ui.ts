@@ -11,6 +11,7 @@
 import React, { createElement, type ComponentType } from "react";
 import { VIEW_LABELS } from "@/constants/views";
 import { VIEW_KINDS } from "@/types";
+import type { PluginTableSnapshot } from "@/types";
 
 /** 插件面板注册项（kind 即工作区视图类型；渲染入口见 ViewHost）。 */
 export interface PluginPanelRegistration {
@@ -46,12 +47,20 @@ export interface PluginCommandRegistration {
   label: string;
   run: () => unknown;
 }
+/** 插件表格视图注册（表格编辑器内视图：工具条视图列表合并 + 内容区分派，见 TableEditor）。 */
+export interface PluginTableViewRegistration {
+  pluginId: string;
+  kind: string;
+  label: string;
+  component: ComponentType;
+}
 
 const panels = new Map<string, PluginPanelRegistration>(); // kind → 注册
 const settings = new Map<string, PluginSettingRegistration>(); // `${pluginId}:${key}` → 注册
 const appPages = new Map<string, PluginAppPageRegistration>(); // id → 注册
 const nodes = new Map<string, PluginNodeRegistration>(); // type → 注册
 const commands = new Map<string, PluginCommandRegistration>(); // `${pluginId}:${id}` → 注册
+const tableViews = new Map<string, PluginTableViewRegistration>(); // kind → 注册
 
 const listeners = new Set<() => void>();
 function notify(): void {
@@ -90,6 +99,12 @@ export function getPluginNodes(): PluginNodeRegistration[] {
 export function getPluginCommands(): PluginCommandRegistration[] {
   return [...commands.values()];
 }
+export function getPluginTableView(kind: string): PluginTableViewRegistration | undefined {
+  return tableViews.get(kind);
+}
+export function getPluginTableViews(): PluginTableViewRegistration[] {
+  return [...tableViews.values()];
+}
 
 /** 视图显示名（含插件面板）：内建 VIEW_LABELS → 插件面板 label → 原样兜底（不崩溃）。 */
 export function pluginViewLabel(view: string): string {
@@ -124,6 +139,15 @@ function registerCommand(pluginId: string, id: string, label: string, run: () =>
   commands.set(`${pluginId}:${id}`, { pluginId, id, label, run });
   notify();
 }
+function registerTableView(
+  pluginId: string,
+  kind: string,
+  label: string,
+  component: ComponentType,
+): void {
+  tableViews.set(kind, { pluginId, kind, label, component });
+  notify();
+}
 
 /** 撤销某插件在主线程平面的全部贡献（卸载/停用/重载时调用）。 */
 export function unregisterPluginUi(pluginId: string): void {
@@ -133,10 +157,29 @@ export function unregisterPluginUi(pluginId: string): void {
   for (const [k, v] of appPages) if (v.pluginId === pluginId) changed = appPages.delete(k) || changed;
   for (const [k, v] of nodes) if (v.pluginId === pluginId) changed = nodes.delete(k) || changed;
   for (const [k, v] of commands) if (v.pluginId === pluginId) changed = commands.delete(k) || changed;
+  for (const [k, v] of tableViews) if (v.pluginId === pluginId) changed = tableViews.delete(k) || changed;
   if (changed) notify();
 }
 
 // ===== facade 全局 + 加载 =====
+
+/** 表格数据访问 provider（由 pluginStore 接线注入，ui.ts 保持不 import store——分层：store 经此把
+ *  当前表格数据暴露给主线程插件；null = 未接线）。 */
+export interface PluginTableAccess {
+  /** 订阅当前表格数据快照（立即推一次 + 变更推；返回退订函数）。 */
+  subscribeSnapshot(cb: (snap: PluginTableSnapshot) => void): () => void;
+  /** 选中表格行（与表格视图选中联动；null = 取消选中）。 */
+  selectRow(rowId: string | null): void;
+  /** 表格图片条目 → dataURL（`data:` 内嵌条目原样透传；读取失败 reject，调用方兜底）。 */
+  resolveImage(entry: string): Promise<string>;
+}
+
+let tableAccess: PluginTableAccess | null = null;
+
+/** 注入/复位表格数据访问（pluginStore.load 时接线；null 复位供测试）。 */
+export function setPluginTableAccess(access: PluginTableAccess | null): void {
+  tableAccess = access;
+}
 
 /** 插件主线程 facade（插件代码经 `window.__atelyxPlugin__.forPlugin(id)` 取得）。 */
 export interface PluginMainThreadFacade {
@@ -147,6 +190,13 @@ export interface PluginMainThreadFacade {
   registerAppPage(opts: { id: string; label: string; component: ComponentType }): void;
   registerNode(opts: { type: string; component: ComponentType }): void;
   registerCommand(opts: { id: string; label: string; run: () => unknown }): void;
+  registerTableView(opts: { kind: string; label: string; component: ComponentType }): void;
+  /** 订阅当前打开的表格的数据快照（tableStore 为应用级单例，撕裂窗口同源；立即推一次 + 变更推；返回退订函数）。 */
+  subscribeTableData(cb: (snap: PluginTableSnapshot) => void): () => void;
+  /** 选中表格行（与表格视图选中联动；null = 取消选中）。 */
+  selectTableRow(rowId: string | null): void;
+  /** 解析表格图片条目为 dataURL（`data:` 内嵌条目原样透传；失败 reject，调用方兜底）。 */
+  resolveTableImage(entry: string): Promise<string>;
 }
 
 declare global {
@@ -168,6 +218,11 @@ export function exposePluginFacade(): void {
       registerAppPage: (o) => registerAppPage(pluginId, o.id, o.label, o.component),
       registerNode: (o) => registerNode(pluginId, o.type, o.component),
       registerCommand: (o) => registerCommand(pluginId, o.id, o.label, o.run),
+      registerTableView: (o) => registerTableView(pluginId, o.kind, o.label, o.component),
+      subscribeTableData: (cb) => (tableAccess ? tableAccess.subscribeSnapshot(cb) : () => {}),
+      selectTableRow: (rowId) => tableAccess?.selectRow(rowId),
+      resolveTableImage: (entry) =>
+        tableAccess ? tableAccess.resolveImage(entry) : Promise.reject(new Error("插件表格访问未就绪")),
     }),
   };
 }

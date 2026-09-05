@@ -78,10 +78,13 @@ export {
   getPluginPanels,
   getPluginSetting,
   getPluginSettings,
+  getPluginTableView,
+  getPluginTableViews,
   loadUiPlugin,
   onPluginUiChange,
   pluginViewKinds,
   pluginViewLabel,
+  setPluginTableAccess,
   unregisterPluginUi,
 } from "./ui";
 export type {
@@ -91,5 +94,7 @@ export type {
   PluginNodeRegistration,
   PluginPanelRegistration,
   PluginSettingRegistration,
+  PluginTableAccess,
+  PluginTableViewRegistration,
 } from "./ui";
 export { createPluginWorker, buildProxySource } from "./worker";

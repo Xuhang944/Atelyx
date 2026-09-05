@@ -23,7 +23,8 @@ export interface CollabLockClaim {
 export interface CollabPresence {
   file: string | null;
   selection: CollabSelection;
-  view: "table" | "timeline" | "note" | "canvas" | null;
+  /** 当前视图：note/canvas 为专属槽位；表格类一律 "table" 或插件表格视图 kind（远端按 note/canvas 判别，其余落 table 槽）。 */
+  view: string | null;
   /** 该用户当前打开的全部文件（聚焦文件置顶；最多 3 个：当前画布/笔记/表格）。 */
   openFiles?: Array<{ file: string; view: "canvas" | "note" | "table" }>;
   /** 画布对话节点独占编辑锁（跨视图保活：用户看表格/笔记期间锁仍对端可见）。 */

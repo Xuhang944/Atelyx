@@ -55,8 +55,9 @@ import type {
   TableSelection,
 } from "@/types";
 
-/** 编辑器视图：表格 / 时间线（内存态不持久化）。 */
-type TableView = "table" | "timeline";
+/** 编辑器视图（内存态不持久化）："table" = 内置表格网格；其余 = 插件表格视图 kind（registerTableView）。
+ * 判别统一用 `view !== "table"`（插件 kind 为任意字符串，无法静态收窄）。 */
+type TableView = string;
 
 interface TableStoreState {
   /** 当前打开的 .atb 相对仓库根路径（null = 未打开）。 */

@@ -16,8 +16,10 @@ import type { CSSProperties } from "react";
 import type {
   CellStyle,
   CellValue,
+  CollabPeer,
   CollabSelection,
   ImageCellValue,
+  PluginTableSnapshot,
   TableField,
   TableFile,
   TablePatch,
@@ -642,6 +644,35 @@ export function selectionRegion(
     default:
       return null; // node / 未知
   }
+}
+
+// ===== 插件表格数据快照（插件平台 facade subscribeTableData 推送）=====
+
+/** 构建插件表格数据快照：协作远端选中行 → 用户色归约（cell/range/row 区域染行、column/all 忽略、
+ *  首个匹配 peer 优先；空表越界兜底）。rows/fields 直传 store 不可变引用（选中变化不重建，插件可 memo 隔离）。 */
+export function buildPluginTableSnapshot(
+  tableFile: string | null,
+  fields: TableField[],
+  rows: TableRow[],
+  selectedRowId: string | null,
+  peers: CollabPeer[],
+): PluginTableSnapshot {
+  const peerColorByRowId: Record<string, string> = {};
+  if (tableFile) {
+    for (const p of peers) {
+      const sel = p.presence?.selection;
+      if (p.presence?.file !== tableFile || !sel || sel.kind === "all" || sel.kind === "column") {
+        continue;
+      }
+      const region = selectionRegion(sel, fields, rows);
+      if (!region) continue;
+      // 下标恒合法：region 产自 selectionRegion，退化区间（空表）循环不执行
+      for (let r = region.rowStart; r <= region.rowEnd; r++) {
+        if (!peerColorByRowId[rows[r].id]) peerColorByRowId[rows[r].id] = p.color;
+      }
+    }
+  }
+  return { tableFile, fields, rows, selectedRowId, peerColorByRowId };
 }
 
 /** 单元格值 → 剪贴板文本（image = 空；number/duration = 数值字符串；text/singleSelect = 原串）。 */

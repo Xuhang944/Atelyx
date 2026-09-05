@@ -3,7 +3,7 @@
 Atelyx 是一个插件化平台：插件 = 一个 GitHub 仓库，含一份 `atelyx.json` 清单 + 入口脚本 + 资源。
 给仓库打上 `atelyx-plugin` topic，即可被市场自动收录，任何 Atelyx 用户都可在内置市场中找到并安装。
 
-插件可扩展八类能力，按运行平面分两组：
+插件可扩展九类能力，按运行平面分两组：
 
 ## 插件类型
 
@@ -13,6 +13,7 @@ Atelyx 是一个插件化平台：插件 = 一个 GitHub 仓库，含一份 `ate
 | `background` | 后台常驻服务（无界面，订阅事件） | worker（隔离上下文） |
 | `command` | 全局命令（菜单/快捷键等执行入口） | worker（逻辑经桥 RPC） |
 | `panel` | 工作区面板视图 | 主线程（React UI） |
+| `tableview` | 表格编辑器内的多维表格视图 | 主线程（React UI） |
 | `setting` | 设置页条目 | 主线程（React UI） |
 | `app` | 应用级页面/模式（可全页接管） | 主线程（React UI） |
 | `node` | 画布节点 | 主线程（React UI） |
@@ -25,7 +26,7 @@ Atelyx 是一个插件化平台：插件 = 一个 GitHub 仓库，含一份 `ate
 
 - **worker 平面**（`tool`/`background`/`command`）：入口 `main` 在独立的 Web Worker 中执行。
   与 App 隔离：没有 `window`、没有系统命令访问，只能通过 `bridge` 对象与 App 通信（注册工具/命令、读写自身状态、订阅事件）。单个插件崩溃不影响 App。
-- **主线程平面**（`panel`/`setting`/`app`/`node`）：入口 `mainUi` 在主线程执行，可渲染 React 界面；
+- **主线程平面**（`panel`/`tableview`/`setting`/`app`/`node`）：入口 `mainUi` 在主线程执行，可渲染 React 界面；
   未声明 `mainUi` 时，仅**无 worker 平面**（不属 tool/background/command）的插件才缺省用 `main` 作为 UI 入口。
   与 App 同上下文，经 `window.__atelyxPlugin__` 的 facade 注册贡献。
 

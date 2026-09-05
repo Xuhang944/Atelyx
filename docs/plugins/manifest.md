@@ -16,7 +16,7 @@
   // "atelyxVersionMax": "0.5.0", // 可选：兼容的宿主版本上限（不含）
   "platforms": ["windows-x64"],   // 可选：目标平台，缺省全平台
   "main": "plugin.js",            // worker 平面入口（tool/background/command 逻辑；纯 theme 插件可省略）
-  "mainUi": "ui.js",              // 可选：主线程 UI 入口（panel/setting/app/node；缺省用 main）
+  "mainUi": "ui.js",              // 可选：主线程 UI 入口（panel/tableview/setting/app/node；缺省用 main）
   "uses": ["vault:read", "ai:tool"], // 可选：声明的命令/能力清单（市场展示 + 敏感能力门槛）
   "permissions": { "vault:read": "读取笔记正文以分析" }, // 可选：能力 → 一句理由（安装/详情展示）
   "theme": {                      // 可选（type 含 theme 时）：声明式皮肤，无需代码
@@ -39,6 +39,7 @@
 | `background` | 后台常驻服务（无界面） |
 | `command` | 全局命令（逻辑经桥 RPC） |
 | `panel` | 工作区面板视图（主线程 UI） |
+| `tableview` | 表格编辑器内的多维表格视图（主线程 UI） |
 | `setting` | 设置页条目（主线程 UI） |
 | `app` | 应用级页面/模式（主线程 UI，可全页接管） |
 | `node` | 画布节点（主线程 UI） |
@@ -54,7 +55,7 @@
 - `vault:delete` — 删除仓库文件
 
 其余能力（`vault:read`/`vault:write`/`vault:rename`/`ai:chat`/`ai:tool`/`search:web`/`web:fetch`/
-`clipboard`/`window:manage`/`settings:read`/`settings:write`/`state:persist`/`events:subscribe`）
+`clipboard`/`window:manage`/`settings:read`/`settings:write`/`state:persist`/`events:subscribe`/`table:read`）
 非敏感，声明后用于展示与审计；建议如实声明插件实际用到的能力。
 
 ## 宿主兼容

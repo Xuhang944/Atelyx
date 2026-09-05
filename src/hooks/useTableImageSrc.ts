@@ -1,7 +1,7 @@
 /**
  * 表格图片条目 → 显示 dataURL：路径经 `tableImageCache` 解析（缓存命中立即渲染，
  * 未命中异步读取完成后回填；遗留内嵌 dataURL 条目原样透传）。失败/空条目返回 null（调用方占位）。
- * ImageCell 当前图与 TableTimeline 缩略图/大图共用。
+ * ImageCell 当前图共用；表格视图插件（如官方时间线）经插件 facade 的 `resolveTableImage` 走同一 cache。
  *
  * 组件不直接调 service：预览批量解析与多图预载也经本文件导出（`resolveTableImageEntries`/`resolveTableImageEntry`）。
  */

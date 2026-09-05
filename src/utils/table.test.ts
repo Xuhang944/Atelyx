@@ -8,6 +8,7 @@
 import { describe, it, expect } from "vitest";
 import {
   applyPasteGrid,
+  buildPluginTableSnapshot,
   buildRegionTsv,
   cellToClipboardText,
   cellValueEqual,
@@ -18,7 +19,7 @@ import {
   summarizeTableSnapshot,
   tablesEqual,
 } from "./table";
-import type { CellValue, TableField, TableRow } from "@/types";
+import type { CellValue, CollabPeer, TableField, TableRow } from "@/types";
 
 const field = (id: string, name: string): TableField => ({ id, name, type: "text" });
 const row = (id: string, values: Record<string, string>): TableRow => ({ id, values });
@@ -407,5 +408,61 @@ describe("applyPasteGrid（粘贴网格回写）", () => {
     expect(nr[0].values.f2).toBe("y"); // 短行无第 2 列，不写不覆盖
     expect(nr[1].values.f1).toBe("q");
     expect(nr[1].values.f2).toBe("r");
+  });
+});
+
+describe("buildPluginTableSnapshot", () => {
+  const peer = (id: number, color: string, presence: CollabPeer["presence"]): CollabPeer => ({
+    peerId: id,
+    nickname: `用户${id}`,
+    color,
+    deviceName: "设备",
+    presence,
+  });
+  const cells = [field("f1", "镜号"), field("f2", "状态")];
+  const rowsT: TableRow[] = [
+    { id: "r1", values: { f1: "01" } },
+    { id: "r2", values: { f1: "02" } },
+    { id: "r3", values: { f1: "03" } },
+  ];
+
+  it("无表格：快照透传 null，不染任何行", () => {
+    const peers = [peer(1, "#ff0000", { file: "a.atb", selection: { kind: "row", rowId: "r1" }, view: "table" })];
+    const snap = buildPluginTableSnapshot(null, cells, rowsT, "r1", peers);
+    expect(snap.tableFile).toBeNull();
+    expect(snap.peerColorByRowId).toEqual({});
+    expect(snap.selectedRowId).toBe("r1");
+  });
+
+  it("cell/range 选中染对应行（首个匹配优先）", () => {
+    const p1 = peer(1, "#ff0000", { file: "a.atb", selection: { kind: "cell", rowId: "r2", fieldId: "f1" }, view: "table" });
+    const p2 = peer(2, "#00ff00", { file: "a.atb", selection: { kind: "range", anchorRowId: "r1", anchorFieldId: "f1", rowId: "r3", fieldId: "f2" }, view: "table" });
+    const snap = buildPluginTableSnapshot("a.atb", cells, rowsT, null, [p1, p2]);
+    // p1（cell 单点）先染 r2；p2 range 覆盖 r1–r3，仅未染的 r1/r3 落 p2 色（r2 保持 p1 色）
+    expect(snap.peerColorByRowId).toEqual({ r1: "#00ff00", r2: "#ff0000", r3: "#00ff00" });
+  });
+
+  it("column/all 选中不染；presence.file 不匹配忽略", () => {
+    const peers = [
+      peer(1, "#ff0000", { file: "a.atb", selection: { kind: "column", fieldId: "f1" }, view: "table" }),
+      peer(2, "#00ff00", { file: "a.atb", selection: { kind: "all" }, view: "table" }),
+      peer(3, "#0000ff", { file: "other.atb", selection: { kind: "row", rowId: "r1" }, view: "table" }),
+    ];
+    const snap = buildPluginTableSnapshot("a.atb", cells, rowsT, null, peers);
+    expect(snap.peerColorByRowId).toEqual({});
+  });
+
+  it("远端选中引用已删除/不存在的行不染（region=null 跳过）", () => {
+    const peers = [peer(1, "#ff0000", { file: "a.atb", selection: { kind: "row", rowId: "ghost" }, view: "table" })];
+    const snap = buildPluginTableSnapshot("a.atb", cells, rowsT, null, peers);
+    expect(snap.peerColorByRowId).toEqual({});
+  });
+
+  it("字段/行/选中原样透传（引用相等）", () => {
+    const snap = buildPluginTableSnapshot("a.atb", cells, rowsT, "r2", []);
+    expect(snap.fields).toBe(cells);
+    expect(snap.rows).toBe(rowsT);
+    expect(snap.selectedRowId).toBe("r2");
+    expect(snap.tableFile).toBe("a.atb");
   });
 });

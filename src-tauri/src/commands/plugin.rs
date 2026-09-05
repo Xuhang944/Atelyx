@@ -195,7 +195,7 @@ fn manifest_valid_or_error(v: &Value) -> Result<(), String> {
 fn is_known_plugin_type(t: &str) -> bool {
     matches!(
         t,
-        "tool" | "setting" | "panel" | "app" | "node" | "theme" | "command" | "background"
+        "tool" | "setting" | "panel" | "app" | "node" | "theme" | "command" | "background" | "tableview"
     )
 }
 

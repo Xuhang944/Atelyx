@@ -25,8 +25,8 @@ import { GripVertical, MoreHorizontal, MoveDiagonal, Plus, Sigma } from "lucide-
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTableStore } from "@/stores/tableStore";
 import { useUiStateStore } from "@/stores/uiStateStore";
+import { usePluginStore } from "@/stores/pluginStore";
 import { TableCell, clearCell, navigateCell, navDirection } from "@/components/table/TableCell";
-import { TableTimeline } from "@/components/table/TableTimeline";
 import { useCollabStore } from "@/stores/collabStore";
 import type { CollabPeer } from "@/types";
 import {
@@ -41,6 +41,7 @@ import {
 import { computeColumnCalc, fieldDefaultWidth, selectionRegion, type TableRegion } from "@/utils/table";
 import { HistoryModal } from "@/components/history/HistoryModal";
 import { PopupLayer } from "@/components/common/PopupLayer";
+import { ErrorBoundary } from "@/components/common/ErrorBoundary";
 import { usePopupAnchor } from "@/hooks/usePopupAnchor";
 import { TableFormatToolbar } from "@/components/table/TableFormatToolbar";
 import {
@@ -59,6 +60,21 @@ import type { TableField, TableRow } from "@/types";
 /** Ctrl+滚轮缩放灵敏度（指数因子：deltaY px → zoom 倍率，负号 = 上滚放大）。 */
 const ZOOM_SENSITIVITY = 0.0015;
 
+/** 插件表格视图承载：按 kind 渲染注册的组件（缺注册空渲染；插件崩溃不影响 App）。
+ * key=kind：错误态是 class 组件内部 state（不随 children 变化清除），切到另一插件视图须重建边界，
+ * 防 A 崩溃后 B 复用 A 的错误面板。 */
+function PluginTableViewMount({ kind }: { kind: string }) {
+  usePluginStore((s) => s.uiRevision);
+  const tv = usePluginStore.getState().pluginTableView(kind);
+  if (!tv) return null;
+  const Comp = tv.component;
+  return (
+    <ErrorBoundary key={kind}>
+      <Comp />
+    </ErrorBoundary>
+  );
+}
+
 /** 表格编辑器：panelId 用于聚焦判定（撤销/重做快捷键门控，同画布快捷键惯例）。 */
 export function TableEditor({ panelId }: { panelId: string }) {
   const fields = useTableStore((s) => s.fields);
@@ -73,6 +89,16 @@ export function TableEditor({ panelId }: { panelId: string }) {
   const view = useTableStore((s) => s.view);
   const setView = useTableStore((s) => s.setView);
   const exportXlsx = useTableStore((s) => s.exportXlsx);
+  // 插件表格视图（工具条视图列表 + 内容区分派；订阅 uiRevision 随插件注册/卸载刷新——
+  // 数组/注册经 getState 取，避免 selector 每次新引用致无限重渲染，同 PanelTabBar 惯例）
+  usePluginStore((s) => s.uiRevision);
+  const pluginTableViews = usePluginStore.getState().pluginTableViews();
+  const currentTableView = view !== "table" ? usePluginStore.getState().pluginTableView(view) : undefined;
+  // 当前视图 kind 无注册 → 回退表格视图（防无按钮高亮的悬空态；注册对象引用稳定，无重入）。
+  // 注：插件更新/重装/启停的重载瞬态（先注销后重注册）也会短暂触发回退——内存态、一次点击可恢复，可接受。
+  useEffect(() => {
+    if (view !== "table" && !currentTableView) setView("table");
+  }, [view, currentTableView, setView]);
   const [exported, setExported] = useState(false);
   useEffect(() => {
     if (!exported) return;
@@ -513,7 +539,7 @@ export function TableEditor({ panelId }: { panelId: string }) {
     () => (tableFile ? collabPeers.filter((p) => p.presence?.file === tableFile) : []),
     [tableFile, collabPeers],
   );
-  /** 定位到远端用户选中位置（区域首行滚动到视口中央；timeline 卡片同样带 data-row-id，
+  /** 定位到远端用户选中位置（区域首行滚动到视口中央；插件表格视图卡片同样带 data-row-id，
    *  document 查询命中当前渲染的视图——任一布局内表格视图唯一，无歧义）。 */
   const focusPeer = (p: CollabPeer) => {
     const sel = p.presence?.selection;
@@ -631,7 +657,7 @@ export function TableEditor({ panelId }: { panelId: string }) {
         style={{ borderColor: "var(--border)", color: "var(--text-secondary)" }}
       >
         <span className="flex-1" />
-        {/* 视图切换：表格 / 时间线（内存态不持久化） */}
+        {/* 视图切换：内置「表格」+ 插件表格视图（内存态不持久化；插件视图随 uiRevision 刷新） */}
         <div className="flex items-center rounded border flex-shrink-0" style={{ borderColor: "var(--border)" }}>
           <button
             onClick={() => { setFormatBar(null); setView("table"); }}
@@ -644,26 +670,31 @@ export function TableEditor({ panelId }: { panelId: string }) {
           >
             表格
           </button>
-          <button
-            onClick={() => { setFormatBar(null); setView("timeline"); }}
-            className="px-2 py-0.5 text-xs transition-colors"
-            style={{
-              color: view === "timeline" ? "var(--accent-fg)" : "var(--text-secondary)",
-              background: view === "timeline" ? "var(--accent)" : undefined,
-            }}
-            title="时间线视图（按时长排布，可预演）"
-          >
-            时间线
-          </button>
+          {pluginTableViews.map((tv) => (
+            <button
+              key={tv.kind}
+              onClick={() => { setFormatBar(null); setView(tv.kind); }}
+              className="px-2 py-0.5 text-xs transition-colors"
+              style={{
+                color: view === tv.kind ? "var(--accent-fg)" : "var(--text-secondary)",
+                background: view === tv.kind ? "var(--accent)" : undefined,
+              }}
+              title={tv.label}
+            >
+              {tv.label}
+            </button>
+          ))}
         </div>
-        {/* 缩放百分比（Ctrl+滚轮缩放表格视图，纯视图状态） */}
-        <span
-          className="flex-shrink-0 tabular-nums"
-          style={{ color: "var(--text-muted)" }}
-          title="Ctrl+滚轮缩放表格视图"
-        >
-          {Math.round(zoom * 100)}%
-        </span>
+        {/* 缩放百分比（Ctrl+滚轮缩放表格视图，纯视图状态；仅内置表格网格有效） */}
+        {view === "table" && (
+          <span
+            className="flex-shrink-0 tabular-nums"
+            style={{ color: "var(--text-muted)" }}
+            title="Ctrl+滚轮缩放表格视图"
+          >
+            {Math.round(zoom * 100)}%
+          </span>
+        )}
         <span className="flex-shrink-0" style={{ color: "var(--text-muted)" }}>
           {rows.length} 行 · {fields.length} 列
         </span>
@@ -732,9 +763,9 @@ export function TableEditor({ panelId }: { panelId: string }) {
         </span>
       </div>
 
-      {/* 时间线视图：整块替换表格主体（保留工具条） */}
-      {view === "timeline" ? (
-        <TableTimeline />
+      {/* 插件表格视图：整块替换表格主体（保留工具条；缺注册回退表格网格） */}
+      {view !== "table" && currentTableView ? (
+        <PluginTableViewMount kind={view} />
       ) : (
         <>
           {/* 缩放包装层：表格主体 + 状态栏 + 底部横向滑动条整体 CSS zoom（列/行/字体/表头随缩放比例；

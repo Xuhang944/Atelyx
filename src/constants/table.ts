@@ -33,16 +33,6 @@ export const CALC_TYPES_BY_FIELD: Record<FieldType, CalcType[]> = {
   image: ["count"],
 };
 
-/** 时间线卡片宽度：每秒时长对应的 px。 */
-export const TIMELINE_PX_PER_SEC = 60;
-/** 时间线卡片最短宽度（时长过短/缺失时兜底，px）。 */
-export const TIMELINE_MIN_CARD_WIDTH = 120;
-/** 时间线无 duration 字段时的等宽卡片宽度（px）。 */
-export const TIMELINE_EQUAL_CARD_WIDTH = 160;
-/** 时间线卡片间距（px）。 */
-export const TIMELINE_CARD_GAP = 6;
-/** 预演默认每行播放时长（秒；无 duration 字段或值为空时）。 */
-export const PREVIEW_DEFAULT_DURATION = 3;
 /** 注入对话上下文的表格行数上限（防超长上下文）。 */
 export const MAX_TABLE_INJECT_ROWS = 50;
 /** 列宽拖拽调整的下限（px）。 */

@@ -164,4 +164,5 @@ export {
   type PluginEndorseEntry,
   type PluginFiberPhase,
   type InstalledPlugin,
+  type PluginTableSnapshot,
 } from "./plugin";

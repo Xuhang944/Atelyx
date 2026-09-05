@@ -7,7 +7,12 @@
  */
 import { create } from "zustand";
 import type { ComponentType } from "react";
-import type { InstalledPlugin, PluginIndexEntry, PluginScope, ToolDefinition } from "@/types";
+import type {
+  InstalledPlugin,
+  PluginIndexEntry,
+  PluginScope,
+  ToolDefinition,
+} from "@/types";
 import { errText } from "@/types";
 import {
   contributedPluginTools,
@@ -19,6 +24,8 @@ import {
   getPluginPanels,
   getPluginSetting,
   getPluginSettings,
+  getPluginTableView,
+  getPluginTableViews,
   loadPlugin,
   loadUiPlugin,
   onPluginUiChange,
@@ -32,6 +39,7 @@ import {
   pluginViewKinds as allPluginViewKinds,
   pluginViewLabel as pluginViewLabelOf,
   runtimeSnapshot,
+  setPluginTableAccess,
   unloadPlugin,
   unregisterPluginUi,
 } from "@/services/plugins";
@@ -40,7 +48,13 @@ import type {
   PluginNodeRegistration,
   PluginPanelRegistration,
   PluginSettingRegistration,
+  PluginTableAccess,
+  PluginTableViewRegistration,
 } from "@/services/plugins";
+import { useTableStore } from "@/stores/tableStore";
+import { useCollabStore } from "@/stores/collabStore";
+import { buildPluginTableSnapshot } from "@/utils/table";
+import { resolveTableImageUrl } from "@/services/tableImageCache";
 import { pluginToolMetas as pluginToolMetasSvc } from "@/services/ai/tools";
 import type { AgentToolMeta } from "@/constants/tools";
 import {
@@ -103,6 +117,10 @@ interface PluginStoreState {
   pluginViewKinds(): string[];
   /** 视图显示名（含插件面板，未知视图原样兜底）。 */
   pluginViewLabel(view: string): string;
+  /** 插件表格视图注册（kind → 注册；TableEditor 视图切换合并）。 */
+  pluginTableView(kind: string): PluginTableViewRegistration | undefined;
+  /** 全部插件表格视图注册（工具条视图列表合并用）。 */
+  pluginTableViews(): PluginTableViewRegistration[];
   /** 加载市场索引（缓存未过期直接回缓存；失败回落缓存快照并带时间戳提示）。 */
   loadMarket(force?: boolean): Promise<void>;
 }
@@ -126,6 +144,56 @@ function toInstalled(row: {
     phase: "pending",
     usedCapabilities: [],
   };
+}
+
+/** 表格数据访问接线守卫：load 每次进仓/启动都会跑，接线幂等只做一次（订阅常驻、跨仓库不重绑）。
+ * 注意模块环：pluginStore → tableStore → collabStore → appStore → pluginStore 为良性环——
+ * 全部 store 访问延迟到回调内 `getState()`，模块顶层零触碰（与既有 tableStore↔collabStore 同模式）。 */
+let tableAccessWired = false;
+function ensureTableAccess(): void {
+  if (tableAccessWired) return;
+  tableAccessWired = true;
+  const access: PluginTableAccess = {
+    subscribeSnapshot: (cb) => {
+      const push = () => {
+        const ts = useTableStore.getState();
+        cb(
+          buildPluginTableSnapshot(
+            ts.tableFile,
+            ts.fields,
+            ts.rows,
+            ts.selectedRowId,
+            useCollabStore.getState().peers,
+          ),
+        );
+      };
+      push();
+      // 仅相关切片引用变化才推送（保存/脏标记等高频无关变更不打扰插件）；
+      // rows/fields 直传 store 不可变引用，选中变化不重建数组、插件卡片 memo 不受击穿。
+      const unsubTable = useTableStore.subscribe((s, prev) => {
+        if (
+          s.tableFile !== prev.tableFile ||
+          s.fields !== prev.fields ||
+          s.rows !== prev.rows ||
+          s.selectedRowId !== prev.selectedRowId
+        ) {
+          push();
+        }
+      });
+      // 协作订阅按 peers 整数组比较属粗粒度：presence 帧（onPeerPresence 恒 map 新数组）都会触发一次推送，
+      // 含与当前表格无关的笔记/画布选中更新；发送端 100ms 节流 + 局域网少量 peer，频率低，推送成本 ≈ 快照本身，可接受。
+      const unsubCollab = useCollabStore.subscribe((s, prev) => {
+        if (s.peers !== prev.peers) push();
+      });
+      return () => {
+        unsubTable();
+        unsubCollab();
+      };
+    },
+    selectRow: (rowId) => useTableStore.getState().selectRow(rowId),
+    resolveImage: resolveTableImageUrl,
+  };
+  setPluginTableAccess(access);
 }
 
 export const usePluginStore = create<PluginStoreState>()((set, get) => {
@@ -231,6 +299,7 @@ export const usePluginStore = create<PluginStoreState>()((set, get) => {
      */
     load: async () => {
       exposePluginFacade();
+      ensureTableAccess();
       const seq = ++loadSeq;
       for (const id of Object.keys(get().plugins)) {
         unloadPlugin(id);
@@ -332,6 +401,8 @@ export const usePluginStore = create<PluginStoreState>()((set, get) => {
     pluginAppPage: (id) => getPluginAppPages().find((p) => p.id === id),
     pluginViewKinds: () => allPluginViewKinds(),
     pluginViewLabel: (view) => pluginViewLabelOf(view),
+    pluginTableView: (kind) => getPluginTableView(kind),
+    pluginTableViews: () => getPluginTableViews(),
 
     loadMarket: async (force = false) => {
       const cached = readMarketCache();

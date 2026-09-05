@@ -40,6 +40,7 @@ export const PLUGIN_TYPE_LABELS: Record<PluginType, string> = {
   theme: "UI 皮肤",
   command: "命令/快捷键",
   background: "后台服务",
+  tableview: "表格视图",
 };
 
 /** 插件作用域展示文案。 */
@@ -72,4 +73,5 @@ export const PLUGIN_CAPABILITY_LABELS: Record<PluginCapability, string> = {
   "settings:write": "修改设置",
   "state:persist": "持久化自身数据",
   "events:subscribe": "订阅应用事件",
+  "table:read": "读取当前表格数据（行/字段/图片/选中行）",
 };

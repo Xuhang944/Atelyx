@@ -78,7 +78,7 @@ export function pluginTypeList(manifest: Pick<PluginManifest, "type" | "types">)
 }
 
 /** UI 类插件类型（主线程平面承载：渲染 React/触达 DOM）。 */
-const UI_PLUGIN_TYPES: ReadonlySet<PluginType> = new Set(["panel", "setting", "app", "node"]);
+const UI_PLUGIN_TYPES: ReadonlySet<PluginType> = new Set(["panel", "setting", "app", "node", "tableview"]);
 
 /** worker 平面插件类型（隔离上下文承载：工具/后台/命令逻辑）。 */
 const WORKER_PLUGIN_TYPES: ReadonlySet<PluginType> = new Set(["tool", "background", "command"]);
